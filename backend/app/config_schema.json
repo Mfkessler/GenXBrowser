@@ -1,0 +1,172 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "GenXBrowser Project Configuration",
+  "description": "Configuration schema for GenXBrowser h5ad-backend projects",
+  "type": "object",
+  "required": ["project_name", "version", "species", "column_definitions"],
+  "properties": {
+    "project_name": {
+      "type": "string",
+      "description": "Name of the project (e.g., 'RanOmics', 'MaizeAtlas')"
+    },
+    "version": {
+      "type": "string",
+      "description": "Configuration version for compatibility tracking"
+    },
+    "description": {
+      "type": "string",
+      "description": "Project description shown in admin panel"
+    },
+    "species": {
+      "type": "object",
+      "description": "Species/dataset definitions",
+      "patternProperties": {
+        "^[A-Z]{2,10}$": {
+          "type": "object",
+          "required": ["code", "full_name", "display_name", "enabled"],
+          "properties": {
+            "code": {
+              "type": "string",
+              "description": "Short species code (e.g., 'AC', 'CS')"
+            },
+            "full_name": {
+              "type": "string",
+              "description": "Full scientific name from .uns['species'] (e.g., 'Aquilegia coerulea')"
+            },
+            "display_name": {
+              "type": "string",
+              "description": "Display name for UI (usually same as full_name)"
+            },
+            "enabled": {
+              "type": "boolean",
+              "description": "Whether this species is visible in the application"
+            },
+            "tags": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "Tags for filtering/grouping species"
+            }
+          }
+        }
+      }
+    },
+    "column_mappings": {
+      "type": "object",
+      "description": "Column name transformations between H5AD and display names",
+      "properties": {
+        "h5ad_to_display": {
+          "type": "object",
+          "description": "Map H5AD column names to display column names",
+          "additionalProperties": {"type": "string"}
+        }
+      }
+    },
+    "column_definitions": {
+      "type": "object",
+      "description": "Column metadata and display settings",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["display_name", "type", "is_array", "is_meta", "visible"],
+        "properties": {
+          "display_name": {
+            "type": "string",
+            "description": "Human-readable column name"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["text", "bigint", "double precision", "boolean", "array"],
+            "description": "Data type of the column"
+          },
+          "is_array": {
+            "type": "boolean",
+            "description": "Whether column contains array/list values"
+          },
+          "is_meta": {
+            "type": "boolean",
+            "description": "Whether column is shown in Genes tab (meta information)"
+          },
+          "is_sample_metadata": {
+            "type": "boolean",
+            "description": "Whether column is from .obs (sample metadata) rather than .var (gene metadata)"
+          },
+          "visible": {
+            "type": "boolean",
+            "description": "Whether column is visible by default in tables"
+          },
+          "sortable": {
+            "type": "boolean",
+            "description": "Whether column can be sorted",
+            "default": true
+          },
+          "filterable": {
+            "type": "boolean",
+            "description": "Whether column can be filtered",
+            "default": true
+          },
+          "order": {
+            "type": "integer",
+            "description": "Display order in tables (lower = earlier)",
+            "minimum": 0
+          },
+          "description": {
+            "type": "string",
+            "description": "Column description for tooltips"
+          }
+        }
+      }
+    },
+    "sample_metadata_columns": {
+      "type": "object",
+      "description": "Configuration for sample metadata columns (.obs)",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether sample metadata is displayed"
+        },
+        "columns": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "List of available sample metadata column names"
+        },
+        "default_visible_columns": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Sample metadata columns visible by default"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "frontend_settings": {
+      "type": "object",
+      "description": "Frontend display settings",
+      "properties": {
+        "default_columns": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Columns shown by default in tables"
+        },
+        "hidden_columns": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Columns hidden from all views"
+        },
+        "column_order": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Global column display order"
+        }
+      }
+    },
+    "data_paths": {
+      "type": "object",
+      "description": "Data file paths (usually overridden by environment variables)",
+      "properties": {
+        "h5ad_dir": {"type": "string"},
+        "gene_trees_path": {"type": "string"},
+        "sequences_dir": {"type": "string"}
+      }
+    }
+  }
+}

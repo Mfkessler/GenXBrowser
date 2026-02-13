@@ -1,0 +1,52 @@
+# =============================================================================
+# GenXBrowser Monorepo .gitignore
+# =============================================================================
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+*.so
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.whl
+venv/
+.venv/
+
+# ---------- Node / Frontend ----------
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+.vitest/
+
+# ---------- IDE / Editor ----------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ---------- Docker ----------
+*.log
+
+# ---------- Data (user-specific, not committed) ----------
+data/
+*.h5ad
+*.obo
+frontend/.editorconfig
+frontend/.gitattributes
+backend/guides/CONFIGURATION_GUIDE.md
+backend/guides/GO_API_DOCUMENTATION.md
+backend/guides/ORA_IMPLEMENTATION.md
+backend/guides/README_FRONTEND.md
+backend/guides/SAMPLE_METADATA_SUPPORT.md
+frontend/public/icpsr-logo-final.png

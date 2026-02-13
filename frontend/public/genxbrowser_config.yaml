@@ -1,0 +1,19 @@
+corporate_identity:
+  company_name: Your Organization
+  logo: ""
+  about: about.md
+  llm_name: ""
+  # Use shorts for contributions find here: https://creativecommons.org/share-your-work/cclicenses/ (example: NC-SA)
+  cc_by: ""
+access:
+  data: True
+  download: True
+visualization:
+  id_column: gene_id
+  # Hiding large columns is masking them in the heatmap, which can help with RAM demands on the client side
+  hide_columns:
+    #- description_long
+    - rna_seq
+    - newick_str
+    #- protein_sequence
+

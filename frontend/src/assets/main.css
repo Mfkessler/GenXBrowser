@@ -1,0 +1,24 @@
+@import "tailwindcss";
+@plugin '@tailwindcss/typography';
+
+/*
+Used: https://paletton.com/#uid=32g0u0kj0q78RG8e5v0n5lRr+gV
+Keep the names but feel free to adapt the CSS to your own style.
+*/
+@theme {
+  --color-primary-100: #e4f6b2;
+  --color-primary-300: #cfea83;
+  --color-primary-500: #a6c550;
+  --color-primary-700: #85a52e;
+  --color-primary-900: #628010;
+  --color-accent1-100: #f7b3bc;
+  --color-accent1-300: #eb8492;
+  --color-accent1-500: #c65060;
+  --color-accent1-700: #a62e3f;
+  --color-accent1-900: #80101f;
+  --color-accent2-100: #b195c9;
+  --color-accent2-300: #8862a6;
+  --color-accent2-500: #693e8c;
+  --color-accent2-700: #522675;
+  --color-accent2-900: #39115b;
+}

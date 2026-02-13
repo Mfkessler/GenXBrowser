@@ -1,0 +1,341 @@
+<template>
+  <div class="w-full h-full bg-white border-r-1 border-gray-300 overflow-visible">
+    <!-- Action Buttons Row -->
+    <div class="relative flex items-center justify-center px-4 py-3 border-b-1 border-gray-300">
+      <!-- Close Sidebar Button (Left side, absolute positioned) -->
+      <button
+        aria-label="Close sidebar"
+        :disabled="disableControls"
+        class="absolute left-4 cursor-pointer font-semibold border-1 border-gray-300 bg-white text-gray-700 py-1 px-1.5 rounded-full hover:bg-gray-100 disabled:opacity-50 flex justify-center items-center"
+        @click="$emit('toggle-sidebar')"
+        v-tooltip:right="'Close sidebar'"
+      >
+        <svg
+          class="h-3.5 w-3.5"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M4 6h16M4 12h16M4 18h16"
+          />
+        </svg>
+      </button>
+
+      <!-- Home Button (Centered) -->
+      <button
+        aria-label="Navigate to Catalog"
+        :disabled="disableControls"
+        class="cursor-pointer font-semibold border-1 border-primary-900 bg-primary-100 text-primary-900 py-2 px-6 rounded-full hover:bg-primary-900 hover:text-primary-100 disabled:opacity-50 flex justify-center items-center gap-2 text-sm"
+        @click="$emit('navigate-home')"
+        v-tooltip:right="'Navigate to Catalog'"
+      >
+        <svg
+          class="h-5 w-5"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"
+          />
+        </svg>
+        <span>Catalog</span>
+      </button>
+    </div>
+
+    <!-- Tabs -->
+    <div class="flex whitespace-nowrap">
+      <button
+        :class="[
+          'flex-1 px-4 py-2 bg-white cursor-pointer',
+          selectedTab === 'meta'
+            ? 'text-gray-700 font-bold'
+            : 'border-b-1 border-r-1 border-gray-300 text-gray-400 shadow-inner',
+        ]"
+        :style="
+          selectedTab === 'meta'
+            ? ''
+            : 'box-shadow: inset 1px 1px 5px 0 rgba(0,0,0,0.20)'
+        "
+        @click="selectedTab = 'meta'"
+      >
+        {{ getEntityLabelPlural() }}
+      </button>
+      <button
+        :class="[
+          'flex-1 px-4 py-2 bg-white cursor-pointer',
+          selectedTab === 'columnMeta'
+            ? 'text-gray-700 font-bold'
+            : 'border-b-1 border-l-1 border-gray-300 text-gray-400 shadow-inner',
+        ]"
+        :style="
+          selectedTab === 'columnMeta'
+            ? ''
+            : 'box-shadow: inset 1px 1px 5px 0 rgba(0,0,0,0.20)'
+        "
+        @click="selectedTab = 'columnMeta'"
+      >
+        Samples
+      </button>
+    </div>
+    <div class="p-4 overflow-y-auto overflow-x-visible">
+      <div v-if="loading" class="text-gray-500">Loading filters...</div>
+      <div v-else>
+        <SearchFilter
+          v-for="col in selectedTab === 'meta'
+            ? filteredRowColumns
+            : columnsStore.filterableColColumns"
+          :key="col.column_name"
+          v-model="filters[col.column_name]"
+          :label="getDisplayName(col.column_name, col.display_name)"
+          :description="col.description"
+          :type="col.type"
+          :id="col.column_name"
+          :ref="
+            (el) => {
+              if (el) searchFilterRefs[col.column_name] = el;
+            }
+          "
+        ></SearchFilter>
+      </div>
+    </div>
+  </div>
+</template>
+<script setup lang="ts">
+import axios from "axios";
+import { debounce } from "lodash-es";
+import { inject, nextTick, onMounted, ref, watch, computed } from "vue";
+import { useRoute } from "vue-router";
+
+import { useColumnsStore } from "@/stores/columns";
+import { API_BASE_URL, type Config } from "@/shared/Config";
+import { useFiltersStore, type FilterValue } from "@/stores/filters";
+import SearchFilter from "./SearchFilter.vue";
+import { getEntityLabelPlural } from "@/shared/dataTypeLabels";
+import { getDisplayName } from "@/shared/metadataDisplayNames";
+
+const config = inject("config") as Config;
+
+defineProps<{
+  disableControls?: boolean;
+}>();
+
+const emit = defineEmits<{
+  'toggle-sidebar': [];
+  'navigate-home': [];
+}>();
+
+const route = useRoute();
+const filtersStore = useFiltersStore();
+const columnsStore = useColumnsStore();
+
+// Get current table name from route
+const currentTableName = computed(() => {
+  const param = route.params.table_names;
+  if (typeof param === "string") {
+    // Take first table if multiple are selected
+    return param.split(",")[0];
+  }
+  return null;
+});
+
+const selectedTab = ref<"meta" | "columnMeta">("meta");
+const loading = ref(true);
+const filters = ref<Record<string, FilterValue>>({ ...filtersStore.filters });
+
+// Columns filtered to exclude the transcript/gene ID column (handled per-dataset in cards)
+const filteredRowColumns = computed(() =>
+  columnsStore.rowColumns.filter((col) => col.column_name !== config.visualization.id_column)
+);
+
+const searchFilterRefs = ref<Record<string, any>>({});
+
+// Guard to prevent infinite loop between store sync and auto-apply watchers
+let syncingFromStore = false;
+
+function cleanFilters(
+  filters: Record<string, FilterValue>,
+): Record<string, FilterValue> {
+  return Object.fromEntries(
+    Object.entries(filters).filter(([, v]) => v && v.value !== ""),
+  );
+}
+
+function isFilterEmpty(filter?: FilterValue): boolean {
+  return !filter || filter.value === "";
+}
+
+// Auto-apply: push local filter changes to the store with a debounce
+const autoApplyFilters = debounce(() => {
+  const cleaned = cleanFilters(filters.value);
+  filtersStore.setFilters(cleaned);
+
+  // Collapse all SearchFilters where the filter is not set
+  for (const col of columnsStore.allColumns) {
+    const filterVal = filters.value[col.column_name];
+    const refInstance = searchFilterRefs.value[col.column_name];
+    if (refInstance && isFilterEmpty(filterVal)) {
+      refInstance.collapse();
+    }
+  }
+}, 500);
+
+async function fetchColumns() {
+  try {
+    const metaResponse = await axios.get(
+      `${API_BASE_URL}/api/columns`,
+      {
+        params: {
+          meta: true,
+          columns: false,
+        },
+      },
+    );
+
+    const columnMetaResponse = await axios.get(
+      `${API_BASE_URL}/api/columns`,
+      {
+        params: {
+          columns: true,
+        },
+      },
+    );
+
+    columnsStore.setRowColumns(metaResponse.data);
+    columnsStore.setColColumns(columnMetaResponse.data);
+    
+    // fetchTissueValues will be called by the watch on currentTableName
+  } catch {
+    columnsStore.setRowColumns([]);
+    columnsStore.setColColumns([]);
+  } finally {
+    loading.value = false;
+  }
+}
+
+// Helper function to extract unique tissue values from metadata
+function extractTissueValues(data: Record<string, any>[], tissueColName: string): string[] {
+  const values = data
+    .map(item => item[tissueColName])
+    .filter(Boolean);
+  return [...new Set(values)].sort();
+}
+
+async function fetchTissueValuesForAllTables() {
+  const tissueColName = columnsStore.tissueColumnName;
+  if (!tissueColName) return;
+  
+  try {
+    // Get all available tables
+    const tablesResponse = await axios.get(`${API_BASE_URL}/api/tables`);
+    const tables = tablesResponse.data;
+    
+    const allTissues = new Set<string>();
+    
+    // Fetch tissues from each table
+    for (const table of tables) {
+      try {
+        const response = await axios.post(`${API_BASE_URL}/api/data`, {
+          table_name: table.table_name + "_meta",
+          filters: {},
+        });
+        
+        const data = response.data.data || response.data;
+        if (data && typeof data === 'object') {
+          const tissues = extractTissueValues(Object.values(data), tissueColName);
+          tissues.forEach(t => allTissues.add(t));
+        }
+      } catch (err) {
+        console.warn(`Could not fetch tissues for ${table.table_name}:`, err);
+      }
+    }
+    
+    const tissueArray = Array.from(allTissues).sort();
+    
+    if (tissueArray.length > 0) {
+      columnsStore.setDistinctValues(tissueColName, tissueArray);
+    }
+  } catch (err) {
+    console.warn("Could not fetch tissue values for all tables:", err);
+  }
+}
+
+async function fetchTissueValues() {
+  const tissueColName = columnsStore.tissueColumnName;
+  const tableName = currentTableName.value;
+  
+  if (!tissueColName) return;
+  
+  // If no specific table, fetch from all tables (catalog page)
+  if (!tableName) {
+    await fetchTissueValuesForAllTables();
+    return;
+  }
+  
+  try {
+    // Fetch from _meta table like CatalogEntry does
+    const response = await axios.post(`${API_BASE_URL}/api/data`, {
+      table_name: tableName + "_meta",
+      filters: {},
+    });
+    
+    const data = response.data.data || response.data;
+    if (data && typeof data === 'object') {
+      const tissues = extractTissueValues(Object.values(data), tissueColName);
+      if (tissues.length > 0) {
+        columnsStore.setDistinctValues(tissueColName, tissues);
+      }
+    }
+  } catch (err) {
+    console.warn("Could not fetch distinct tissue values:", err);
+  }
+}
+
+// Fetch tissue values when table is available or changes
+watch(currentTableName, async (newTable) => {
+  if (columnsStore.tissueColumnName) {
+    await fetchTissueValues();
+  }
+}, { immediate: true });
+
+watch(
+  () => filtersStore.filters,
+  (newFilters) => {
+    syncingFromStore = true;
+    filters.value = { ...newFilters };
+
+    // Uncollapse all SearchFilters which have a non-empty filter value
+    for (const col of columnsStore.allColumns) {
+      const filterVal = filters.value[col.column_name];
+      const refInstance = searchFilterRefs.value[col.column_name];
+      if (refInstance && filterVal && filterVal.value !== "") {
+        refInstance.uncollapse();
+      }
+    }
+    // Reset guard after this tick so the auto-apply watcher skips this change
+    nextTick(() => { syncingFromStore = false; });
+  },
+  { deep: true },
+);
+
+// Auto-apply: whenever local filters change (user adds/removes pills), push to the store
+watch(
+  filters,
+  () => {
+    if (syncingFromStore) return;
+    autoApplyFilters();
+  },
+  { deep: true },
+);
+
+onMounted(async () => {
+  fetchColumns();
+});
+</script>

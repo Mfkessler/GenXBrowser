@@ -1,0 +1,64 @@
+# =============================================================================
+# GenXBrowser - Docker Compose
+# =============================================================================
+# Runs both frontend (Vue/Nginx) and backend (Flask/Gunicorn) services.
+#
+# Usage:
+#   docker compose up -d --build
+#
+# Environment:
+#   H5AD_DATA_DIR - Directory containing .h5ad files (default: ./data)
+#   PROJECT_CONFIG_PATH - Path to project config JSON (auto-generated if absent)
+#
+# Customization:
+#   The frontend loads genxbrowser_config.yaml at runtime from the served
+#   directory. Override it by mounting your own config and logo:
+#
+#     volumes:
+#       - ./my_config.yaml:/usr/share/nginx/html/genxbrowser_config.yaml:ro
+#       - ./my_logo.png:/usr/share/nginx/html/my_logo.png:ro
+# =============================================================================
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: genxbrowser-backend
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - H5AD_DATA_DIR=/data
+      - PROJECT_CONFIG_PATH=/data/config/project_config.json
+      - FILTER_STORE_PATH=/data/filters
+      - CACHE_MAX_SIZE_MB=2048
+      - GO_OBO_PATH=/data/go-basic.obo
+      - GO_AUTO_DOWNLOAD=true
+      - GUNICORN_WORKERS=1
+      - GUNICORN_THREADS=8
+      - GUNICORN_TIMEOUT=120
+    volumes:
+      - ${H5AD_DATA_DIR:-./data}:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_BASE_URL: /
+        VITE_API_BASE_URL: /api
+        VITE_DATA_TYPE: Genes
+    container_name: genxbrowser-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
