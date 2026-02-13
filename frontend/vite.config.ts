@@ -33,16 +33,26 @@ function buildProxy() {
   return routes;
 }
 
+// Parse allowed hosts from environment variable (comma-separated)
+function getAllowedHosts(): string[] {
+  const defaultHosts = ["localhost", "127.0.0.1"];
+  const envHosts = process.env.VITE_ALLOWED_HOSTS;
+  
+  if (envHosts) {
+    const additional = envHosts.split(",").map(h => h.trim()).filter(h => h);
+    return [...defaultHosts, ...additional];
+  }
+  
+  return defaultHosts;
+}
+
 // https://vite.dev/config/
 export default defineConfig({
   base: process.env.VITE_BASE_URL || "/",
   plugins: [vue(), vueDevTools(), tailwindcss()],
   server: { 
     host: "0.0.0.0",
-    allowedHosts: [
-      "localhost",
-      "127.0.0.1",
-    ],
+    allowedHosts: getAllowedHosts(),
     // Proxy API requests to backend container (for Docker dev environment)
     proxy: buildProxy(),
     // HMR configuration for Docker

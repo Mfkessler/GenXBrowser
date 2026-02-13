@@ -16,6 +16,10 @@ ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
 ARG VITE_DATA_TYPE="Genes"
 ENV VITE_DATA_TYPE=${VITE_DATA_TYPE}
 
+# Build argument for allowed hosts (comma-separated) - localhost and 127.0.0.1 are always included
+ARG VITE_ALLOWED_HOSTS=""
+ENV VITE_ALLOWED_HOSTS=${VITE_ALLOWED_HOSTS}
+
 # Skips TypeScript strict type-checking for faster builds
 RUN npm run build-only
 
