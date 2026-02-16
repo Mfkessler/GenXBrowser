@@ -140,15 +140,83 @@ def validate_build_outputs(config: ProjectConfig, reporter: Reporter) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Environment detection and creation
+# ---------------------------------------------------------------------------
+
+def _check_conda_available() -> bool:
+    """Check if conda is available."""
+    try:
+        subprocess.run(
+            ["conda", "--version"],
+            capture_output=True,
+            check=True,
+            timeout=5
+        )
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+
+
+def _create_conda_env(env_name: str, backend_dir: Path, python_version: str = "3.12") -> tuple[bool, str, Path]:
+    """Create a conda environment for the backend.
+    
+    Returns:
+        (success, error_message, python_path)
+    """
+    try:
+        # Create conda environment
+        subprocess.run(
+            ["conda", "create", "-y", "-n", env_name, f"python={python_version}"],
+            check=True,
+            cwd=backend_dir,
+            capture_output=True,
+            text=True,
+            timeout=300
+        )
+        
+        # Get conda environment path
+        result = subprocess.run(
+            ["conda", "info", "--envs"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10
+        )
+        
+        # Parse conda env list to find our environment's path
+        for line in result.stdout.split('\n'):
+            if env_name in line and not line.startswith('#'):
+                parts = line.split()
+                if len(parts) >= 2:
+                    env_path = Path(parts[-1])
+                    python_path = env_path / "bin" / "python"
+                    if sys.platform == "win32":
+                        python_path = env_path / "python.exe"
+                    return True, "", python_path
+        
+        return False, f"Could not find conda environment path for '{env_name}'", None
+        
+    except subprocess.CalledProcessError as e:
+        return False, f"conda environment creation failed: {e.stderr}", None
+    except subprocess.TimeoutExpired:
+        return False, "conda environment creation timed out", None
+
+
+# ---------------------------------------------------------------------------
 # Backend setup
 # ---------------------------------------------------------------------------
 
-def setup_backend(reporter: Reporter, skip_setup: bool = False) -> Path | None:
+def setup_backend(
+    reporter: Reporter,
+    skip_setup: bool = False,
+    use_system: bool = False
+) -> Path | None:
     """Set up backend Python virtual environment and install dependencies.
     
     Args:
         reporter: Reporter instance for structured output
         skip_setup: If True, skip venv creation and dependency installation
+        use_system: If True, use system Python (not recommended)
         
     Returns:
         Path to Python executable in venv, or None on failure
@@ -162,8 +230,6 @@ def setup_backend(reporter: Reporter, skip_setup: bool = False) -> Path | None:
         reporter.add(result)
         return None
     
-    venv_dir = backend_dir / ".venv"
-    
     if not backend_dir.exists():
         result.error(
             f"Backend directory not found: {backend_dir}",
@@ -172,47 +238,119 @@ def setup_backend(reporter: Reporter, skip_setup: bool = False) -> Path | None:
         reporter.add(result)
         return None
     
-    # Check if venv exists
-    venv_python = venv_dir / "bin" / "python"
-    if sys.platform == "win32":
-        venv_python = venv_dir / "Scripts" / "python.exe"
+    # Handle system-wide installation (with warning)
+    if use_system:
+        result.warning(
+            "Using system Python installation",
+            suggestion="⚠️  Installing packages system-wide. Consider using a virtual environment instead."
+        )
+        python_executable = Path(sys.executable)
+        
+        if skip_setup:
+            result.info("Skipping dependency installation (--skip-setup)")
+            reporter.add(result)
+            return python_executable
+        
+        # Install dependencies with system Python
+        result.info(f"Installing dependencies with system Python: {python_executable}")
+        requirements_file = backend_dir / "requirements.txt"
+        
+        if not requirements_file.exists():
+            result.error(f"Requirements file not found: {requirements_file}")
+            reporter.add(result)
+            return None
+        
+        try:
+            subprocess.run(
+                [str(python_executable), "-m", "pip", "install", "-r", str(requirements_file)],
+                check=True,
+                cwd=backend_dir,
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+            result.success("Dependencies installed successfully")
+            reporter.add(result)
+            return python_executable
+        except subprocess.CalledProcessError as e:
+            result.error(f"Failed to install dependencies: {e.stderr}")
+            reporter.add(result)
+            return None
+        except subprocess.TimeoutExpired:
+            result.error("Dependency installation timed out")
+            reporter.add(result)
+            return None
+    
+    # Conda environment setup (required for GenXBrowser)
+    # Check if conda is available
+    if not _check_conda_available():
+        result.error(
+            "Conda is not available",
+            suggestion=(
+                "GenXBrowser requires conda for environment management.\n"
+                "Install conda from: https://docs.conda.io/en/latest/miniconda.html\n\n"
+                "Or use the --system flag to install to system Python (not recommended)."
+            )
+        )
+        reporter.add(result)
+        return None
+    
+    # Conda environment name and python path
+    env_name = "genxbrowser-backend"
+    
+    # Get conda environment path if it exists
+    conda_python = None
+    try:
+        result_info = subprocess.run(
+            ["conda", "info", "--envs"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10
+        )
+        
+        for line in result_info.stdout.split('\n'):
+            if env_name in line and not line.startswith('#'):
+                parts = line.split()
+                if len(parts) >= 2:
+                    env_path = Path(parts[-1])
+                    conda_python = env_path / "bin" / "python"
+                    if sys.platform == "win32":
+                        conda_python = env_path / "python.exe"
+                    break
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        pass
     
     if skip_setup:
-        if not venv_python.exists():
+        if conda_python is None or not conda_python.exists():
             result.error(
-                "Virtual environment does not exist",
-                suggestion="Run without --skip-setup first to create venv"
+                f"Conda environment '{env_name}' does not exist",
+                suggestion="Run without --skip-setup first to create the environment"
             )
             reporter.add(result)
             return None
         result.info("Skipping setup (--skip-setup)")
         reporter.add(result)
-        return venv_python
+        return conda_python
     
-    # Create venv if it doesn't exist
-    if not venv_dir.exists():
-        result.info("Creating Python virtual environment...")
+    # Create conda environment if it doesn't exist
+    if conda_python is None or not conda_python.exists():
+        result.info(f"Creating conda environment '{env_name}'...")
         reporter.add(result)
         reporter.print_summary()
         
-        try:
-            subprocess.run(
-                [sys.executable, "-m", "venv", str(venv_dir)],
-                check=True,
-                cwd=backend_dir,
-                capture_output=True,
-                text=True
-            )
-            result.success("Virtual environment created")
-        except subprocess.CalledProcessError as e:
+        success, error_msg, conda_python = _create_conda_env(env_name, backend_dir)
+        if not success:
             result.error(
-                f"Failed to create virtual environment: {e.stderr}",
-                suggestion="Ensure Python venv module is available"
+                "Failed to create conda environment",
+                suggestion=f"{error_msg}\n\nAlternatively, use --system flag (not recommended)."
             )
             reporter.add(result)
             return None
+        
+        result.success(f"Conda environment '{env_name}' created successfully")
     else:
-        result.info("Virtual environment already exists")
+        result.info(f"Conda environment '{env_name}' already exists")
     
     # Install/update requirements
     requirements_file = backend_dir / "requirements.txt"
@@ -227,7 +365,7 @@ def setup_backend(reporter: Reporter, skip_setup: bool = False) -> Path | None:
     
     try:
         subprocess.run(
-            [str(venv_python), "-m", "pip", "install", "-q", "-r", "requirements.txt"],
+            [str(conda_python), "-m", "pip", "install", "-q", "-r", "requirements.txt"],
             check=True,
             cwd=backend_dir,
             capture_output=True,
@@ -243,7 +381,7 @@ def setup_backend(reporter: Reporter, skip_setup: bool = False) -> Path | None:
         return None
     
     reporter.add(result)
-    return venv_python
+    return conda_python
 
 
 # ---------------------------------------------------------------------------

@@ -51,7 +51,7 @@ genxprep app config.yml
 ```
 
 This command automatically:
-- Creates a Python virtual environment for the backend
+- Creates a conda environment for the backend (`genxbrowser-backend`)
 - Installs all dependencies
 - Configures and starts both backend and frontend
 - Opens the app at **http://localhost:5173**

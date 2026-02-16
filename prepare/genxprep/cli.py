@@ -380,10 +380,11 @@ def build(config: str, verbose: bool, force: bool) -> None:
 
 @main.command()
 @click.argument("config", type=click.Path(exists=True, dir_okay=False))
-@click.option("--skip-setup", is_flag=True, help="Skip venv/npm install (faster restart).")
+@click.option("--skip-setup", is_flag=True, help="Skip conda env/npm install (faster restart).")
 @click.option("--backend-port", default=5000, show_default=True, help="Backend server port.")
 @click.option("--frontend-port", default=5173, show_default=True, help="Frontend dev server port.")
-def app(config: str, skip_setup: bool, backend_port: int, frontend_port: int) -> None:
+@click.option("--system", is_flag=True, help="Use system Python instead of conda environment (not recommended).")
+def app(config: str, skip_setup: bool, backend_port: int, frontend_port: int, system: bool) -> None:
     """Run GenXBrowser locally without Docker.
 
     Starts both backend (Flask) and frontend (Vite) development servers.
@@ -393,9 +394,14 @@ def app(config: str, skip_setup: bool, backend_port: int, frontend_port: int) ->
 
     \b
     Requirements:
-    - Python 3.10+ with venv module
+    - Conda (required - same as for GenXPrep installation)
     - Node.js with npm
     - You must run 'genxprep build CONFIG' first
+
+    \b
+    Backend Environment:
+    Creates a conda environment 'genxbrowser-backend' for the Flask backend.
+    Use --system to bypass conda (not recommended).
 
     \b
     Example workflow:
@@ -431,7 +437,7 @@ def app(config: str, skip_setup: bool, backend_port: int, frontend_port: int) ->
     
     # Setup backend (create venv, install dependencies)
     reporter.section("Setting up backend")
-    backend_python = setup_backend(reporter, skip_setup=skip_setup)
+    backend_python = setup_backend(reporter, skip_setup=skip_setup, use_system=system)
     if backend_python is None:
         reporter.print_all()
         reporter.print_summary()

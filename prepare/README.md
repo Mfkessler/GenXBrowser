@@ -47,8 +47,8 @@ genxprep app config.yml
 ```
 
 This automatically:
-- Creates a Python virtual environment for the backend
-- Installs backend dependencies
+- Creates a conda environment `genxbrowser-backend` for the backend
+- Installs backend dependencies into the conda environment
 - Installs frontend dependencies (npm)
 - Configures the frontend to connect to the local backend
 - Starts both backend (Flask) and frontend (Vite) servers
@@ -57,16 +57,28 @@ Access the application at `http://localhost:5173` (frontend automatically proxie
 
 Press **Ctrl+C** to stop both services.
 
+**Requirements:**
+- **Conda** is required (you already have it if you installed GenXPrep via `conda env create -f environment.yml`)
+- Node.js with npm
+
+If conda is not available, install it from: https://docs.conda.io/en/latest/miniconda.html
+
 **Faster restarts:**
 ```bash
 genxprep app config.yml --skip-setup
 ```
-Skips venv creation and dependency installation (use after first run).
+Skips conda environment creation and dependency installation (use after first run).
 
 **Custom ports:**
 ```bash
 genxprep app config.yml --backend-port 8000 --frontend-port 3000
 ```
+
+**Advanced: System-wide installation (not recommended):**
+```bash
+genxprep app config.yml --system
+```
+⚠️ Installs backend dependencies to your system Python instead of a conda environment. Only use this if you understand the implications.
 
 ---
 
@@ -178,7 +190,7 @@ genxprep app CONFIG [OPTIONS]       Run the application locally
 | `-v` / `--verbose` | Show detailed info messages (not just errors/warnings) |
 | `--force` | Overwrite existing output files (build command) |
 | `-o` / `--output` | Output path for `init` command (default: `config.yml`) |
-| `--skip-setup` | Skip venv/npm install for faster restart (app command) |
+| `--skip-setup` | Skip conda env/npm install for faster restart (app command) |
 | `--backend-port` | Backend server port (app command, default: 5000) |
 | `--frontend-port` | Frontend dev server port (app command, default: 5173) |
 

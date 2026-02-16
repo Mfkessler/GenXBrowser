@@ -52,9 +52,12 @@ This automatically sets up and starts the backend along with the frontend.
 
 ### Manual Development
 
+For manual backend development, use conda:
+
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+# Create conda environment
+conda create -n genxbrowser-backend python=3.12
+conda activate genxbrowser-backend
 pip install -r requirements.txt
 
 export H5AD_DATA_DIR=/path/to/your/h5ad/data
