@@ -620,13 +620,13 @@
             <div class="flex items-center mb-4">
               <input
                 type="range"
-                v-model.number="store.oraTopN"
+                v-model.number="localOraTopN"
                 min="10"
                 max="200"
                 step="10"
                 class="w-full mr-2"
               />
-              <span class="text-sm font-semibold text-primary-900 min-w-[3rem] text-right">{{ store.oraTopN }}</span>
+              <span class="text-sm font-semibold text-primary-900 min-w-[3rem] text-right">{{ localOraTopN }}</span>
             </div>
           </div>
           <div>
@@ -641,13 +641,13 @@
             <div class="flex items-center mb-4">
               <input
                 type="range"
-                v-model.number="store.oraMinCount"
+                v-model.number="localOraMinCount"
                 min="1"
                 max="20"
                 step="1"
                 class="w-full mr-2"
               />
-              <span class="text-sm font-semibold text-primary-900 min-w-[3rem] text-right">{{ store.oraMinCount }}</span>
+              <span class="text-sm font-semibold text-primary-900 min-w-[3rem] text-right">{{ localOraMinCount }}</span>
             </div>
           </div>
           <!-- Topological Filter (GO term specific) -->
@@ -742,7 +742,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineProps, defineEmits, inject, ref } from "vue";
+import { computed, defineProps, defineEmits, inject, ref, watch } from "vue";
 
 import { useVisualizationStore } from "@/stores/visualization";
 
@@ -829,6 +829,38 @@ const colIsOpen = ref(false);
 const tooltipIsOpen = ref(false);
 const oraIsOpen = ref(true); //DEBUG
 const oraTooltipIsOpen = ref(false);
+
+// Local reactive values for ORA sliders with debouncing
+const localOraTopN = ref(store.oraTopN);
+const localOraMinCount = ref(store.oraMinCount);
+
+// Debounce timers
+let oraTopNTimer: ReturnType<typeof setTimeout> | null = null;
+let oraMinCountTimer: ReturnType<typeof setTimeout> | null = null;
+
+// Watch local slider values and debounce updates to store
+watch(localOraTopN, (newValue) => {
+  if (oraTopNTimer) clearTimeout(oraTopNTimer);
+  oraTopNTimer = setTimeout(() => {
+    store.oraTopN = newValue;
+  }, 300); // 300ms debounce delay
+});
+
+watch(localOraMinCount, (newValue) => {
+  if (oraMinCountTimer) clearTimeout(oraMinCountTimer);
+  oraMinCountTimer = setTimeout(() => {
+    store.oraMinCount = newValue;
+  }, 300); // 300ms debounce delay
+});
+
+// Sync local values when store values change externally (e.g., from reset)
+watch(() => store.oraTopN, (newValue) => {
+  localOraTopN.value = newValue;
+});
+
+watch(() => store.oraMinCount, (newValue) => {
+  localOraMinCount.value = newValue;
+});
 
 // Check if ORA column is a GO term column
 const isGoTermColumn = computed(() => {
