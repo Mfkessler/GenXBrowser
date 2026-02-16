@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "genxprep"
+version = "0.1.0"
+description = "Data preparation CLI for GenXBrowser – validate and convert raw expression data to H5AD format."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.12"
+dependencies = [
+    "click>=8.1",
+    "pyyaml>=6.0",
+    "pandas>=2.1",
+    "anndata>=0.10",
+    "rich>=13.0",
+    "biopython>=1.83",
+    "scipy>=1.12",
+]
+
+[project.scripts]
+genxprep = "genxprep.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["genxprep*"]

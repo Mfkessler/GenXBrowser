@@ -50,3 +50,7 @@ backend/guides/ORA_IMPLEMENTATION.md
 backend/guides/README_FRONTEND.md
 backend/guides/SAMPLE_METADATA_SUPPORT.md
 frontend/public/icpsr-logo-final.png
+
+# ---------- Prepare ----------
+prepare/output/
+prepare/config.yml
