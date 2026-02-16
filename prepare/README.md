@@ -43,8 +43,29 @@ This creates the `data/` directory with everything GenXBrowser needs.
 ### 5. Start GenXBrowser
 
 ```bash
-cd /path/to/GenXBrowser
-H5AD_DATA_DIR=/path/to/data docker compose up
+genxprep app config.yml
+```
+
+This automatically:
+- Creates a Python virtual environment for the backend
+- Installs backend dependencies
+- Installs frontend dependencies (npm)
+- Configures the frontend to connect to the local backend
+- Starts both backend (Flask) and frontend (Vite) servers
+
+Access the application at `http://localhost:5173` (frontend automatically proxies API requests to `http://localhost:5000`).
+
+Press **Ctrl+C** to stop both services.
+
+**Faster restarts:**
+```bash
+genxprep app config.yml --skip-setup
+```
+Skips venv creation and dependency installation (use after first run).
+
+**Custom ports:**
+```bash
+genxprep app config.yml --backend-port 8000 --frontend-port 3000
 ```
 
 ---
@@ -132,8 +153,9 @@ data/
 │   │   ├── AC.RNA.fas            ← RNA sequences
 │   │   └── ...
 │   └── Resolved_Gene_Trees.txt   ← Phylogenetic trees
-├── genxbrowser_config.yaml       ← Frontend configuration
-└── docker-compose.override.yml   ← Docker mount instructions
+├── config/
+│   └── project_config.json       ← Auto-generated backend config
+└── genxbrowser_config.yaml       ← Frontend configuration
 ```
 
 ---
@@ -141,11 +163,12 @@ data/
 ## CLI Reference
 
 ```
-genxprep --help                  Show help
-genxprep --version               Show version
-genxprep init [-o FILE]          Generate template config.yml
-genxprep validate CONFIG         Validate without building
-genxprep build CONFIG [--force]  Validate + build + export
+genxprep --help                     Show help
+genxprep --version                  Show version
+genxprep init [-o FILE]             Generate template config.yml
+genxprep validate CONFIG            Validate without building
+genxprep build CONFIG [--force]     Validate + build + export
+genxprep app CONFIG [OPTIONS]       Run the application locally
 ```
 
 ### Flags
@@ -153,8 +176,11 @@ genxprep build CONFIG [--force]  Validate + build + export
 | Flag | Description |
 |------|-------------|
 | `-v` / `--verbose` | Show detailed info messages (not just errors/warnings) |
-| `--force` | Overwrite existing output files |
+| `--force` | Overwrite existing output files (build command) |
 | `-o` / `--output` | Output path for `init` command (default: `config.yml`) |
+| `--skip-setup` | Skip venv/npm install for faster restart (app command) |
+| `--backend-port` | Backend server port (app command, default: 5000) |
+| `--frontend-port` | Frontend dev server port (app command, default: 5173) |
 
 ---
 

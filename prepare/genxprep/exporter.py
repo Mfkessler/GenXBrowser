@@ -1,6 +1,6 @@
 """Exporter – writes H5AD files and supplementary data to the output directory.
 
-Creates the directory structure expected by the GenXBrowser Docker setup::
+Creates the directory structure expected by GenXBrowser::
 
     <output_dir>/
     ├── <CODE>/
@@ -138,40 +138,3 @@ visualization:
         reporter.new("Frontend config").success(f"Written: {cfg_path}")
     except Exception as exc:
         reporter.new("Frontend config").error(f"Failed to write frontend config: {exc}")
-
-
-def write_docker_compose_snippet(
-    output_dir: Path,
-    reporter: Reporter,
-) -> None:
-    """Write a docker-compose.override.yml for easy startup."""
-    dst = output_dir / "docker-compose.override.yml"
-
-    content = f"""\
-# Docker Compose override to mount your prepared data.
-# Copy this file next to the GenXBrowser docker-compose.yml, or merge it.
-#
-# Usage:
-#   H5AD_DATA_DIR={output_dir.resolve()} docker compose up
-#
-# Or place this file alongside docker-compose.yml and run:
-#   docker compose up
-
-services:
-  backend:
-    environment:
-      - H5AD_DATA_DIR=/data
-      - GENE_TREES_PATH=/data/Metadata/Resolved_Gene_Trees.txt
-      - SEQUENCES_DIR=/data/Metadata/fas
-    volumes:
-      - {output_dir.resolve()}:/data
-
-  frontend:
-    volumes:
-      - {output_dir.resolve()}/genxbrowser_config.yaml:/usr/share/nginx/html/genxbrowser_config.yaml:ro
-"""
-    try:
-        dst.write_text(content)
-        reporter.new("Docker config").success(f"Written: {dst}")
-    except Exception as exc:
-        reporter.new("Docker config").error(f"Failed to write Docker override: {exc}")
