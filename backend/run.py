@@ -2,7 +2,7 @@
 """
 H5AD Backend Entry Point
 ========================
-Simple entry point for Gunicorn or direct execution.
+Entry point for Flask development server.
 """
 
 from app import create_app

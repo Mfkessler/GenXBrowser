@@ -315,7 +315,6 @@ def build(config: str, verbose: bool, force: bool) -> None:
         export_sequences,
         copy_gene_trees_file,
         write_frontend_config,
-        write_docker_compose_snippet,
     )
 
     output_dir = cfg.output_dir
@@ -359,7 +358,6 @@ def build(config: str, verbose: bool, force: bool) -> None:
         copy_gene_trees_file(cfg.global_metadata.gene_trees, output_dir, reporter)
 
     write_frontend_config(cfg, output_dir, reporter)
-    write_docker_compose_snippet(output_dir, reporter)
 
     # Final summary
     reporter.print_all()
@@ -371,10 +369,93 @@ def build(config: str, verbose: bool, force: bool) -> None:
 
     reporter.console.print(
         f"\n[bold green]Done![/bold green] Output written to: [bold]{output_dir.resolve()}[/bold]\n\n"
-        f"To start GenXBrowser with your data:\n"
-        f"  [dim]cd /path/to/GenXBrowser[/dim]\n"
-        f"  [bold]H5AD_DATA_DIR={output_dir.resolve()} docker compose up[/bold]\n"
+        f"To start GenXBrowser:\n"
+        f"  [bold]genxprep app {config}[/bold]\n"
     )
+
+
+# ======================================================================
+# app – run locally without Docker
+# ======================================================================
+
+@main.command()
+@click.argument("config", type=click.Path(exists=True, dir_okay=False))
+@click.option("--skip-setup", is_flag=True, help="Skip conda env/npm install (faster restart).")
+@click.option("--backend-port", default=5000, show_default=True, help="Backend server port.")
+@click.option("--frontend-port", default=5173, show_default=True, help="Frontend dev server port.")
+@click.option("--system", is_flag=True, help="Use system Python instead of conda environment (not recommended).")
+def app(config: str, skip_setup: bool, backend_port: int, frontend_port: int, system: bool) -> None:
+    """Run GenXBrowser locally without Docker.
+
+    Starts both backend (Flask) and frontend (Vite) development servers.
+    Press Ctrl+C to stop both services.
+
+    CONFIG is the path to your config.yml file (same as used for build).
+
+    \b
+    Requirements:
+    - Conda (required - same as for GenXPrep installation)
+    - Node.js with npm
+    - You must run 'genxprep build CONFIG' first
+
+    \b
+    Backend Environment:
+    Creates a conda environment 'genxbrowser-backend' for the Flask backend.
+    Use --system to bypass conda (not recommended).
+
+    \b
+    Example workflow:
+      genxprep build config.yml       # Generate H5AD files
+      genxprep app config.yml         # Start local servers
+    """
+    from genxprep.config import load_config
+    from genxprep.app_runner import (
+        validate_build_outputs,
+        setup_backend,
+        setup_frontend,
+        start_services,
+    )
+
+    reporter = Reporter(verbose=False)
+    
+    # Load configuration
+    try:
+        cfg = load_config(Path(config), reporter)
+        if cfg is None:
+            reporter.print_all()
+            reporter.print_summary()
+            sys.exit(1)
+    except Exception as e:
+        reporter.console.print(f"[red]Failed to load config:[/red] {e}", err=True)
+        sys.exit(1)
+    
+    # Validate build outputs exist
+    reporter.section("Checking build outputs")
+    if not validate_build_outputs(cfg, reporter):
+        sys.exit(1)
+    reporter.print_all()
+    
+    # Setup backend (create venv, install dependencies)
+    reporter.section("Setting up backend")
+    backend_python = setup_backend(reporter, skip_setup=skip_setup, use_system=system)
+    if backend_python is None:
+        reporter.print_all()
+        reporter.print_summary()
+        sys.exit(1)
+    reporter.print_all()
+    
+    # Setup frontend (npm install, create vite.config.local.ts)
+    reporter.section("Setting up frontend")
+    if not setup_frontend(reporter, backend_port=backend_port, skip_setup=skip_setup):
+        reporter.print_all()
+        reporter.print_summary()
+        sys.exit(1)
+    reporter.print_all()
+    
+    # Start both services
+    reporter.section("Starting services")
+    exit_code = start_services(cfg, reporter, backend_python, backend_port, frontend_port)
+    sys.exit(exit_code)
 
 
 # ======================================================================

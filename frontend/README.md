@@ -10,21 +10,22 @@
 
 ## Quick Start
 
-### Docker (via root docker-compose.yml)
+### Via GenXPrep (Recommended)
 
 ```bash
-cd ..  # GenXBrowser root
-docker compose up -d --build
-# Frontend available at http://localhost
+cd ../prepare
+genxprep app config.yml
 ```
 
-### Local Development
+This automatically sets up and starts the frontend along with the backend.
+
+### Manual Development
 
 ```bash
 npm install
 npm run dev
 # Frontend available at http://localhost:5173
-# API requests are proxied to http://backend:5000
+# API requests are proxied to http://localhost:5000
 ```
 
 ## Scripts
@@ -54,19 +55,9 @@ npm run dev
 
 ## Configuration
 
-### Environment Variables (Build-Time)
-
-Set via `.env` file or Docker build args:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `VITE_BASE_URL` | `/` | Base path for the app (e.g. `/genxbrowser/`) |
-| `VITE_API_BASE_URL` | `/api` | Backend API base URL |
-| `VITE_DATA_TYPE` | `Genes` | Terminology: `Genes` or `Isoforms` |
-
 ### Frontend Config (`public/genxbrowser_config.yaml`)
 
-Controls branding, feature access, and visualization settings. The config is loaded **at runtime** (not baked into the build), so each deployment can mount its own config without rebuilding:
+Controls branding, feature access, and visualization settings. The config is loaded **at runtime** (not baked into the build):
 
 ```yaml
 corporate_identity:
@@ -83,15 +74,6 @@ visualization:
   hide_columns:                       # Columns hidden from heatmap (saves RAM)
     - rna_seq
     - newick_str
-```
-
-**Per-deployment customization** (Docker):
-
-```yaml
-# In your docker-compose.yml, mount your own config and logo:
-volumes:
-  - ./my_config.yaml:/usr/share/nginx/html/genxbrowser_config.yaml:ro
-  - ./my_logo.png:/usr/share/nginx/html/my_logo.png:ro
 ```
 
 ### Assets
@@ -190,8 +172,6 @@ frontend/
 ├── public/
 │   ├── genxbrowser_config.yaml # Frontend configuration (loaded at runtime)
 │   └── about.md                # About page content (Markdown)
-├── nginx.conf                  # Production Nginx config
-├── Dockerfile                  # Multi-stage build (Node → Nginx)
 ├── vite.config.ts              # Vite configuration
 ├── package.json
 └── tsconfig.json
@@ -218,12 +198,3 @@ frontend/
 [VSCode](https://code.visualstudio.com/) + [Vue - Official](https://marketplace.visualstudio.com/items?itemName=Vue.volar) extension (replaces Vetur).
 
 `vue-tsc` is used instead of `tsc` for type checking `.vue` files.
-
-## Deployment
-
-The Dockerfile uses a multi-stage build:
-
-1. **Build stage** (`node:20-alpine`): Installs deps, sets build args, runs `npm run build-only`
-2. **Production stage** (`nginx:stable-alpine`): Serves static assets, reverse-proxies `/api/*` to the backend
-
-Nginx handles SPA routing (`try_files ... /index.html`), gzip compression, and API proxying.

@@ -15,18 +15,18 @@ This backend implements a RESTful API for accessing multi-species gene expressio
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Nginx (Frontend)                         │
-│              Reverse-proxies /api/* → backend               │
-└─────────────────────┬────────────────┬──────────────────────┘
-                      │                │
-              /api/*  │        /       │  (static SPA)
-                      ▼                ▼
-┌──────────────────────────┐  ┌────────────────────────┐
-│  Backend                 │  │  Vue Frontend          │
-│  Flask + Gunicorn        │  │  Static Assets         │
-│  (gthread worker)        │  │                        │
-└───────────┬──────────────┘  └────────────────────────┘
+┌─────────────────────────────────────────────┐
+│           Frontend (Vite Dev Server)        │
+│         Proxies /api/* → localhost:5000     │
+└─────────────────┬───────────────────────────┘
+                  │
+          /api/*  │
+                  ▼
+┌──────────────────────────┐
+│  Backend                 │
+│  Flask (Development)     │
+│  Port 5000               │
+└───────────┬──────────────┘
             │
             ▼
 ┌──────────────────────────┐
@@ -41,18 +41,23 @@ This backend implements a RESTful API for accessing multi-species gene expressio
 
 ## Quick Start
 
-### Docker (via root docker-compose.yml)
+### Via GenXPrep (Recommended)
 
 ```bash
-cd ..  # GenXBrowser root
-docker compose up -d --build
+cd ../prepare
+genxprep app config.yml
 ```
 
-### Local Development
+This automatically sets up and starts the backend along with the frontend.
+
+### Manual Development
+
+For manual backend development, use conda:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+# Create conda environment
+conda create -n genxbrowser-backend python=3.12
+conda activate genxbrowser-backend
 pip install -r requirements.txt
 
 export H5AD_DATA_DIR=/path/to/your/h5ad/data
@@ -136,9 +141,6 @@ POST /api/data
 | `CACHE_MAX_SIZE_MB` | LRU cache size in MB | `2048` |
 | `GO_OBO_PATH` | Path to Gene Ontology OBO file | `<H5AD_DATA_DIR>/go-basic.obo` |
 | `GO_AUTO_DOWNLOAD` | Auto-download GO OBO if missing | `true` |
-| `GUNICORN_WORKERS` | Number of Gunicorn workers | `1` |
-| `GUNICORN_THREADS` | Threads per worker | `8` |
-| `GUNICORN_TIMEOUT` | Request timeout in seconds | `120` |
 
 ### Auto-Discovery
 
@@ -167,8 +169,6 @@ backend/
 │   │   └── storage.py         # Content-addressed filter storage
 │   └── search/
 │       └── go_service.py      # Gene Ontology service (OBO parsing)
-├── Dockerfile
-├── gunicorn.conf.py           # Production server settings
 ├── requirements.txt
 └── run.py                     # Application entry point
 ```
@@ -176,7 +176,6 @@ backend/
 ## Core Dependencies
 
 - **Flask + Flask-CORS**: Web framework
-- **Gunicorn**: Production WSGI server (gthread worker)
 - **AnnData + h5py**: H5AD file format support
 - **Pandas / NumPy**: Data manipulation
 - **SciPy**: ORA (Fisher's exact test) and hierarchical clustering
@@ -186,7 +185,6 @@ backend/
 
 ## Performance
 
-- **Single worker + multiple threads**: All threads share the same in-memory H5AD cache, avoiding redundant file loading (recommended for <10 concurrent users)
-- **LRU Cache**: Configurable memory limit for loaded AnnData objects
+- **In-memory LRU Cache**: Configurable memory limit for loaded AnnData objects
 - **Lazy Loading**: Species datasets loaded on first request only
 - **Direct File Access**: Reads H5AD files directly — no database needed
