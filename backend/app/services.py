@@ -12,6 +12,7 @@ import os
 import logging
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple, Set
+import re
 
 import numpy as np
 import pandas as pd
@@ -25,6 +26,98 @@ from h5ad_lib.filters.storage import FilterStore
 from .module_enrichment import module_enrichment_transform
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Species Photo Utilities
+# ============================================================================
+
+def fuzzy_match_photo(species_name: str, photo_files: List[str]) -> Optional[str]:
+    """
+    Match species name to photo filename using fuzzy matching.
+    
+    Algorithm:
+    1. Normalize both species name and filenames (lowercase, remove spaces/underscores)
+    2. Calculate character overlap
+    3. Return best match if overlap is significant (>70% of shorter string)
+    
+    Args:
+        species_name: Species table name (e.g., 'capnoides_sempervirens')
+        photo_files: List of photo filenames (e.g., ['capnoides_sempervirens.jpg'])
+    
+    Returns:
+        Matching filename or None
+    """
+    def normalize(s: str) -> str:
+        """Remove extension, lowercase, remove non-alphanumeric."""
+        s = s.lower()
+        # Remove file extension
+        s = re.sub(r'\.[^.]+$', '', s)
+        # Keep only alphanumeric characters
+        s = re.sub(r'[^a-z0-9]', '', s)
+        return s
+    
+    normalized_species = normalize(species_name)
+    
+    best_match = None
+    best_score = 0
+    
+    for photo_file in photo_files:
+        normalized_photo = normalize(photo_file)
+        
+        # Calculate character overlap
+        common_chars = sum(1 for c in normalized_species if c in normalized_photo)
+        shorter_len = min(len(normalized_species), len(normalized_photo))
+        
+        if shorter_len == 0:
+            continue
+        
+        score = common_chars / shorter_len
+        
+        # Bonus for exact prefix match
+        if normalized_photo.startswith(normalized_species) or normalized_species.startswith(normalized_photo):
+            score += 0.2
+        
+        if score > best_score:
+            best_score = score
+            best_match = photo_file
+    
+    # Return match only if score is high enough (70% overlap)
+    if best_score >= 0.7:
+        return best_match
+    
+    return None
+
+
+def detect_species_photos(photos_dir: str) -> Dict[str, str]:
+    """
+    Scan photos directory and return dict of available photos.
+    
+    Args:
+        photos_dir: Path to species photos directory
+    
+    Returns:
+        Dict mapping normalized names to filenames
+    """
+    if not os.path.exists(photos_dir):
+        logger.info(f"Species photos directory not found: {photos_dir}")
+        return {}
+    
+    supported_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
+    photo_files = []
+    
+    try:
+        for filename in os.listdir(photos_dir):
+            ext = os.path.splitext(filename)[1].lower()
+            if ext in supported_extensions:
+                photo_files.append(filename)
+        
+        logger.info(f"Found {len(photo_files)} photos in {photos_dir}: {photo_files}")
+        return photo_files
+    
+    except Exception as e:
+        logger.error(f"Error scanning photos directory: {e}")
+        return []
 
 
 # ============================================================================
@@ -282,6 +375,10 @@ class GenXBrowserService:
         self.sequences = SequenceStore(self.config['sequences_dir'])
         self.filter_store = FilterStore(path=self.config['filter_store_path'])
         
+        # Species photos detection
+        photos_dir = os.environ.get('SPECIES_PHOTOS_DIR', '/data/species_photos')
+        self._available_photos = detect_species_photos(photos_dir)
+        
         # Load mappings from config
         self._column_mappings = self.config_manager.get_column_mappings()
         self._reverse_column_mappings = {v: k for k, v in self._column_mappings.items()}
@@ -441,11 +538,19 @@ class GenXBrowserService:
                 if not any(t.lower() in [s.lower() for s in species_tags] for t in tags):
                     continue
             
+            # Try to match a photo for this species
+            matched_photo = None
+            if self._available_photos:
+                matched_photo = fuzzy_match_photo(full_name, self._available_photos)
+                if matched_photo:
+                    logger.debug(f"Matched photo '{matched_photo}' for species '{full_name}'")
+            
             tables.append({
                 'table_name': full_name,
                 'description': '',
                 'count': adata.n_vars,
                 'tags': species_tags,
+                'photo': matched_photo,  # Photo filename or None
                 '_species_code': code,
                 '_tissue_count': tissue_count,
                 '_enabled': is_enabled,  # Add enabled status

@@ -105,6 +105,45 @@ frontend:
 | `VITE_BASE_URL` | `/` | Base path for the app (build-time) |
 | `VITE_API_BASE_URL` | `/api` | Frontend API base URL (build-time) |
 | `VITE_DATA_TYPE` | `Genes` | Display label — `Genes` or `Isoforms` |
+| `VITE_PHOTO_DISPLAY_MODE` | `circular` | Species photo display mode (`circular` or `watermark`) |
+| `SPECIES_PHOTOS_DIR` | `/data/species_photos` | Directory containing species photos |
+
+### Species Photos (Optional)
+
+GenXBrowser supports displaying species photos in catalog cards. Photos are automatically matched to species using fuzzy name matching.
+
+**Setup:**
+
+1. **Prepare photos** — PNG, JPEG, or WebP files.
+2. **Name photos** — Match species names (e.g., `capnoides_sempervirens.jpg` for "Capnoides sempervirens")
+3. **Mount photos directory** — Add volume mount in your `docker-compose.yml`:
+
+```yaml
+services:
+  backend:
+    volumes:
+      - ./photos:/data/species_photos:ro  # Backend serves photos
+    environment:
+      - SPECIES_PHOTOS_DIR=/data/species_photos
+  
+  frontend:
+    build:
+      args:
+        VITE_PHOTO_DISPLAY_MODE: circular  # or "watermark"
+```
+
+**Display Modes:**
+
+- **`circular`** (default) — 64×64px circular thumbnail left of species name
+- **`watermark`** — Subtle grayscale watermark in top-right corner
+
+**Fallback:** If no photo is found, a colored placeholder with species initials is generated automatically.
+
+**Photo Requirements:**
+
+- Supported formats: JPG, JPEG, PNG, GIF, WebP
+- Naming: Lowercase, underscores (e.g., `species_name.jpg`)
+- Recommended size: 256×256px minimum
 
 ### H5AD File Requirements
 
@@ -164,6 +203,7 @@ The `.h5ad` file should contain:
 | GET | `/api/go/status` | GO service status |
 | POST | `/api/ora` | Over-representation analysis |
 | POST | `/api/cluster` | Server-side hierarchical clustering |
+| GET | `/api/species_photos/<filename>` | Serve species photo images |
 | GET | `/health` | Health check |
 
 ### Admin API (`/api/admin`)

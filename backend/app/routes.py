@@ -5,10 +5,11 @@ Compatible with the existing GenXBrowser frontend (butterfly API).
 Matches the exact parameter names and response formats expected by the frontend.
 """
 
-from flask import Blueprint, jsonify, request, current_app
+from flask import Blueprint, jsonify, request, current_app, send_from_directory
 from marshmallow import Schema, fields, validate, post_load, validates_schema, ValidationError
 import numpy as np
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -450,6 +451,21 @@ def list_tables():
         return jsonify({"error": "Validation error", "details": err.messages}), 400
     except Exception as e:
         return jsonify({"error": "Unexpected server error", "details": str(e)}), 500
+
+
+@api_bp.route('/api/species_photos/<path:filename>', methods=['GET'])
+def get_species_photo(filename):
+    """Serve species photos from the photos directory."""
+    try:
+        photos_dir = os.environ.get('SPECIES_PHOTOS_DIR', '/data/species_photos')
+        if not os.path.exists(photos_dir):
+            return jsonify({"error": "Photos directory not found"}), 404
+        return send_from_directory(photos_dir, filename)
+    except FileNotFoundError:
+        return jsonify({"error": "Photo not found"}), 404
+    except Exception as e:
+        logger.error(f"Error serving photo {filename}: {e}")
+        return jsonify({"error": "Error serving photo"}), 500
 
 
 # ============================================================================

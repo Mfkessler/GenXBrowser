@@ -36,53 +36,76 @@
       </div>
     </div>
 
-    <div class="flex-1 pr-8">
-      <h2
-        class="text-lg italic font-semibold text-gray-700 w-full flex items-center"
-      >
-        {{ beautifyLabel(tableName) }}
-      </h2>
-      <p :class="['text-gray-400 text-sm transition-colors duration-500', countFlash ? 'count-flash' : '']"><b>Count: </b>{{ displayCount }}</p>
-      <div class="flex items-center">
-        <p :class="['text-gray-400 text-sm transition-colors duration-500', tissueFlash ? 'count-flash' : '']">
-          <b>Tissues: </b>{{ tissues }}
-        </p>
+    <div class="flex-1">
+      <!-- Species Photo + Title (Circular Mode) -->
+      <div v-if="photoDisplayMode === 'circular'" class="flex flex-col items-center sm:relative mb-2">
+        <!-- Photo: centered on mobile, absolute left on desktop -->
+        <img 
+          :src="displayPhotoUrl" 
+          :alt="tableName"
+          class="w-30 h-30 mb-3 sm:mb-0 sm:absolute sm:left-0 sm:top-0 rounded-full object-contain bg-black border-2 border-primary-900 flex-shrink-0 cursor-pointer hover:border-primary-700 transition-colors"
+          :class="{ 'opacity-50': photoLoading }"
+          @click.stop="openPhotoModal"
+        />
+        <!-- Text content: full width centered on mobile, full width on desktop -->
+        <div class="flex flex-col items-center w-full">
+          <h2 class="text-lg italic font-semibold text-gray-700 text-center mb-1">
+            {{ beautifyLabel(tableName) }}
+          </h2>
+          <p :class="['text-gray-400 text-sm transition-colors duration-500 text-center', countFlash ? 'count-flash' : '']"><b>Count: </b>{{ displayCount }}</p>
+          <div class="flex items-center justify-center">
+            <p :class="['text-gray-400 text-sm transition-colors duration-500', tissueFlash ? 'count-flash' : '']">
+              <b>Tissues: </b>{{ tissues }}
+            </p>
+            <!-- Help Icon -->
+            <div
+              class="relative inline-block ml-1.5"
+              v-tooltip:bottom="tissueTypes && tissueTypes.length > 0 ? 'Tissue types: ' + tissueTypes.join(', ') : (tissueTypes && tissueTypes.length === 0 ? 'No tissues match current filters' : 'Loading...')"
+            >
+              <div
+                class="w-3.5 h-3.5 rounded-full bg-gray-400 text-white font-bold text-[10px] flex items-center justify-center cursor-pointer"
+              >
+                ?
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Title Only (Watermark Mode) -->
+      <div v-else>
+        <h2 class="text-lg italic font-semibold text-gray-700 w-full flex items-center mb-1">
+          {{ beautifyLabel(tableName) }}
+        </h2>
+        <p :class="['text-gray-400 text-sm transition-colors duration-500', countFlash ? 'count-flash' : '']"><b>Count: </b>{{ displayCount }}</p>
+        <div class="flex items-center">
+          <p :class="['text-gray-400 text-sm transition-colors duration-500', tissueFlash ? 'count-flash' : '']">
+            <b>Tissues: </b>{{ tissues }}
+          </p>
 
-        <!-- Help Icon -->
-        <div
-          class="relative inline-block ml-1.5"
-          v-tooltip:bottom="tissueTypes && tissueTypes.length > 0 ? 'Tissue types: ' + tissueTypes.join(', ') : (tissueTypes && tissueTypes.length === 0 ? 'No tissues match current filters' : 'Loading...')"
-        >
+          <!-- Help Icon -->
           <div
-            class="w-3.5 h-3.5 rounded-full bg-gray-400 text-white font-bold text-[10px] flex items-center justify-center cursor-pointer"
+            class="relative inline-block ml-1.5"
+            v-tooltip:bottom="tissueTypes && tissueTypes.length > 0 ? 'Tissue types: ' + tissueTypes.join(', ') : (tissueTypes && tissueTypes.length === 0 ? 'No tissues match current filters' : 'Loading...')"
           >
-            ?
+            <div
+              class="w-3.5 h-3.5 rounded-full bg-gray-400 text-white font-bold text-[10px] flex items-center justify-center cursor-pointer"
+            >
+              ?
+            </div>
           </div>
         </div>
       </div>
-      <div v-if="tagItems.length > 0" class="flex flex-nowrap gap-1.5 mt-2 overflow-hidden max-h-7 items-center">
-        <template v-for="(tag, idx) in visibleTags" :key="tag">
-          <div
-            :class="[
-              'flex items-center border-1 text-xs font-medium px-2 py-0.5 rounded-full whitespace-nowrap shrink-0 cursor-pointer transition-all duration-300',
-              props.highlightedTag === tag
-                ? 'border-primary-500 bg-primary-500 text-white shadow-lg scale-110 tag-pulse'
-                : 'border-primary-900 bg-primary-100 text-primary-900 hover:bg-primary-200'
-            ]"
-            @click.stop="highlightTag(tag)"
-          >
-            {{ tag }}
-          </div>
-        </template>
-        <div
-          v-if="hiddenTags.length > 0"
-          class="flex items-center border-1 border-gray-400 bg-gray-100 text-gray-500 text-xs font-medium px-2 py-0.5 rounded-full whitespace-nowrap shrink-0 cursor-default"
-          v-tooltip="hiddenTags.join(', ')"
-          @click.stop
-        >
-          +{{ hiddenTags.length }} more
-        </div>
-      </div>
+      
+      <!-- Watermark Photo (positioned absolutely in top-right) -->
+      <img 
+        v-if="photoDisplayMode === 'watermark'"
+        :src="displayPhotoUrl" 
+        :alt="tableName"
+        class="absolute top-3 right-12 w-24 h-24 object-contain opacity-20 grayscale pointer-events-none"
+        :class="{ 'opacity-10': photoLoading }"
+      />
+      
       <!-- Data action buttons -->
       <div class="flex justify-center gap-2 mt-3">
         <!-- Filter Transcript IDs Button (Purple) -->
@@ -195,6 +218,30 @@
         </button>
         </span>
       </div>
+      
+      <div v-if="tagItems.length > 0" class="flex flex-wrap gap-1.5 mt-2 overflow-hidden max-h-7 items-center justify-center">
+        <template v-for="(tag, idx) in visibleTags" :key="tag">
+          <div
+            :class="[
+              'flex items-center border-1 text-xs font-medium px-2 py-0.5 rounded-full whitespace-nowrap shrink-0 cursor-pointer transition-all duration-300',
+              props.highlightedTag === tag
+                ? 'border-primary-500 bg-primary-500 text-white shadow-lg scale-110 tag-pulse'
+                : 'border-primary-900 bg-primary-100 text-primary-900 hover:bg-primary-200'
+            ]"
+            @click.stop="highlightTag(tag)"
+          >
+            {{ tag }}
+          </div>
+        </template>
+        <div
+          v-if="hiddenTags.length > 0"
+          class="flex items-center border-1 border-gray-400 bg-gray-100 text-gray-500 text-xs font-medium px-2 py-0.5 rounded-full whitespace-nowrap shrink-0 cursor-default"
+          v-tooltip="hiddenTags.join(', ')"
+          @click.stop
+        >
+          +{{ hiddenTags.length }} more
+        </div>
+      </div>
 
       <!-- Per-dataset ID filter chips -->
       <div v-if="datasetIdPills.length > 0" class="flex flex-wrap gap-1 mt-2 items-center" @click.stop>
@@ -241,6 +288,41 @@
         @close="showBatchModal = false"
         @apply-filters="onBatchIdFiltersApplied"
       />
+      
+      <!-- Photo Modal -->
+      <div
+        v-if="showPhotoModal"
+        class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-75"
+        @click="closePhotoModal"
+      >
+        <div class="relative max-w-4xl max-h-[90vh] bg-white rounded-2xl shadow-2xl overflow-hidden" @click.stop>
+          <!-- Close Button -->
+          <button
+            class="absolute top-4 right-4 z-10 w-10 h-10 flex items-center justify-center rounded-full bg-white/90 hover:bg-white text-gray-600 hover:text-gray-900 shadow-lg transition-all"
+            @click="closePhotoModal"
+            aria-label="Close"
+          >
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+          </button>
+          
+          <!-- Photo -->
+          <div class="p-8">
+            <img 
+              :src="displayPhotoUrl" 
+              :alt="beautifyLabel(tableName)"
+              class="max-w-full max-h-[calc(90vh-8rem)] mx-auto rounded-xl shadow-xl"
+            />
+            <!-- Caption -->
+            <div class="mt-4 text-center">
+              <h3 class="text-xl font-semibold text-gray-800 italic">
+                {{ beautifyLabel(tableName) }}
+              </h3>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -254,6 +336,7 @@ import {useFiltersStore} from "@/stores/filters";
 import {useColumnsStore} from "@/stores/columns";
 import {beautifyLabel} from "@/shared/utils";
 import BatchInputModal from "./BatchInputModal.vue";
+import { getProcessedPhoto, generateInitialsPlaceholder } from "@/utils/imageProcessor";
 
 const filtersStore = useFiltersStore();
 const {filters} = storeToRefs(filtersStore);
@@ -261,11 +344,15 @@ const columnsStore = useColumnsStore();
 
 const config = inject("config") as Config;
 
+// Photo display mode from environment variable
+const photoDisplayMode = import.meta.env.VITE_PHOTO_DISPLAY_MODE || 'circular';
+
 const props = defineProps<{
   tableName: string;
   dataPoints: number;
   description: string;
   tags: string[];
+  photo?: string;  // Photo filename from API
   tissueCount?: number;
   selected: boolean;
   highlightedTag?: string | null;
@@ -282,6 +369,12 @@ const hasCalculatedTissues = ref(false);
 const showBatchModal = ref(false);
 const countFlash = ref(false);
 const tissueFlash = ref(false);
+
+// Species photo state
+const photoUrl = ref<string | null>(null);
+const photoLoading = ref(false);
+const photoError = ref(false);
+const showPhotoModal = ref(false);
 
 // Track "last settled" values so we only flash on real changes, not on
 // initial mount, loading transitions, or route-back re-renders.
@@ -317,6 +410,36 @@ const tissues = computed(() => {
   if (n_tissues.value !== null) return n_tissues.value;
   return 0;
 });
+
+// Photo URL: processed photo or initials placeholder
+const displayPhotoUrl = computed(() => {
+  if (photoError.value || !props.photo) {
+    // Generate initials placeholder
+    return generateInitialsPlaceholder(props.tableName, 64);
+  }
+  return photoUrl.value || generateInitialsPlaceholder(props.tableName, 64);
+});
+
+// Load and process photo on mount
+watch(() => props.photo, async (newPhoto) => {
+  if (!newPhoto) {
+    photoUrl.value = null;
+    return;
+  }
+  
+  photoLoading.value = true;
+  photoError.value = false;
+  
+  try {
+    const processed = await getProcessedPhoto(newPhoto, API_BASE_URL);
+    photoUrl.value = processed;
+  } catch (error) {
+    console.error(`Failed to load photo for ${props.tableName}:`, error);
+    photoError.value = true;
+  } finally {
+    photoLoading.value = false;
+  }
+}, { immediate: true });
 
 function highlightTag(tag: string) {
   emit("highlight-tag", tag);
@@ -363,6 +486,16 @@ function removeIdPill(pill: string) {
 
 function clearDatasetIdFilter() {
   filtersStore.removeDatasetIdFilter(props.tableName);
+}
+
+function openPhotoModal() {
+  if (!photoError.value && props.photo) {
+    showPhotoModal.value = true;
+  }
+}
+
+function closePhotoModal() {
+  showPhotoModal.value = false;
 }
 
 async function calculate_tissues(tableName: string, filters: any) {

@@ -43,6 +43,7 @@
         :data-points="entry.count"
         :description="entry.description"
         :tags="entry.tags"
+        :photo="entry.photo"
         :tissue-count="entry._tissue_count"
         :selected="catalogStore.isSelected(entry.table_name)"
         :highlighted-tag="highlightedTag"

@@ -54,3 +54,5 @@ frontend/public/icpsr-logo-final.png
 # ---------- Prepare ----------
 prepare/output/
 prepare/config.yml
+backend/.github/copilot-instructions.md
+frontend/.github/copilot-instructions.md
