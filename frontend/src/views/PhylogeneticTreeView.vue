@@ -46,6 +46,7 @@
           :table-name="tableName"
           :existing-tables="allTableNamesFromRoute"
           :all-tables="allTables"
+          :species-code-map="speciesCodeMap"
           :hash-loading="hashLoading"
           :initial-orthogroup="initialOrthogroup"
           @openSettingsOverlay="openSettingsOverlay"
@@ -83,6 +84,7 @@ const filtersStore = useFiltersStore();
 const visualizationStore = useVisualizationStore();
 
 const allTables = ref<Record<string, string>>({});
+const speciesCodeMap = ref<Record<string, string>>({});
 const showSettingsOverlay = ref(false);
 const phyloTreeRefs = ref<InstanceType<typeof PhylogeneticTree>[] | null>(null);
 const hashLoading = ref(true); // Prevent child from fetching until hash is loaded
@@ -206,6 +208,9 @@ onMounted(async () => {
 
   response.data.forEach((t) => {
     allTables.value[t.table_name] = beautifyLabel(t.table_name);
+    if (t._species_code) {
+      speciesCodeMap.value[t.table_name] = t._species_code;
+    }
   });
 });
 </script>

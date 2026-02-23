@@ -228,6 +228,7 @@ const props = defineProps<{
   tableName: string;
   existingTables: string[];
   allTables: Record<string, string>;
+  speciesCodeMap?: Record<string, string>; // table_name -> species_code (e.g., "arabidopsis_thaliana" -> "AT")
   hashLoading?: boolean; // True while parent is loading hash data
   initialOrthogroup?: string | null; // OG from hash load
 }>();
@@ -444,7 +445,7 @@ async function fetchAllSelected() {
   loading.value = false
 }
 
-function computeMetrics(dataRef: any, calcOption: string) {
+function computeMetrics(dataRef: any, calcOption: string, codeMap?: Record<string, string>) {
 
   return Object.fromEntries(
     Object.entries(dataRef.value).map(([groupName, groupVal]) => {
@@ -454,8 +455,10 @@ function computeMetrics(dataRef: any, calcOption: string) {
           ? groupVal.items
           : Object.values(groupVal?.items ?? {});
 
+      // Look up species code for this group (e.g., "AT" for "arabidopsis_thaliana")
+      const speciesCode = codeMap?.[groupName] ?? null
 
-      const perGene = Object.fromEntries(genes.map((gene) => {
+      const perGene = Object.fromEntries(genes.flatMap((gene) => {
           const tissueExpression = {}
           const normalizationTissue = {}
 
@@ -484,15 +487,23 @@ function computeMetrics(dataRef: any, calcOption: string) {
               }
             }
           )
+          const data = { tissueExpression, normalizationTissue }
+
           // Build full species name key to match newick leaf names
           // Format: "Capnoides_sempervirens_evm.model.ptg000011l.1659"
           // groupName is like "capnoides_sempervirens", gene.gene_id is like "evm.model.ptg000011l.1659"
-          // Only capitalize the first letter of the entire species name (Sentence_case)
           const speciesKey = groupName.charAt(0).toUpperCase() + groupName.slice(1)
-          return [`${speciesKey}_${gene.gene_id}`, {
-            tissueExpression,
-            normalizationTissue
-          }]
+          const fullNameKey = `${speciesKey}_${gene.gene_id}`
+
+          // Also register with species code prefix for datasets using short codes (e.g., "AT_AT5G62165...")
+          const entries: [string, typeof data][] = [[fullNameKey, data]]
+          if (speciesCode) {
+            const codeKey = `${speciesCode}_${gene.gene_id}`
+            if (codeKey !== fullNameKey) {
+              entries.push([codeKey, data])
+            }
+          }
+          return entries
         })
       )
       return [groupName, perGene]
@@ -598,7 +609,7 @@ async function initPhylotree(newick_str: string, metrics: any) {
   const container = phylotreeContainer.value
 
   const renderedTree = tree.render({
-    width: window.innerWidth * 0.4,
+    width: container?.clientWidth || window.innerWidth * 0.8,
     height: window.innerHeight,
     'top-bottom-spacing': 'fit-to-size',
     selectable: false,
@@ -913,20 +924,20 @@ async function initPhylotree(newick_str: string, metrics: any) {
     .attr('class', 'tree-heatmap')
     .attr('transform', `translate(${heatmapX})`)
 
-  // Build map: Sentence_case species name -> lowercase table name
-  // e.g., "Capnoides_sempervirens" -> "capnoides_sempervirens"
-  // and also "Staphisagria_picta" -> "staphisagria_picta"
+  // Build map: species prefix -> lowercase table name
+  // Supports both full species name prefixes (e.g., "Capnoides_sempervirens" -> "capnoides_sempervirens")
+  // and short species code prefixes (e.g., "AT" -> "arabidopsis_thaliana")
   const speciesNameToTable: Record<string, string> = {}
   groupNames.forEach(tableName => {
-    // Convert "capnoides_sempervirens" to "Capnoides_sempervirens" (only first letter uppercase)
+    // Full species name: "capnoides_sempervirens" -> "Capnoides_sempervirens"
     const sentenceCase = tableName.charAt(0).toUpperCase() + tableName.slice(1)
     speciesNameToTable[sentenceCase] = tableName
+    // Also add short species code mapping if available (e.g., "AT" -> "arabidopsis_thaliana")
+    const code = props.speciesCodeMap?.[tableName]
+    if (code && !(code in speciesNameToTable)) {
+      speciesNameToTable[code] = tableName
+    }
   })
-  
-  // Debug: Log mapping and examples
-  console.log("DEBUG: speciesNameToTable:", speciesNameToTable)
-  console.log("DEBUG: First 5 leaves:", leaves.slice(0, 5).map(l => l.name))
-  console.log("DEBUG: First group metrics keys:", Object.keys(metrics[groupNames[0]] || {}).slice(0, 3))
   
   // === NODE INTERACTIVITY WITH COLLAPSE SUPPORT ===
   const speciesTableNames = Object.values(speciesNameToTable);
@@ -1422,7 +1433,7 @@ async function renderTreeForSelectedOG() {
     return;
   }
   
-  const metrics = computeMetrics(tableData, "mean");
+  const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
   newickstr.value = newicks.value[selectedOrthogroup.value];
   if (newickstr.value !== null) {
     await nextTick();
