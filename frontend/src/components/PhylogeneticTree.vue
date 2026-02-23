@@ -1419,8 +1419,11 @@ async function initPhylotree(newick_str: string, metrics: any) {
   mainGroup.attr('transform', `translate(0, ${shiftY})`)
 
   svgElement.setAttribute('viewBox', `0 0 ${viewWidth} ${viewHeight}`)
-  svgElement.setAttribute('width', String(viewWidth))
-  svgElement.setAttribute('height', String(viewHeight))
+  svgElement.removeAttribute('width')
+  svgElement.removeAttribute('height')
+  svgElement.style.width = '100%'
+  svgElement.style.height = 'auto'
+  svgElement.setAttribute('preserveAspectRatio', 'xMinYMin meet')
 
   loading.value = false
 }
