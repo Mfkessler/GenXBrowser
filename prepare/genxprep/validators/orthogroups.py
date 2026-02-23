@@ -85,11 +85,24 @@ def validate_orthogroups(
                     suggestion="Rename the column in the Orthogroups file to exactly match the species name in your config.",
                 )
             else:
-                vr.warn(
-                    f"No column found for species '{full_name}' (code: {code}).",
-                    suggestion=f"Available columns: {', '.join(sorted(available_cols.keys())[:10])}…\n"
-                    f"      Add or rename a column to '{full_name}' in your Orthogroups TSV.",
-                )
+                # fallback: try species code (exact, then case-insensitive)
+                if code in available_cols:
+                    matched_species[code] = code
+                    vr.info(
+                        f"Species '{full_name}' matched to column '{code}' by species code.",
+                    )
+                elif code.lower() in available_lower:
+                    col = available_lower[code.lower()]
+                    matched_species[code] = col
+                    vr.info(
+                        f"Species '{full_name}' matched to column '{col}' by species code (case-insensitive).",
+                    )
+                else:
+                    vr.warn(
+                        f"No column found for species '{full_name}' (code: {code}).",
+                        suggestion=f"Available columns: {', '.join(sorted(available_cols.keys())[:10])}…\n"
+                        f"      Add or rename a column to '{full_name}' or '{code}' in your Orthogroups TSV.",
+                    )
 
     if not matched_species:
         vr.error(
