@@ -98,6 +98,7 @@ class Reporter:
         self.console = Console(stderr=True)
         self.verbose = verbose
         self._results: list[ValidationResult] = []
+        self._print_cursor: int = 0  # index up to which results have been printed
 
     # -- collecting --------------------------------------------------------
 
@@ -148,8 +149,17 @@ class Reporter:
             self.print_msg(m)
 
     def print_all(self) -> None:
+        """Print only results added since the last call to print_all()."""
+        new_results = self._results[self._print_cursor:]
+        for r in new_results:
+            self.print_result(r)
+        self._print_cursor = len(self._results)
+
+    def print_all_full(self) -> None:
+        """Print every result from the beginning (used for final summaries)."""
         for r in self._results:
             self.print_result(r)
+        self._print_cursor = len(self._results)
 
     def print_summary(self) -> None:
         n_err = sum(1 for r in self._results for m in r.messages if m.severity == Severity.ERROR)
