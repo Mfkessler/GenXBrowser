@@ -89,22 +89,101 @@ def validate_uniprot(
 # InterPro
 # ---------------------------------------------------------------------------
 
+# Column indices for the full InterPro5 TSV output (no header, 15 columns)
+_IPR_COL_GENE = 0
+_IPR_COL_ACC = 11   # IPR accession (e.g. IPR029044 or "-")
+_IPR_COL_DESC = 12  # IPR description (or "-")
+_IPR_FULL_MIN_COLS = 13  # minimum columns to be considered full format
+
+
 def validate_interpro(
     path: Path,
     gene_ids: set[str],
     vr: ValidationResult,
 ) -> pd.DataFrame | None:
-    """Read and validate an InterPro TSV (no header, 3 columns).
+    """Read and validate an InterPro TSV.
 
-    Returns a DataFrame with columns ``id``, ``ipr_id``, ``ipr_desc``
-    (aggregated per gene: comma-separated), or *None* on fatal error.
+    Accepts two formats:
+    * **Full InterPro5 output** (no header, ≥13 columns): gene_id is col 0,
+      IPR accession is col 11, IPR description is col 12.  Rows where the
+      IPR accession column is ``"-"`` (no IPR entry) are skipped.
+    * **Simplified 3-column format** (no header): gene_id, IPR accession,
+      description.
+
+    Returns a DataFrame indexed by gene ID with columns ``ipr_id`` and
+    ``ipr_desc`` (aggregated per gene, comma-separated), or *None* on fatal
+    error.
     """
-    return _validate_term_file(
-        path, gene_ids, vr,
-        label="InterPro",
-        accession_col="ipr_id",
-        desc_col="ipr_desc",
+    if not path.exists():
+        vr.error(f"InterPro file not found: {path}")
+        return None
+
+    # Peek at column count to decide which format we have
+    try:
+        peek = pd.read_csv(path, sep="\t", header=None, nrows=5, dtype=str)
+    except Exception as exc:
+        vr.error(f"Could not read InterPro file: {exc}")
+        return None
+
+    if peek.empty:
+        vr.error("InterPro file is empty.")
+        return None
+
+    n_cols = peek.shape[1]
+
+    if n_cols >= _IPR_FULL_MIN_COLS:
+        # Full InterPro5 output — only load the three relevant columns
+        vr.info(
+            f"InterPro: detected full InterPro5 format ({n_cols} columns). "
+            "Extracting gene_id (col 1), IPR accession (col 12), IPR description (col 13)."
+        )
+        try:
+            df_raw = pd.read_csv(
+                path, sep="\t", header=None,
+                usecols=[_IPR_COL_GENE, _IPR_COL_ACC, _IPR_COL_DESC],
+                names=["id", "ipr_id", "ipr_desc"],
+                dtype=str,
+            )
+        except Exception as exc:
+            vr.error(f"Could not read InterPro file: {exc}")
+            return None
+
+        # Drop rows where no IPR entry was assigned
+        df_raw = df_raw[df_raw["ipr_id"].str.strip() != "-"].copy()
+        df_raw = df_raw[df_raw["ipr_id"].notna()].copy()
+
+    else:
+        # Simplified 3-column format
+        try:
+            df_raw = pd.read_csv(
+                path, sep="\t", header=None,
+                names=["id", "ipr_id", "ipr_desc"],
+                dtype=str,
+            )
+        except Exception as exc:
+            vr.error(f"Could not read InterPro file: {exc}")
+            return None
+
+    if df_raw.empty:
+        vr.warn("InterPro file has no usable IPR entries (all rows had no IPR assignment).")
+        return None
+
+    # ID overlap
+    file_ids = set(df_raw["id"].dropna())
+    check_id_overlap(gene_ids, file_ids, "InterPro annotations", vr, id_column_name="ID")
+
+    # Aggregate per gene: unique IPR accessions (comma-sep), unique descriptions (pipe-sep)
+    grouped = (
+        df_raw.groupby("id")
+        .agg(
+            ipr_id=("ipr_id", lambda x: ",".join(x.dropna().unique())),
+            ipr_desc=("ipr_desc", lambda x: "|".join(x.dropna().unique())),
+        )
+        .reset_index()
     )
+
+    vr.success(f"InterPro: {len(df_raw):,} entries → {len(grouped):,} genes.")
+    return grouped.set_index("id")
 
 
 # ---------------------------------------------------------------------------

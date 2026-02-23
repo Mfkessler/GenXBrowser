@@ -146,7 +146,9 @@ def build_species(
         ipr_df = ann_val.validate_interpro(sp.metadata.interpro, gene_ids, ipr_vr)
         if ipr_df is not None:
             if "ipr_id" in ipr_df.columns:
-                var["ipr_id"] = ipr_df["ipr_id"].reindex(var.index)
+                var["ipr_id"] = ipr_df["ipr_id"].reindex(var.index).fillna("")
+            if "ipr_desc" in ipr_df.columns:
+                var["ipr_desc"] = ipr_df["ipr_desc"].reindex(var.index).fillna("")
 
     # --- Pfam ---
     if sp.metadata.pfam and sp.metadata.pfam.exists():
@@ -168,7 +170,7 @@ def build_species(
 
     # --- Orthogroups ---
     if ortho_df is not None:
-        og_map = og_val.extract_orthogroup_map(ortho_df, sp.name)
+        og_map = og_val.extract_orthogroup_map(ortho_df, sp.name, sp.code)
         if og_map:
             var["ortho_id"] = var.index.map(lambda gid: og_map.get(gid, ""))
 

@@ -152,6 +152,7 @@ def validate_orthogroups(
 def extract_orthogroup_map(
     df: pd.DataFrame,
     species_full_name: str,
+    species_code: str | None = None,
 ) -> dict[str, str]:
     """Extract a gene_id → orthogroup_id mapping for one species.
 
@@ -165,9 +166,12 @@ def extract_orthogroup_map(
     if og_col is None:
         return {}
 
+    available_cols = [c for c in df.columns if c != og_col]
+    available_lower = {c.lower(): c for c in available_cols}
+
     # Find the species column
     sp_col = None
-    for c in df.columns:
+    for c in available_cols:
         if c.strip() == species_full_name or c.strip().lower() == species_full_name.lower():
             sp_col = c
             break
@@ -175,9 +179,16 @@ def extract_orthogroup_map(
     # Genus fallback
     if sp_col is None:
         genus = species_full_name.split()[0] if " " in species_full_name else species_full_name
-        candidates = [c for c in df.columns if c != og_col and genus.lower() in c.lower()]
+        candidates = [c for c in available_cols if genus.lower() in c.lower()]
         if len(candidates) == 1:
             sp_col = candidates[0]
+
+    # Species code fallback
+    if sp_col is None and species_code is not None:
+        if species_code in available_cols:
+            sp_col = species_code
+        elif species_code.lower() in available_lower:
+            sp_col = available_lower[species_code.lower()]
 
     if sp_col is None:
         return {}
