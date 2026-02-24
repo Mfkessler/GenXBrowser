@@ -198,16 +198,7 @@ export function formatSpeciesValue(value: any): string {
   if (speciesPattern.test(str)) {
     // Replace underscored species names with formatted versions
     const formatted = str.replace(speciesPattern, (match, genus, species) => {
-      const fullName = `${genus} ${species}`;
-      // Check if this matches our known species mappings (case-insensitive)
-      const titleCase = `${genus.charAt(0).toUpperCase() + genus.slice(1)} ${species.charAt(0).toUpperCase() + species.slice(1)}`;
-      const mappedName = plant_species_mappings[titleCase];
-      
-      if (mappedName) {
-        return `<em>${mappedName}</em>`;
-      }
-      // Even if not in mapping, format with italics
-      return `<em>${fullName}</em>`;
+      return `<em>${genus} ${species}</em>`;
     });
     return formatted;
   }
