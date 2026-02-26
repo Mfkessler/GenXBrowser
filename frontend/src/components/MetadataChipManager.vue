@@ -29,7 +29,7 @@
     <!-- Info Banner -->
     <div class="chip-info">
       <span class="info-icon">ℹ️</span>
-      Drag to reorder · Click 👁 to show/hide · Double-click label to rename · Change the green badge to override the data type
+      Drag to reorder · Click 👁 to show/hide · Double-click label to rename · Change the green badge to override the data type · Click <strong>sep:</strong> badge on array columns to toggle the multi-value separator
     </div>
 
     <!-- Draggable Chips -->
@@ -92,6 +92,16 @@
             <option v-for="t in TYPE_OPTIONS" :key="t.value" :value="t.value">{{ t.label }}</option>
           </select>
 
+          <!-- Separator Badge (only for array columns) -->
+          <button
+            v-if="element.is_array || element.type === 'array'"
+            class="chip-sep-badge"
+            :title="`Multi-value separator: ${SEPARATOR_LABELS[element.array_separator] || element.array_separator} — click to change`"
+            @click.stop="cycleSeparator(element)"
+          >
+            sep:<code>{{ element.array_separator }}</code>
+          </button>
+
           <!-- Delete button for custom columns -->
           <button
             v-if="element.source === 'custom'"
@@ -146,6 +156,7 @@ export interface ChipItem {
   is_meta: boolean;
   is_sample_metadata: boolean;
   is_array: boolean;
+  array_separator: string;
   order: number;
   source: 'auto' | 'custom';
   sortable?: boolean;
@@ -187,6 +198,7 @@ export default defineComponent({
           is_meta: def.is_meta || false,
           is_sample_metadata: def.is_sample_metadata || false,
           is_array: def.is_array || false,
+          array_separator: def.array_separator || ',',
           order: def.order ?? 999,
           source: def.source || 'auto',
           sortable: def.sortable,
@@ -288,6 +300,21 @@ export default defineComponent({
 
     function changeType(element: ChipItem, newType: string) {
       element.type = newType;
+      // Keep is_array in sync with the array type selection
+      if (newType === 'array') {
+        element.is_array = true;
+      } else if (element.type !== 'array') {
+        element.is_array = false;
+      }
+      emitUpdate();
+    }
+
+    const SEPARATOR_CYCLE = [',', '|', ';'] as const;
+    const SEPARATOR_LABELS: Record<string, string> = { ',': 'comma', '|': 'pipe', ';': 'semicolon' };
+
+    function cycleSeparator(chip: ChipItem) {
+      const idx = SEPARATOR_CYCLE.indexOf(chip.array_separator as typeof SEPARATOR_CYCLE[number]);
+      chip.array_separator = SEPARATOR_CYCLE[(idx + 1) % SEPARATOR_CYCLE.length];
       emitUpdate();
     }
 
@@ -305,6 +332,7 @@ export default defineComponent({
           display_name: chip.display_name,
           type: chip.type,
           is_array: chip.is_array,
+          array_separator: chip.array_separator,
           is_meta: chip.is_meta,
           is_sample_metadata: false,
           visible: chip.visible,
@@ -321,6 +349,7 @@ export default defineComponent({
           display_name: chip.display_name,
           type: chip.type,
           is_array: chip.is_array,
+          array_separator: chip.array_separator,
           is_meta: chip.is_meta,
           is_sample_metadata: true,
           visible: chip.visible,
@@ -363,6 +392,8 @@ export default defineComponent({
       shortenType,
       TYPE_OPTIONS,
       changeType,
+      cycleSeparator,
+      SEPARATOR_LABELS,
       // Label helpers
       getEntityLabelPlural,
       getEntityLabelPluralLower,
@@ -609,6 +640,34 @@ export default defineComponent({
 
 .chip-delete:hover {
   background: #fef2f2;
+}
+
+.chip-sep-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid #a78bfa;
+  background: #f5f3ff;
+  color: #7c3aed;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.chip-sep-badge:hover {
+  background: #ede9fe;
+  border-color: #7c3aed;
+}
+
+.chip-sep-badge code {
+  font-family: monospace;
+  font-size: 11px;
+  background: transparent;
 }
 
 .add-chip {

@@ -57,7 +57,7 @@ export interface VisualizationState {
   oraTopologicalFilter: boolean;
   oraTooltipFields: string[];
   // Tooltip configuration
-  tooltipFields: string[];
+  tooltipFields: string[] | null;
   showSequencesInTooltip: boolean;
   sequencePreviewLength: number;
   // Clustering configuration
@@ -92,7 +92,7 @@ function getDefaultState(): VisualizationState {
     oraMinCount: 3,
     oraTopologicalFilter: false,  // Default: false for GO term topological filtering
     oraTooltipFields: ["attribute_name", "go_name", "subset_count", "expected_count", "background_count", "fold_enrichment"],  // Default: attribute + GO name + core enrichment metrics
-    tooltipFields: [], // Will be populated with all available fields except sequences
+    tooltipFields: null, // null = uninitialized (show all); [] = user deselected all (show none)
     showSequencesInTooltip: false,
     sequencePreviewLength: 100,
     // Clustering defaults
@@ -192,7 +192,7 @@ export const useVisualizationStore = defineStore("visualization", {
     toggleLegend() {
       this.legend = !this.legend;
     },
-    setTooltipFields(fields: string[]) {
+    setTooltipFields(fields: string[] | null) {
       this.tooltipFields = fields;
     },
     setOraTooltipFields(fields: string[]) {
@@ -337,7 +337,7 @@ export const useVisualizationStore = defineStore("visualization", {
         significance: this.significance,
         oraTopN: this.oraTopN,
         oraMinCount: this.oraMinCount,
-        tooltipFields: [...this.tooltipFields],
+        tooltipFields: this.tooltipFields !== null ? [...this.tooltipFields] : null,
         showSequencesInTooltip: this.showSequencesInTooltip,
         sequencePreviewLength: this.sequencePreviewLength,
         clustering: { ...this.clustering },

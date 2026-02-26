@@ -17,6 +17,8 @@ KNOWN_ARRAY_COLUMNS = {
     "pfam_id", "pfam_term",
     "uniprot_term",
     "family",
+    # Pipe-delimited description arrays
+    "ipr_desc", "pfam_desc",
 }
 
 # Known boolean columns (by name pattern)
@@ -109,6 +111,17 @@ class ColumnTypeInference:
                 return True
         return False
     
+    @staticmethod
+    def detect_array_separator(column_name: str) -> str:
+        """
+        Heuristic: columns whose name ends in 'desc' or '_desc' store
+        pipe-delimited multi-values; everything else uses comma.
+        """
+        name_lower = column_name.lower()
+        if name_lower.endswith('desc') or name_lower.endswith('_desc'):
+            return '|'
+        return ','
+
     def build_column_definition(
         self,
         column_name: str,
@@ -118,6 +131,7 @@ class ColumnTypeInference:
         is_sample_metadata: bool = False,
         visible: bool = True,
         order: int = 0,
+        array_separator: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Build a complete column definition.
@@ -130,6 +144,8 @@ class ColumnTypeInference:
             is_sample_metadata: If True, mark as sample metadata
             visible: If True, column is visible by default
             order: Sort order
+            array_separator: Override the intra-cell multi-value separator.
+                             Defaults to auto-detection from column name.
             
         Returns:
             Column definition dict
@@ -140,10 +156,17 @@ class ColumnTypeInference:
         if is_array:
             col_type = "array"
         
+        # Determine per-column multi-value separator
+        resolved_is_array = is_array or (col_type == "array")
+        sep = array_separator if array_separator is not None else (
+            self.detect_array_separator(column_name) if resolved_is_array else ','
+        )
+
         return {
             "display_name": self.beautify_name(column_name),
             "type": col_type,
-            "is_array": is_array or (col_type == "array"),
+            "is_array": resolved_is_array,
+            "array_separator": sep,
             "is_meta": is_meta,
             "is_sample_metadata": is_sample_metadata,
             "visible": visible,

@@ -882,11 +882,16 @@ const availableTooltipFields = computed(() => {
 });
 
 const isTooltipFieldSelected = (field: string) => {
+  // null means uninitialized (all selected)
+  if (store.tooltipFields === null) return true;
   return store.tooltipFields.includes(field);
 };
 
 const toggleTooltipField = (field: string) => {
-  const current = [...store.tooltipFields];
+  // null means uninitialized — initialize from all available fields first
+  const current = store.tooltipFields !== null
+    ? [...store.tooltipFields]
+    : [...availableTooltipFields.value];
   const index = current.indexOf(field);
   
   if (index === -1) {

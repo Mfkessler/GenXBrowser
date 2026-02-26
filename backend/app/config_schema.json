@@ -81,6 +81,12 @@
             "type": "boolean",
             "description": "Whether column contains array/list values"
           },
+          "array_separator": {
+            "type": "string",
+            "enum": [",", "|", ";"],
+            "description": "Delimiter used to split multi-value strings in this column (e.g. ',' or '|')",
+            "default": ","
+          },
           "is_meta": {
             "type": "boolean",
             "description": "Whether column is shown in Genes tab (meta information)"

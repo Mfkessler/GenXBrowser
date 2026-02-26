@@ -18,18 +18,20 @@ logger = logging.getLogger(__name__)
 # Helper Functions
 # ============================================================================
 
-def serialize_dataframe(df):
+def serialize_dataframe(df, column_defs=None):
     """
     Serialize DataFrame to JSON-compatible dict.
     Handles lists, numpy arrays, NaN values correctly.
-    Auto-splits comma/pipe-delimited strings in known array columns.
+    Splits multi-value strings in array columns using the separator stored in
+    column_defs (source of truth).  Falls back to hard-coded column sets for
+    backwards-compatibility when column_defs is not provided.
     """
-    # Known array columns that should be split from strings
+    # Legacy fallback sets (used only when no column_defs provided)
     COMMA_ARRAY_COLUMNS = {'go_term', 'interpro_term', 'pfam_term'}
     PIPE_ARRAY_COLUMNS = {'ipr_desc', 'pfam_desc'}
-    
+
     records = df.to_dict(orient='records')
-    
+
     # Convert numpy types and ensure lists are preserved
     for record in records:
         for key, value in record.items():
@@ -44,19 +46,27 @@ def serialize_dataframe(df):
             # Handle NaN
             elif isinstance(value, float) and np.isnan(value):
                 record[key] = None
-            # Split comma-delimited array columns
-            elif key in COMMA_ARRAY_COLUMNS:
-                if isinstance(value, str) and value.strip():
-                    record[key] = [v.strip() for v in value.split(',') if v.strip()]
+            elif isinstance(value, str) and value.strip():
+                # Determine whether this column is a multi-value array column
+                # and which separator to use.
+                sep = None
+                if column_defs and key in column_defs:
+                    col_def = column_defs[key]
+                    if col_def.get('is_array') or col_def.get('type') == 'array':
+                        sep = col_def.get('array_separator', ',')
                 else:
-                    record[key] = []  # Empty arrays for empty/None values
-            # Split pipe-delimited array columns
-            elif key in PIPE_ARRAY_COLUMNS:
-                if isinstance(value, str) and value.strip():
-                    record[key] = [v.strip() for v in value.split('|') if v.strip()]
-                else:
-                    record[key] = []  # Empty arrays for empty/None values
-    
+                    # Legacy fallback
+                    if key in COMMA_ARRAY_COLUMNS:
+                        sep = ','
+                    elif key in PIPE_ARRAY_COLUMNS:
+                        sep = '|'
+
+                if sep is not None:
+                    record[key] = [v.strip() for v in value.split(sep) if v.strip()] or []
+            elif not isinstance(value, str):
+                # Non-string, non-numeric: leave as-is (handles None etc.)
+                pass
+
     return records
 
 # ============================================================================
@@ -231,7 +241,7 @@ def parse_filters(filters, get_columns_func, source="meta"):
         if isinstance(bval, bool):
             return bval
         if isinstance(val, str):
-            return [v.strip() for v in val.split(",") if v.strip()]
+            return [v.strip() for v in val.split("|") if v.strip()]
         return val
     
     filter_query = {}
@@ -645,7 +655,7 @@ def list_data():
         )
         
         response = {
-            "data": serialize_dataframe(df)
+            "data": serialize_dataframe(df, service.config_manager.get_column_definitions())
         }
         
         # Include layer metadata if available

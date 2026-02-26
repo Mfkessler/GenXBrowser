@@ -1,4 +1,5 @@
 import {
+  autoUpdate,
   computePosition,
   offset,
   flip,
@@ -42,22 +43,16 @@ const TOOLTIP_STATES = new WeakMap<HTMLElement, TooltipState>();
 const SHOW_DELAY = 150;
 const HIDE_DELAY = 50;
 
-// Shared CSS classes
-const TOOLTIP_CLASSES = [
-  "fixed",
-  "z-[99999]",
-  "pointer-events-none",
-  "opacity-0",
-  "transition-opacity",
-  "duration-150",
-].join(" ");
-
 function createTooltipEl(): { tooltipEl: HTMLElement; arrowEl: HTMLElement } {
   const tooltipEl = document.createElement("div");
   tooltipEl.setAttribute("role", "tooltip");
-  tooltipEl.className = TOOLTIP_CLASSES;
+  // Use only inline styles — no Tailwind classes, so nothing is tree-shaken away
   tooltipEl.style.cssText =
-    "background:#2563eb;color:#fff;font-size:0.75rem;line-height:1rem;border-radius:0.375rem;padding:0.5rem 0.75rem;max-width:20rem;box-shadow:0 10px 15px -3px rgb(0 0 0/.1),0 4px 6px -4px rgb(0 0 0/.1);white-space:normal;word-wrap:break-word;top:0;left:0;width:max-content;";
+    "position:fixed;z-index:99999;pointer-events:none;opacity:0;transition:opacity 150ms;" +
+    "background:#2563eb;color:#fff;font-size:0.75rem;line-height:1rem;border-radius:0.375rem;" +
+    "padding:0.5rem 0.75rem;max-width:20rem;" +
+    "box-shadow:0 10px 15px -3px rgb(0 0 0/.1),0 4px 6px -4px rgb(0 0 0/.1);" +
+    "white-space:normal;word-wrap:break-word;top:0;left:0;width:max-content;";
 
   const arrowEl = document.createElement("div");
   arrowEl.style.cssText =
@@ -74,6 +69,7 @@ function updatePosition(
   placement: Placement,
 ) {
   computePosition(triggerEl, tooltipEl, {
+    strategy: "fixed",
     placement,
     middleware: [
       offset(8),
@@ -149,7 +145,16 @@ function showTooltip(el: HTMLElement) {
       document.body.appendChild(state.tooltipEl);
     }
 
-    // Position the tooltip
+    // Position the tooltip and keep it in sync with scroll/resize
+    if (state.cleanup) {
+      state.cleanup();
+      state.cleanup = null;
+    }
+    state.cleanup = autoUpdate(
+      el,
+      state.tooltipEl,
+      () => updatePosition(el, state.tooltipEl!, state.arrowEl!, state.placement),
+    );
     updatePosition(el, state.tooltipEl, state.arrowEl!, state.placement);
 
     // Show with animation
@@ -172,6 +177,11 @@ function hideTooltip(el: HTMLElement) {
   }
 
   state.hideTimer = setTimeout(() => {
+    // Stop autoUpdate listener
+    if (state.cleanup) {
+      state.cleanup();
+      state.cleanup = null;
+    }
     if (state.tooltipEl) {
       state.tooltipEl.style.opacity = "0";
       // Remove from DOM after transition

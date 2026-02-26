@@ -430,19 +430,18 @@ const fetchSuggestions = debounce(async (val: string) => {
 //Handle pills
 function parsePills(input: string): string[] {
   return input
-    .replace(/\n|;/g, ",")
     .replace(/['"]/g, "")
-    .split(",")
+    .split(/[\n;|]/)
     .map((item) => item.trim())
     .filter(Boolean);
 }
 
 function addPills() {
   if (!localInput.value) return;
+  const term = localInput.value.trim();
+  if (!term) return;
   empty.value = false;
-  pillItems.value = [
-    ...new Set([...pillItems.value, ...parsePills(localInput.value)]),
-  ].sort();
+  pillItems.value = [...new Set([...pillItems.value, term])].sort();
   localInput.value = "";
   errorMessage.value = "";
 }
@@ -637,7 +636,7 @@ watch(
       emit("update:modelValue", null);
     } else {
       emit("update:modelValue", {
-        value: empty.value ? null : pillItems.value.join(","),
+        value: empty.value ? null : pillItems.value.join("|"),
         strict: strict.value,
       });
     }
@@ -651,7 +650,7 @@ watch(
     if (!isEqual(newVal, oldVal)) {
       if (newVal) {
         pillItems.value = newVal.value
-          ? newVal.value.toString().split(",").filter(Boolean)
+          ? newVal.value.toString().split("|").filter(Boolean)
           : [];
         strict.value = !!newVal.strict;
         empty.value = newVal.value === null;
@@ -684,7 +683,7 @@ defineExpose({ reset });
 onMounted(() => {
   if (props.modelValue) {
     pillItems.value = props.modelValue.value
-      ? props.modelValue.value.toString().split(",").filter(Boolean)
+      ? props.modelValue.value.toString().split("|").filter(Boolean)
       : [];
     strict.value = !!props.modelValue.strict;
     empty.value = props.modelValue.value === null;

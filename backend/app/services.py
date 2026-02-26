@@ -1060,32 +1060,46 @@ class GenXBrowserService:
                 continue
             
             op, value = filter_spec
-            
+
             if op == 'eq':
                 if isinstance(value, bool):
                     result = result[result[actual_col] == value]
                 else:
-                    result = result[result[actual_col].astype(str) == str(value)]
+                    # Strip whitespace from stored values before comparing
+                    result = result[result[actual_col].astype(str).str.strip() == str(value).strip()]
             elif op == 'in':
                 if isinstance(value, list):
-                    result = result[result[actual_col].astype(str).isin([str(v) for v in value])]
+                    # Strip whitespace from stored values before comparing
+                    target_set = {str(v).strip() for v in value}
+                    result = result[result[actual_col].astype(str).str.strip().isin(target_set)]
             elif op == 'range':
                 min_val, max_val = value
                 result = result[(result[actual_col] >= min_val) & (result[actual_col] <= max_val)]
             elif op in ('array_overlap', 'array_contains'):
-                def check_array(x):
+                # Determine the intra-cell separator for this column from config,
+                # falling back to the name-based heuristic used by get_unique_values.
+                _col_defs = self.config_manager.get_column_definitions()
+                _sep = (
+                    _col_defs.get(pg_col, _col_defs.get(col, {})).get('array_separator')
+                    or (
+                        '|' if (pg_col or col).lower().endswith('desc')
+                        else ','
+                    )
+                )
+
+                def check_array(x, _sep=_sep, _op=op, _value=value):
                     if isinstance(x, (list, np.ndarray)):
                         items = list(x)
                     elif isinstance(x, str) and x:
-                        items = [s.strip() for s in x.split(',') if s.strip()]
+                        items = [s.strip() for s in x.split(_sep) if s.strip()]
                     else:
                         return False
-                    
-                    if op == 'array_overlap':
-                        return any(v in items for v in value)
+
+                    if _op == 'array_overlap':
+                        return any(v in items for v in _value)
                     else:
-                        return all(v in items for v in value)
-                
+                        return all(v in items for v in _value)
+
                 result = result[result[actual_col].apply(check_array)]
         
         return result
@@ -1250,10 +1264,23 @@ class GenXBrowserService:
         h5ad_col = self._to_h5ad_column_name(column_name)
         values = set()
         
-        # Determine delimiter based on column type
-        # Description columns use pipe '|', array columns use comma ','
-        is_desc_column = column_name.lower().endswith('desc') or column_name.lower().endswith('_desc')
-        delimiter = '|' if is_desc_column else ','
+        # Determine whether to split stored strings and which delimiter to use.
+        # Only split for array columns (is_array=True or type='array').
+        # Plain text columns (like 'description') must NOT be split — their
+        # values may legitimately contain commas.
+        _col_defs = self.config_manager.get_column_definitions()
+        col_def = _col_defs.get(column_name, {})
+        is_array_col = col_def.get('is_array') or col_def.get('type') == 'array'
+        delimiter = col_def.get('array_separator') if is_array_col else None
+        if delimiter is None and is_array_col:
+            # Fallback heuristic for array columns not yet in config
+            delimiter = (
+                '|' if (
+                    column_name.lower().endswith('desc')
+                    or column_name.lower().endswith('_desc')
+                )
+                else ','
+            )
         
         for species_code in self.get_available_species():
             adata = self.registry.load(species_code)
@@ -1281,8 +1308,8 @@ class GenXBrowserService:
                             values.add(str(v))
                 elif val and str(val).strip():
                     val_str = str(val).strip()
-                    # Check if it's a delimited string
-                    if delimiter in val_str:
+                    # Only split multi-value strings for array columns
+                    if delimiter and delimiter in val_str:
                         # Split by delimiter and add each part
                         parts = [p.strip() for p in val_str.split(delimiter) if p.strip()]
                         values.update(parts)
@@ -1294,15 +1321,45 @@ class GenXBrowserService:
         return result
     
     def find_similar_values(self, column_name: str, search_term: str, limit: int = 10) -> List[Dict]:
-        """Fuzzy search for similar values."""
+        """Fuzzy search for similar values (case-insensitive)."""
         all_values = self.get_unique_values(column_name)
         
         if not all_values or not search_term:
             return []
         
         from rapidfuzz import fuzz, process
-        results = process.extract(search_term, all_values, limit=limit, scorer=fuzz.WRatio)
-        return [{'term': r[0], 'similarity': r[1] / 100.0} for r in results]
+        
+        # Case-insensitive substring matches always appear first
+        term_lower = search_term.lower()
+        exact_matches = [v for v in all_values if term_lower in v.lower()]
+        exact_set = set(exact_matches)
+        result_terms = exact_matches[:limit]
+
+        # Fill remaining slots with fuzzy results not already included
+        if len(result_terms) < limit:
+            remaining = limit - len(result_terms)
+            fuzzy_results = process.extract(
+                search_term,
+                all_values,
+                limit=limit * 2,
+                scorer=fuzz.WRatio,
+            )
+            for r in fuzzy_results:
+                if r[0] not in exact_set:
+                    result_terms.append(r[0])
+                    exact_set.add(r[0])
+                    if len(result_terms) >= limit:
+                        break
+
+        # Build similarity scores (1.0 for substring hits, fuzzy score for the rest)
+        fuzzy_score_map = {
+            r[0]: r[1] / 100.0
+            for r in process.extract(search_term, result_terms, limit=len(result_terms), scorer=fuzz.WRatio)
+        }
+        return [
+            {'term': t, 'similarity': fuzzy_score_map.get(t, 1.0 if t in exact_matches[:limit] else 0.0)}
+            for t in result_terms
+        ]
     
     def find_similar_tags(self, search_term: str, limit: int = 10) -> List[Dict]:
         """Fuzzy search for tags."""

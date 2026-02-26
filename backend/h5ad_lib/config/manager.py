@@ -52,6 +52,8 @@ DEFAULT_ARRAY_COLUMNS = {
     "pfam_id", "pfam_term",
     "uniprot_term",
     "family",
+    # Pipe-delimited description arrays
+    "ipr_desc", "pfam_desc",
 }
 
 # Default meta columns (shown in Genes tab)
@@ -149,6 +151,8 @@ class ConfigManager:
                 self._ensure_all_var_columns_in_config()
                 # Back-fill any virtual columns that weren't present when config was created
                 self._ensure_virtual_columns()
+                # Back-fill array_separator for columns that pre-date the field
+                self._ensure_array_separators()
             except Exception as e:
                 logger.error(f"Failed to load config: {e}")
                 self._config = self._get_empty_config()
@@ -198,7 +202,42 @@ class ConfigManager:
         if added:
             self._save_config()
             logger.info("Back-filled virtual columns (newick_str, protein_seq, rna_seq) into config")
-    
+
+    def _ensure_array_separators(self) -> None:
+        """
+        Back-fill 'array_separator' on any column_definition that is an array
+        column but was created before this field existed.  Uses the same
+        heuristic as ColumnTypeInference.detect_array_separator().
+
+        Also promotes known multi-value columns (e.g. ipr_desc, pfam_desc) that
+        were previously stored as type='text'/is_array=False to type='array'/
+        is_array=True with the correct separator.  This fixes existing configs
+        created before these columns were added to DEFAULT_ARRAY_COLUMNS.
+        """
+        from h5ad_lib.config.schema import ColumnTypeInference
+        col_defs = self._config.get("column_definitions", {})
+        changed = False
+
+        for col_name, col_def in col_defs.items():
+            is_array = col_def.get("is_array") or col_def.get("type") == "array"
+
+            # Promote columns that should be arrays but are still typed as text.
+            # Heuristic: column name is in DEFAULT_ARRAY_COLUMNS
+            if not is_array and col_name in DEFAULT_ARRAY_COLUMNS:
+                col_def["is_array"] = True
+                col_def["type"] = "array"
+                is_array = True
+                changed = True
+
+            # Back-fill array_separator for all array columns
+            if is_array and "array_separator" not in col_def:
+                col_def["array_separator"] = ColumnTypeInference.detect_array_separator(col_name)
+                changed = True
+
+        if changed:
+            self._save_config()
+            logger.info("Back-filled array_separator / promoted array columns in column_definitions")
+
     def _ensure_all_var_columns_in_config(self) -> None:
         """
         Ensure every .var column in the H5AD files is registered in column_definitions.

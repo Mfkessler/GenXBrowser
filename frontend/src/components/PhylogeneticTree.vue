@@ -1260,7 +1260,7 @@ async function initPhylotree(newick_str: string, metrics: any) {
             `;
             
             // Add selected metadata fields if row data is available
-            if (d.rowData && selectedFields.length > 0) {
+            if (d.rowData && selectedFields !== null && selectedFields.length > 0) {
               const metaLines = selectedFields
                 .filter(field => field !== config.visualization.id_column && d.rowData[field] !== undefined)
                 .map(field => {
