@@ -218,6 +218,7 @@ import { ref, computed, watch } from "vue";
 import axios from "axios";
 import { API_BASE_URL } from "@/shared/Config";
 import { beautifyLabel } from "@/shared/utils";
+import { useColumnsStore } from "@/stores/columns";
 
 const props = defineProps<{
   isOpen: boolean;
@@ -247,7 +248,15 @@ const matchedValues = ref<string[]>([]);
 const discardedValues = ref<string[]>([]);
 const detectedSeparator = ref<string>("comma");
 
-const beautifiedLabel = computed(() => beautifyLabel(props.columnLabel) ?? "Filter");
+const columnsStore = useColumnsStore();
+
+const beautifiedLabel = computed(() => {
+  const colName = props.columnName || props.columnLabel;
+  const allCols = [...columnsStore.rowColumns, ...columnsStore.filterableColColumns];
+  const found = allCols.find(c => c.column_name === colName);
+  if (found?.display_name) return found.display_name;
+  return beautifyLabel(props.columnLabel) ?? "Filter";
+});
 
 // Check if we have predefined options (multi-select mode)
 const hasAvailableOptions = computed(() => {

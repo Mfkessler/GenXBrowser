@@ -132,6 +132,11 @@ class ConfigManager:
             self._save_config()
         else:
             self._config = self._get_empty_config()
+        
+        # Apply config profile if specified via ENV
+        config_profile = os.environ.get("CONFIG_PROFILE", "").strip()
+        if config_profile:
+            self._apply_profile(config_profile)
     
     def _load_config(self) -> None:
         """Load configuration from JSON file."""
@@ -140,6 +145,10 @@ class ConfigManager:
                 with open(self._config_path, "r") as f:
                     self._config = json.load(f)
                 logger.info(f"Loaded config: {self._config.get('project_name', 'Unknown')}")
+                # Ensure all .var columns from h5ad files are in config and marked is_meta=True
+                self._ensure_all_var_columns_in_config()
+                # Back-fill any virtual columns that weren't present when config was created
+                self._ensure_virtual_columns()
             except Exception as e:
                 logger.error(f"Failed to load config: {e}")
                 self._config = self._get_empty_config()
@@ -153,7 +162,93 @@ class ConfigManager:
                 logger.info(f"Saved config to {self._config_path}")
             except Exception as e:
                 logger.error(f"Failed to save config: {e}")
+
+    def _ensure_virtual_columns(self) -> None:
+        """
+        Ensure virtual gene columns (newick_str, protein_seq, rna_seq) exist in
+        column_definitions. Called after loading an existing config so that configs
+        created before these columns were added get them automatically.
+        """
+        col_defs = self._config.setdefault("column_definitions", {})
+        from h5ad_lib.config.schema import ColumnTypeInference
+        type_inference = ColumnTypeInference()
+
+        VIRTUAL_GENE_COLUMNS = [
+            ("newick_str",  "text"),
+            ("protein_seq", "text"),
+            ("rna_seq",     "text"),
+        ]
+        next_order = max((v.get("order", -1) for v in col_defs.values()), default=-1) + 1
+        added = False
+        for vcol, vtype in VIRTUAL_GENE_COLUMNS:
+            if vcol not in col_defs:
+                col_def = type_inference.build_column_definition(
+                    column_name=vcol,
+                    dtype="object",
+                    is_array=False,
+                    is_meta=True,
+                    is_sample_metadata=False,
+                    order=next_order,
+                )
+                col_def["type"] = vtype
+                col_def["sortable"] = False
+                col_defs[vcol] = col_def
+                next_order += 1
+                added = True
+        if added:
+            self._save_config()
+            logger.info("Back-filled virtual columns (newick_str, protein_seq, rna_seq) into config")
     
+    def _ensure_all_var_columns_in_config(self) -> None:
+        """
+        Ensure every .var column in the H5AD files is registered in column_definitions.
+        Called after loading an existing config so that columns added later to the h5ad
+        (or not yet known when the config was first created) are picked up automatically.
+        Also corrects any existing entries that were wrongly stored with is_meta=False
+        for .var columns.
+        """
+        if not self._h5ad_dir.exists():
+            return
+        try:
+            from h5ad_lib.core.discovery import discover_columns
+            var_cols, _obs_cols, var_dtypes, _obs_dtypes = discover_columns(str(self._h5ad_dir))
+        except Exception as e:
+            logger.warning(f"_ensure_all_var_columns_in_config: could not discover columns: {e}")
+            return
+        if not var_cols:
+            return
+
+        col_defs = self._config.setdefault("column_definitions", {})
+        type_inference = ColumnTypeInference()
+        next_order = max((v.get("order", -1) for v in col_defs.values()), default=-1) + 1
+        changed = False
+
+        for col in var_cols:
+            display_col = DEFAULT_COLUMN_MAPPINGS.get(col, col)
+            if display_col not in col_defs:
+                # New column – add it
+                col_defs[display_col] = type_inference.build_column_definition(
+                    column_name=display_col,
+                    dtype=var_dtypes.get(col, "object"),
+                    is_array=col in DEFAULT_ARRAY_COLUMNS or display_col in DEFAULT_ARRAY_COLUMNS,
+                    is_meta=True,
+                    is_sample_metadata=False,
+                    order=next_order,
+                )
+                next_order += 1
+                changed = True
+                logger.info(f"Discovered new .var column: {display_col}")
+            else:
+                # Column exists but may have wrong is_meta flag from old behaviour
+                entry = col_defs[display_col]
+                if not entry.get("is_meta", False) and not entry.get("is_sample_metadata", False):
+                    entry["is_meta"] = True
+                    changed = True
+
+        if changed:
+            self._save_config()
+            logger.info("Updated column_definitions with newly discovered .var columns")
+
     def _auto_discover(self) -> None:
         """Auto-discover configuration from H5AD files."""
         logger.info(f"Auto-discovering from {self._h5ad_dir}")
@@ -196,7 +291,7 @@ class ConfigManager:
                 column_name=display_col,
                 dtype=var_dtypes.get(col, "object"),
                 is_array=col in DEFAULT_ARRAY_COLUMNS or display_col in DEFAULT_ARRAY_COLUMNS,
-                is_meta=col in DEFAULT_META_COLUMNS or display_col in DEFAULT_META_COLUMNS,
+                is_meta=True,  # All .var columns are gene/transcript metadata by definition
                 is_sample_metadata=False,
             )
         
@@ -221,6 +316,28 @@ class ConfigManager:
                 is_meta=True,
                 is_sample_metadata=False,
             )
+
+        # Add virtual gene columns (served dynamically, not stored in .var)
+        VIRTUAL_GENE_COLUMNS = [
+            ("newick_str",   "text"),
+            ("protein_seq",  "text"),
+            ("rna_seq",      "text"),
+        ]
+        next_order = max((v.get("order", -1) for v in column_definitions.values()), default=-1) + 1
+        for vcol, vtype in VIRTUAL_GENE_COLUMNS:
+            if vcol not in column_definitions:
+                col_def = type_inference.build_column_definition(
+                    column_name=vcol,
+                    dtype="object",
+                    is_array=False,
+                    is_meta=True,
+                    is_sample_metadata=False,
+                    order=next_order,
+                )
+                col_def["type"] = vtype
+                col_def["sortable"] = False
+                column_definitions[vcol] = col_def
+                next_order += 1
         
         # Build config
         self._config = {
@@ -262,6 +379,39 @@ class ConfigManager:
             "frontend_settings": {"default_columns": [], "hidden_columns": []},
             "data_paths": {"h5ad_dir": str(self._h5ad_dir)},
         }
+    
+    def _apply_profile(self, profile_name: str) -> None:
+        """
+        Apply a config profile on top of current config.
+        
+        Profiles are stored as JSON in {config_dir}/profiles/{name}.json.
+        Profile values override current config (deep merge for dicts).
+        """
+        profiles_dir = self._config_path.parent / "profiles"
+        profile_path = profiles_dir / f"{profile_name}.json"
+        
+        if not profile_path.exists():
+            logger.warning(f"Config profile '{profile_name}' not found at {profile_path}")
+            return
+        
+        try:
+            with open(profile_path, "r") as f:
+                profile_data = json.load(f)
+            
+            # Deep merge: profile overrides current config
+            self._deep_merge(self._config, profile_data)
+            self._save_config()
+            logger.info(f"Applied config profile: {profile_name}")
+        except Exception as e:
+            logger.error(f"Failed to apply config profile '{profile_name}': {e}")
+    
+    def _deep_merge(self, base: Dict, override: Dict) -> None:
+        """Deep merge override into base (in-place)."""
+        for key, value in override.items():
+            if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+                self._deep_merge(base[key], value)
+            else:
+                base[key] = value
     
     # =========================================================================
     # Public API

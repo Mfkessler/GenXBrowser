@@ -1,7 +1,7 @@
 <template>
   <div>
     <div class="relative">
-      <div class="flex rounded-md">
+      <div ref="suggestionAnchorRef" class="flex rounded-md">
         <!-- Input Field -->
         <div
           class="flex-grow px-3 py-2 border-1 rounded-md bg-gray-50 focus:outline-none focus-within:ring-2 focus-within:ring-primary-500"
@@ -80,28 +80,31 @@
               </svg>
             </button>
         </div>
-        <div
-          v-if="showDropdown"
-          class="absolute left-0 right-0 z-50 w-full top-full mt-1 bg-gray-50 border-1 border-gray-300 rounded-md shadow-md"
-        >
-          <ul class="max-h-60 overflow-y-auto">
-            <li
-              v-for="item in searchResults"
-              :key="item.term"
-              @mousedown.prevent="addSuggestion(item.term)"
-              class="cursor-pointer p-2 hover:bg-accent2-100 hover:shadow-md text-base text-gray-700 hover:text-white rounded-md"
-            >
-              <div class="flex flex-col">
-                <span class="text-base">{{ item.term }}</span>
-                <span class="text-xs text-gray-600">{{
-                  item.description
-                }}</span>
-              </div>
-            </li>
-          </ul>
-        </div>
       </div>
     </div>
+    <!-- Suggestion dropdown – teleported to body so it escapes any scroll/overflow container -->
+    <Teleport to="body">
+      <div
+        v-if="showDropdown"
+        ref="suggestionFloatRef"
+        :style="[suggestionFloatStyles, { minWidth: suggestionAnchorRef ? suggestionAnchorRef.offsetWidth + 'px' : '220px', maxWidth: '400px' }]"
+        class="z-[9999] bg-white border border-gray-300 rounded-md shadow-lg"
+      >
+        <ul class="max-h-60 overflow-y-auto">
+          <li
+            v-for="item in searchResults"
+            :key="item.term"
+            @mousedown.prevent="addSuggestion(item.term)"
+            class="cursor-pointer p-2 hover:bg-accent2-100 hover:shadow-md text-base text-gray-700 hover:text-white rounded-md"
+          >
+            <div class="flex flex-col">
+              <span class="text-base">{{ item.term }}</span>
+              <span class="text-xs text-gray-400">{{ item.description }}</span>
+            </div>
+          </li>
+        </ul>
+      </div>
+    </Teleport>
     <!-- Error Message -->
     <p v-if="errorMessage" class="text-red-500 text-sm mt-1">
       {{ errorMessage }}
@@ -332,6 +335,18 @@ const { floatingStyles, middlewareData, placement } = useFloating(moreChipRef, f
     arrow({ element: arrowRef })
   ],
   whileElementsMounted: autoUpdate
+});
+
+// Floating UI setup for suggestions dropdown
+const suggestionAnchorRef = ref<HTMLElement | null>(null);
+const suggestionFloatRef = ref<HTMLElement | null>(null);
+const {
+  floatingStyles: suggestionFloatStyles,
+  update: updateSuggestionPosition,
+} = useFloating(suggestionAnchorRef, suggestionFloatRef, {
+  placement: 'bottom-start',
+  middleware: [offset(4), flip(), shift({ padding: 8 })],
+  whileElementsMounted: autoUpdate,
 });
 
 // Arrow positioning for tooltip

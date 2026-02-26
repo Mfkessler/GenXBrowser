@@ -640,6 +640,21 @@ def start_services(
     
     data_dir = config.output_dir.resolve()
     
+    # Ensure config directory is writable (profiles, config saves, etc.)
+    config_dir = data_dir / "config"
+    if config_dir.exists() and not os.access(config_dir, os.W_OK):
+        result = ValidationResult("Permissions Check")
+        result.error(
+            f"Config directory is not writable: {config_dir}",
+            suggestion=f"Run: sudo chown -R $USER {config_dir}"
+        )
+        reporter.add(result)
+        reporter.print_summary()
+        return 1
+    # Ensure profiles directory exists and is writable
+    profiles_dir = config_dir / "profiles"
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+    
     # Prepare backend environment
     backend_env = os.environ.copy()
     backend_env["H5AD_DATA_DIR"] = str(data_dir)

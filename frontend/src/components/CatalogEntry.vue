@@ -281,7 +281,7 @@
       <BatchInputModal
         :is-open="showBatchModal"
         :column-name="config.visualization.id_column"
-        :column-label="config.visualization.id_column"
+        :column-label="idColumnLabel"
         :table-name="props.tableName"
         :species-name="beautifyLabel(props.tableName)"
         :current-values="datasetIdPills"
@@ -458,6 +458,15 @@ const effectiveFilters = computed(() => filtersStore.getMergedFilters(props.tabl
 function openIdFilterModal() {
   showBatchModal.value = true;
 }
+
+// Display label for the ID column — use display_name from store if available,
+// otherwise fall back to beautifyLabel
+const idColumnLabel = computed(() => {
+  const colName = config.visualization.id_column;
+  const found = columnsStore.rowColumns.find(c => c.column_name === colName);
+  if (found?.display_name) return found.display_name;
+  return beautifyLabel(colName);
+});
 
 function onBatchIdFiltersApplied(values: string[]) {
   if (values.length === 0) {

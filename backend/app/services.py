@@ -590,21 +590,20 @@ class GenXBrowserService:
                 # Sample metadata from .obs.columns
                 # Hide internal/technical columns from the UI
                 HIDDEN_SAMPLE_COLUMNS = {'type', 'ismeta'}
+                column_defs = self.config_manager.get_column_definitions()
+                obs_candidates = []
                 for col in adata.obs.columns:
                     pg_name = self._to_display_column_name(col)
-                    
+
                     # Skip hidden internal columns
                     if pg_name.lower() in HIDDEN_SAMPLE_COLUMNS:
                         continue
-                    
-                    # Include tissue_col for filtering (frontend needs it)
-                    # Note: 'tissue' in h5ad gets mapped to 'tissue_col'
-                    
+
                     if pg_name not in seen:
                         seen.add(pg_name)
                         dtype = str(adata.obs[col].dtype)
                         col_type = self._get_column_type(dtype, col)
-                        
+
                         format_str = ''
                         if col_type in ('bigint', 'double precision'):
                             try:
@@ -613,14 +612,26 @@ class GenXBrowserService:
                                 format_str = f"{col_min},{col_max}"
                             except (ValueError, TypeError):
                                 pass
-                        
-                        columns.append({
+
+                        col_def = column_defs.get(pg_name, {})
+                        if not col_def.get('visible', True):
+                            continue
+
+                        obs_candidates.append({
                             'column_name': pg_name,
+                            'display_name': col_def.get('display_name', pg_name),
                             'type': col_type,
                             'description': '',
                             'format': format_str,
                             'isMeta': False,
+                            '_order': col_def.get('order', 9999),
                         })
+
+                # Sort by saved order, then append
+                obs_candidates.sort(key=lambda c: (c['_order'], c['column_name']))
+                for c in obs_candidates:
+                    c.pop('_order', None)
+                    columns.append(c)
             
             else:  # source == "meta" or None
                 # Sample IDs as expression columns FIRST
@@ -643,45 +654,55 @@ class GenXBrowserService:
                 # Gene metadata from .var.columns SECOND
                 if is_meta is None or is_meta is True:
                     column_defs = self.config_manager.get_column_definitions()
-                    
+
+                    # Collect candidate meta columns first, then sort by saved order
+                    meta_candidates = []
                     for col in adata.var.columns:
                         display_name = self._to_display_column_name(col)
-                        
-                        if display_name not in self._meta_columns and col not in self._meta_columns:
-                            continue
-                        
+
+                        # All .var columns are gene/transcript metadata – no whitelist needed.
+                        # The column_definitions visibility flag controls what the user sees.
+
                         if display_name not in seen:
                             seen.add(display_name)
                             dtype = str(adata.var[col].dtype)
                             col_type = self._get_column_type(dtype, col)
                             col_def = column_defs.get(display_name, {})
-                            
+
                             if not col_def.get('visible', True):
                                 continue
-                            
-                            columns.append({
+
+                            meta_candidates.append({
                                 'column_name': display_name,
                                 'display_name': col_def.get('display_name', display_name),
                                 'type': col_type,
                                 'description': '',
                                 'format': '',
                                 'isMeta': True,
+                                '_order': col_def.get('order', 9999),
                             })
-                    
+
                     # Add virtual columns
                     for vcol in ['newick_str', 'protein_seq', 'rna_seq']:
                         if vcol not in seen:
                             col_def = column_defs.get(vcol, {})
                             if col_def.get('visible', True):
                                 seen.add(vcol)
-                                columns.append({
+                                meta_candidates.append({
                                     'column_name': vcol,
                                     'display_name': col_def.get('display_name', vcol),
                                     'type': 'text',
                                     'description': '',
                                     'format': '',
                                     'isMeta': True,
+                                    '_order': col_def.get('order', 9999),
                                 })
+
+                    # Sort by saved order field, then append
+                    meta_candidates.sort(key=lambda c: (c['_order'], c['column_name']))
+                    for c in meta_candidates:
+                        c.pop('_order', None)
+                        columns.append(c)
                 
                 # Add sample metadata for _meta tables
                 if include_sample_meta:

@@ -1,6 +1,8 @@
 import { defineStore } from "pinia";
+import axios from "axios";
 
 import { type MetaFormat } from "@/shared/MetaFormat";
+import { API_BASE_URL } from "@/shared/Config";
 
 export interface ColumnsState {
   rowColumns: MetaFormat[];
@@ -100,6 +102,19 @@ export const useColumnsStore = defineStore("columns", {
     // Helper to get the actual column name for filtering
     getActualColumnName(displayName: string): string {
       return displayName; // No mapping needed anymore, we use tissue_col directly
+    },
+    // Refresh columns from backend (called after admin config save)
+    async refreshColumns() {
+      try {
+        const [metaResponse, columnMetaResponse] = await Promise.all([
+          axios.get(`${API_BASE_URL}/api/columns`, { params: { meta: true, columns: false } }),
+          axios.get(`${API_BASE_URL}/api/columns`, { params: { columns: true } }),
+        ]);
+        this.setRowColumns(metaResponse.data);
+        this.setColColumns(columnMetaResponse.data);
+      } catch (e) {
+        console.warn('Failed to refresh columns from backend', e);
+      }
     },
   },
   getters: {
