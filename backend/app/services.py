@@ -10,6 +10,7 @@ Uses h5ad-lib for core functionality, adds GenXBrowser-specific features:
 
 import os
 import logging
+import threading
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple, Set
 import re
@@ -387,7 +388,10 @@ class GenXBrowserService:
         
         # Cache for unique column values
         self._unique_values_cache: Dict[str, List[str]] = {}
-        
+
+        # Cache for global (all-dataset merged) histogram bins
+        self._global_bins_cache: Dict[str, List] = {}
+
         # Cache for ORA background data: (species_code, column_name) -> DataFrame
         self._ora_background_cache: Dict[tuple, pd.DataFrame] = {}
     
@@ -434,7 +438,11 @@ class GenXBrowserService:
         self._register_species_from_config()
         self.registry.invalidate_cache()
         self._unique_values_cache = {}
+        self._global_bins_cache = {}  # Invalidate so queries fall back to on-demand until recomputed
         logger.info("Service configuration reloaded")
+        # Recompute global bins in background after reload
+        threading.Thread(target=self.precompute_global_bins, daemon=True).start()
+        logger.info("Started background global bin precomputation after config reload")
     
     # =========================================================================
     # Column Name Mapping
@@ -1166,6 +1174,74 @@ class GenXBrowserService:
             for i in range(len(hist))
         ]
     
+    def precompute_global_bins(self, n_bins: int = 50) -> None:
+        """Pre-compute merged histogram bins for all numeric columns across all enabled datasets.
+
+        Scans every loaded species' .obs and .var for numeric columns, merges values
+        across all datasets, and stores the result in ``_global_bins_cache``.
+        Called at app startup and after every config/metadata change.
+        """
+        logger.info("Precomputing global histogram bins across all datasets...")
+        all_species = self.get_available_species()
+        if not all_species:
+            logger.warning("No species available for global bin precomputation")
+            return
+
+        # Collect all numeric display column names across every species
+        numeric_columns: Set[str] = set()
+        for species_code in all_species:
+            adata = self.registry.load(species_code)
+            if adata is None:
+                continue
+            for col in adata.obs.columns:
+                dtype = str(adata.obs[col].dtype)
+                if self._get_column_type(dtype, col) in ('bigint', 'double precision'):
+                    numeric_columns.add(self._to_display_column_name(col))
+            for col in adata.var.columns:
+                dtype = str(adata.var[col].dtype)
+                if self._get_column_type(dtype, col) in ('bigint', 'double precision'):
+                    numeric_columns.add(self._to_display_column_name(col))
+
+        if not numeric_columns:
+            logger.info("No numeric metadata columns found for global bin precomputation")
+            return
+
+        # _meta suffix is what get_column_bins expects (stripped internally)
+        table_names_meta = [s + "_meta" for s in all_species]
+        new_cache: Dict[str, List] = {}
+        for col in numeric_columns:
+            try:
+                bins = self.get_column_bins(table_names_meta, col, n_bins)
+                if bins:
+                    new_cache[col] = bins
+            except Exception as e:
+                logger.warning(f"Failed to precompute global bins for column '{col}': {e}")
+
+        self._global_bins_cache = new_cache  # Atomic replacement
+        logger.info(
+            f"Global bins precomputed for {len(new_cache)} of {len(numeric_columns)} numeric columns"
+        )
+
+    def get_global_column_bins(self, column_name: str, n_bins: int = 50) -> List[Dict]:
+        """Return global (all-datasets merged) histogram bins from cache, or compute on demand.
+
+        Falls back to on-demand computation if the background precompute hasn't run yet
+        or if the column was not covered in the last precompute pass.
+        """
+        if column_name in self._global_bins_cache:
+            return self._global_bins_cache[column_name]
+
+        # On-demand fallback (e.g. precompute still running at startup)
+        logger.debug(f"Global bins cache miss for '{column_name}', computing on demand")
+        all_species = self.get_available_species()
+        if not all_species:
+            return []
+        table_names_meta = [s + "_meta" for s in all_species]
+        bins = self.get_column_bins(table_names_meta, column_name, n_bins)
+        if bins:
+            self._global_bins_cache[column_name] = bins
+        return bins
+
     def get_unique_values(self, column_name: str) -> List[str]:
         """Get unique values for a column across all species."""
         if column_name in self._unique_values_cache:

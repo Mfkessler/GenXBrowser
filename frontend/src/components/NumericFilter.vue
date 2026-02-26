@@ -1,7 +1,7 @@
 <template>
-  <div class="w-full max-w-lg select-none">
+  <div class="w-full min-w-0 select-none">
     <!-- Histogram above slider -->
-    <div class="flex w-full h-12 items-end mb-1 px-3 space-x-[1px]">
+    <div class="flex w-full h-12 items-end mb-1 px-3 space-x-[1px] overflow-x-hidden">
       <div
         v-for="bin in histogramBins"
         :key="bin.bucket_id"
@@ -38,9 +38,10 @@
 
       <!-- Lower thumb -->
       <div
-        class="absolute w-6 h-6 bg-primary-900 rounded-full cursor-pointer touch-none flex items-center justify-center"
+        class="absolute w-6 h-6 rounded-full touch-none flex items-center justify-center"
+        :class="binEdges.length === 0 ? 'bg-gray-400 cursor-not-allowed' : 'bg-primary-900 cursor-pointer'"
         :style="lowerThumbStyle"
-        @mousedown.prevent="startDrag('lower')"
+        @mousedown.prevent="binEdges.length > 0 && startDrag('lower')"
         aria-label="Lower bound"
         role="slider"
       >
@@ -50,9 +51,10 @@
 
       <!-- Upper thumb -->
       <div
-        class="absolute w-6 h-6 bg-primary-900 rounded-full cursor-pointer touch-none flex items-center justify-center"
+        class="absolute w-6 h-6 rounded-full touch-none flex items-center justify-center"
+        :class="binEdges.length === 0 ? 'bg-gray-400 cursor-not-allowed' : 'bg-primary-900 cursor-pointer'"
         :style="upperThumbStyle"
-        @mousedown.prevent="startDrag('upper')"
+        @mousedown.prevent="binEdges.length > 0 && startDrag('upper')"
         aria-label="Upper bound"
         role="slider"
       >
@@ -65,20 +67,24 @@
     <div class="flex justify-between mt-3">
       <input
         type="number"
-        v-model.number="localLower"
-        @change="onManualInput"
+        :value="formatValue(localLower!)"
+        @change="e => { const v = parseFloat((e.target as HTMLInputElement).value); if (!isNaN(v)) { localLower = v; onManualInput(); } }"
         :min="actualMin"
         :max="localUpper"
-        class="w-1/2 m-1 py-1 border-1 rounded-md text-center text-gray-700"
+        :step="inputStep"
+        class="w-1/2 min-w-0 m-1 py-1 border-1 rounded-md text-center text-gray-700"
+        style="min-width: 0"
         aria-label="Lower bound input"
       />
       <input
         type="number"
-        v-model.number="localUpper"
-        @change="onManualInput"
+        :value="formatValue(localUpper!)"
+        @change="e => { const v = parseFloat((e.target as HTMLInputElement).value); if (!isNaN(v)) { localUpper = v; onManualInput(); } }"
         :min="localLower"
         :max="actualMax"
-        class="w-1/2 m-1 py-1 border-1 rounded-md text-center text-gray-700"
+        :step="inputStep"
+        class="w-1/2 min-w-0 m-1 py-1 border-1 rounded-md text-center text-gray-700"
+        style="min-width: 0"
         aria-label="Upper bound input"
       />
     </div>
@@ -126,7 +132,7 @@ const histogramBins = ref<
 // Local state
 const errorMessage = ref("");
 
-const step = props.step ?? 1;
+const step = props.step ?? 1; // kept for potential future use
 
 const binEdges = computed(() =>
   Array.from(
@@ -187,16 +193,39 @@ const highlightStyle = computed(() => {
 
 // Slider functions
 function snapToClosestEdge(val: number): number {
+  if (binEdges.value.length === 0) return val;
   return binEdges.value.reduce((closest, edge) =>
     Math.abs(edge - val) < Math.abs(closest - val) ? edge : closest,
   );
 }
 
+/** Round to same precision as the bin edges (no integer-only snapping for float ranges). */
 function clamp(val: number): number {
-  return Math.min(
-    actualMax.value,
-    Math.max(actualMin.value, Math.round(val / step) * step),
-  );
+  return Math.min(actualMax.value, Math.max(actualMin.value, val));
+}
+
+/** Determine a sensible step and display precision based on the data range. */
+const rangeSpan = computed(() => actualMax.value - actualMin.value);
+const isFloatRange = computed(
+  () => !Number.isInteger(actualMin.value) || !Number.isInteger(actualMax.value),
+);
+const displayDecimals = computed(() => {
+  if (!isFloatRange.value) return 0;
+  const span = rangeSpan.value;
+  if (span <= 0) return 4;
+  if (span < 0.01) return 6;
+  if (span < 0.1)  return 5;
+  if (span < 1)    return 4;
+  if (span < 10)   return 3;
+  if (span < 100)  return 2;
+  return 1;
+});
+const inputStep = computed(() =>
+  isFloatRange.value ? parseFloat((1 / Math.pow(10, displayDecimals.value)).toFixed(displayDecimals.value)) : 1,
+);
+function formatValue(val: number): number | string {
+  if (!isFloatRange.value) return val;
+  return val.toFixed(displayDecimals.value);
 }
 
 function validateBounds(lower: number, upper: number): boolean {
@@ -227,9 +256,9 @@ function onDrag(event: MouseEvent | TouchEvent) {
   const newVal = snapToClosestEdge(pixelToValue(clientX));
 
   if (dragging.value === "lower") {
-    localLower.value = Math.min(newVal, localUpper.value! - 1);
+    localLower.value = Math.min(newVal, localUpper.value!);
   } else {
-    localUpper.value = Math.max(newVal, localLower.value! + 1);
+    localUpper.value = Math.max(newVal, localLower.value!);
   }
 }
 
@@ -278,10 +307,11 @@ function startDrag(thumb: "lower" | "upper") {
 //Handle manual input
 function onManualInput() {
   if (localLower.value === null || localUpper.value === null) return;
+  if (isNaN(localLower.value) || isNaN(localUpper.value)) return;
 
   // Clamp to min/max ranges
-  //localLower.value = clamp(localLower.value);
-  //localUpper.value = clamp(localUpper.value);
+  localLower.value = clamp(localLower.value);
+  localUpper.value = clamp(localUpper.value);
 
   if (!validateBounds(localLower.value, localUpper.value)) {
     return;

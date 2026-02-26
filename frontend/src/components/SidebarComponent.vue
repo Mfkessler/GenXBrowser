@@ -1,5 +1,5 @@
 <template>
-  <div class="w-full min-h-full bg-white border-r-1 border-gray-300 overflow-visible">
+  <div class="w-full min-h-full bg-white border-r-1 border-gray-300">
     <!-- Action Buttons Row -->
     <div class="relative flex items-center justify-center px-4 py-3 border-b-1 border-gray-300">
       <!-- Close Sidebar Button (Left side, absolute positioned) -->
@@ -85,7 +85,7 @@
         Samples
       </button>
     </div>
-    <div class="p-4">
+    <div class="p-4 overflow-x-hidden">
       <div v-if="loading" class="text-gray-500">Loading filters...</div>
       <div v-else>
         <SearchFilter

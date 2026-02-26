@@ -259,9 +259,15 @@ def create_app():
         logger.warning("GO service not available - GO term names will not be shown")
         app.go_hierarchy = None
     
+    # Pre-compute global histogram bins in background so sliders are usable before
+    # any dataset is selected, and after every config/metadata refresh.
+    import threading
+    threading.Thread(target=app.h5ad_service.precompute_global_bins, daemon=True).start()
+    logger.info("Started background global bin precomputation")
+
     # Register routes
     register_routes(app)
-    
+
     logger.info("H5AD Backend initialized (using h5ad-lib)")
     logger.info(f"Project: {app.config_manager.get_config().get('project_name', 'Unknown')}")
     logger.info(f"Data dir: {h5ad_dir}")

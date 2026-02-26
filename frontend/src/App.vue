@@ -26,15 +26,13 @@
       </button>
       <!-- Sidebar -->
       <div
-        class="transition-all duration-300 relative"
-        :class="sidebarOpen ? 'w-auto' : 'w-0'"
+        class="transition-all duration-300 relative flex-shrink-0"
         :style="{
-          minWidth: sidebarOpen ? '320px' : 0,
-          maxWidth: sidebarOpen ? '540px' : 0,
-          overflow: 'visible'
+          width: sidebarOpen ? '320px' : '0',
+          overflow: 'hidden'
         }"
       >
-        <div class="flex-1 h-full" style="overflow-y: auto; overflow-x: visible;">
+          <div class="h-full" style="width: 320px; overflow-y: auto; overflow-x: hidden;">
           <SidebarComponent
             v-show="sidebarOpen"
             :disable-controls="disableControls"

@@ -524,9 +524,11 @@ def get_column_bins():
         
         service = get_service()
         
-        # If no table names provided, return empty bins
+        # If no table names provided, return global (all-dataset merged) bins
+        # so sliders are always usable even before any dataset is selected
         if not table_names:
-            return jsonify([])
+            bins = service.get_global_column_bins(column_name, n_bins)
+            return jsonify(bins)
         
         # Validate table names
         is_valid, err = validate_table_name(table_names, service.get_tables)
