@@ -575,10 +575,15 @@ async function fetchAllSelected() {
     extractFiltersFromData(results);
 
     // Handle OG selection with persistence and fallback
-    // Keep current selection if still valid, otherwise select first
+    // Keep current selection if still valid (case-insensitive), otherwise select first
     const currentSelection = selectedOrthogroup.value;
     if (commonOGs_array.value.length > 0) {
-      if (!currentSelection || !commonOGs_array.value.includes(currentSelection)) {
+      const matchingOG = commonOGs_array.value.find(
+        og => og.toLowerCase() === currentSelection?.toLowerCase()
+      );
+      if (matchingOG) {
+        selectedOrthogroup.value = matchingOG;
+      } else {
         selectedOrthogroup.value = commonOGs_array.value[0];
       }
     } else {
