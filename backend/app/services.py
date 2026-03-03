@@ -23,9 +23,6 @@ from h5ad_lib.core.registry import SpeciesRegistry
 from h5ad_lib.config.manager import ConfigManager
 from h5ad_lib.filters.storage import FilterStore
 
-# Module enrichment transform
-from .module_enrichment import module_enrichment_transform
-
 logger = logging.getLogger(__name__)
 
 
@@ -360,12 +357,10 @@ class GenXBrowserService:
         self.config_manager = config_manager
         self.config = self._load_config()
         
-        # Initialize h5ad-lib SpeciesRegistry with module enrichment transform
-        # The transform_fn is called after loading each AnnData to add module_colors
+        # Initialize h5ad-lib SpeciesRegistry — module_colors read directly from adata.var
         self.registry = SpeciesRegistry(
             data_dir=self.config['h5ad_dir'],
             max_cache_size_mb=self.config.get('cache_max_size_mb', 2048),
-            transform_fn=module_enrichment_transform,
         )
         
         # Register species from config
@@ -1782,99 +1777,85 @@ class GenXBrowserService:
             if hasattr(expr_matrix, 'toarray'):
                 expr_matrix = expr_matrix.toarray()
             
+            # expr_df shape: (n_obs/samples × n_var/genes)
+            # In the heatmap: rows = genes (var), cols = samples (obs)
+            # → filters     = gene filters  → filter adata.var → filter columns of expr_df
+            # → sample_filters = sample filters → filter adata.obs → filter rows of expr_df
             expr_df = pd.DataFrame(
                 expr_matrix,
-                index=adata.obs_names,
-                columns=adata.var_names
+                index=adata.obs_names,    # rows = samples
+                columns=adata.var_names   # cols = genes
             )
-            
-            # Apply filters if provided
+
+            # Apply gene filters via _apply_filters on adata.var
+            # filters are already in (op, val) tuple format from parse_filters()
             if filters:
-                # Filter rows based on gene filters
-                obs_df = adata.obs
-                mask = pd.Series(True, index=obs_df.index)
-                for col, value in filters.items():
-                    if col in obs_df.columns:
-                        if isinstance(value, list):
-                            mask &= obs_df[col].isin(value)
-                        else:
-                            mask &= (obs_df[col] == value)
-                expr_df = expr_df.loc[mask]
-            
+                filtered_var = self._apply_filters(adata.var.copy(), filters)
+                expr_df = expr_df.loc[:, filtered_var.index]
+
+            # Apply sample filters via _apply_filters on adata.obs
             if sample_filters:
-                # Filter columns based on sample filters
-                var_df = adata.var
-                col_mask = pd.Series(True, index=var_df.index)
-                for col, value in sample_filters.items():
-                    if col in var_df.columns:
-                        if isinstance(value, list):
-                            col_mask &= var_df[col].isin(value)
-                        else:
-                            col_mask &= (var_df[col] == value)
-                expr_df = expr_df.loc[:, col_mask]
-            
-            # Apply transform
+                filtered_obs = self._apply_filters(adata.obs.copy(), sample_filters)
+                expr_df = expr_df.loc[filtered_obs.index, :]
+
+            n_genes   = len(expr_df.columns)   # heatmap rows
+            n_samples = len(expr_df.index)      # heatmap cols
+
+            # Apply transform (normalize per gene across samples)
             if transform == 'log2':
                 expr_df = np.log2(expr_df + 1)
             elif transform == 'zscore':
-                # Z-score per row (gene-wise standardization)
-                expr_df = np.log2(expr_df + 1)  # Log first
-                expr_df = expr_df.sub(expr_df.mean(axis=1), axis=0).div(expr_df.std(axis=1) + 1e-10, axis=0)
-            
+                expr_df = np.log2(expr_df + 1)
+                # z-score each gene (column) across samples (rows)
+                means = expr_df.mean(axis=0)
+                stds  = expr_df.std(axis=0)
+                expr_df = (expr_df - means) / (stds + 1e-10)
+
             result = {
                 'row_order': None,
                 'col_order': None,
                 'metadata': {
-                    'n_rows': len(expr_df),
-                    'n_cols': len(expr_df.columns),
+                    'n_rows': n_genes,
+                    'n_cols': n_samples,
                     'method': method,
                     'distance': distance,
                     'layer_used': actual_layer,
                     'transform': transform
                 }
             }
-            
-            # Map method name
+
+            # Map method / distance names for scipy
             linkage_method = 'average' if method == 'average' else method
-            
-            # Distance metric for scipy
-            dist_metric = 'correlation' if distance == 'correlation' else 'euclidean'
-            
-            # Cluster rows
-            if cluster_rows and len(expr_df) > 1:
+            dist_metric    = 'correlation' if distance == 'correlation' else 'euclidean'
+
+            # optimal_leaf_ordering is O(n³) — skip for large n to avoid OOM/timeout
+            OLO_THRESHOLD = 300
+
+            # cluster_rows → cluster genes (heatmap rows = var dimension = columns of expr_df)
+            # → use transposed matrix: shape (n_genes × n_samples)
+            if cluster_rows and n_genes > 1:
                 try:
-                    row_data = expr_df.values
-                    # Handle NaN/Inf
-                    row_data = np.nan_to_num(row_data, nan=0.0, posinf=0.0, neginf=0.0)
-                    
-                    row_dist = pdist(row_data, metric=dist_metric)
+                    gene_data = np.nan_to_num(expr_df.values.T, nan=0.0, posinf=0.0, neginf=0.0)
+                    row_dist    = pdist(gene_data, metric=dist_metric)
                     row_linkage = linkage(row_dist, method=linkage_method)
-                    
-                    # Apply optimal leaf ordering
-                    row_linkage_olo = optimal_leaf_ordering(row_linkage, row_dist)
-                    row_order = leaves_list(row_linkage_olo)
-                    
-                    result['row_order'] = row_order.tolist()
+                    if n_genes <= OLO_THRESHOLD:
+                        row_linkage = optimal_leaf_ordering(row_linkage, row_dist)
+                    result['row_order'] = leaves_list(row_linkage).tolist()
                 except Exception as e:
-                    logger.warning(f"Row clustering failed: {e}")
-            
-            # Cluster columns
-            if cluster_cols and len(expr_df.columns) > 1:
+                    logger.warning(f"Row (gene) clustering failed: {e}")
+
+            # cluster_cols → cluster samples (heatmap cols = obs dimension = rows of expr_df)
+            # → use matrix as-is: shape (n_samples × n_genes)
+            if cluster_cols and n_samples > 1:
                 try:
-                    col_data = expr_df.values.T  # Transpose for column clustering
-                    # Handle NaN/Inf
-                    col_data = np.nan_to_num(col_data, nan=0.0, posinf=0.0, neginf=0.0)
-                    
-                    col_dist = pdist(col_data, metric=dist_metric)
+                    sample_data = np.nan_to_num(expr_df.values, nan=0.0, posinf=0.0, neginf=0.0)
+                    col_dist    = pdist(sample_data, metric=dist_metric)
                     col_linkage = linkage(col_dist, method=linkage_method)
-                    
-                    # Apply optimal leaf ordering
-                    col_linkage_olo = optimal_leaf_ordering(col_linkage, col_dist)
-                    col_order = leaves_list(col_linkage_olo)
-                    
-                    result['col_order'] = col_order.tolist()
+                    if n_samples <= OLO_THRESHOLD:
+                        col_linkage = optimal_leaf_ordering(col_linkage, col_dist)
+                    result['col_order'] = leaves_list(col_linkage).tolist()
                 except Exception as e:
-                    logger.warning(f"Column clustering failed: {e}")
+                    logger.warning(f"Col (sample) clustering failed: {e}")
             
             return result
             

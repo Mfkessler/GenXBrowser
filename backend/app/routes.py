@@ -1311,28 +1311,17 @@ def cluster_data():
         if distance not in ('correlation', 'euclidean'):
             return jsonify({'error': f'Invalid distance: {distance}. Use correlation or euclidean'}), 400
         
-        # Convert filters from list format if needed
-        filters_dict = {}
-        if isinstance(filters, list):
-            for f in filters:
-                if isinstance(f, dict) and 'column' in f and 'value' in f:
-                    filters_dict[f['column']] = f['value']
-        elif isinstance(filters, dict):
-            filters_dict = filters
-        
-        sample_filters_dict = {}
-        if isinstance(sample_filters, list):
-            for f in sample_filters:
-                if isinstance(f, dict) and 'column' in f and 'value' in f:
-                    sample_filters_dict[f['column']] = f['value']
-        elif isinstance(sample_filters, dict):
-            sample_filters_dict = sample_filters
-        
+        # Parse filters using the same logic as /api/data so frontend FilterValue
+        # objects ({value, strict, empty}) are converted to internal (op, val) tuples.
+        get_cols = lambda **kw: service.get_all_columns(table_name=table_name, **kw)
+        parsed_filters = parse_filters(filters, get_cols) if filters else {}
+        parsed_sample_filters = parse_filters(sample_filters, get_cols, source="column_meta") if sample_filters else {}
+
         # Perform clustering
         result = service.perform_clustering(
             table_name=table_name,
-            filters=filters_dict if filters_dict else None,
-            sample_filters=sample_filters_dict if sample_filters_dict else None,
+            filters=parsed_filters if parsed_filters else None,
+            sample_filters=parsed_sample_filters if parsed_sample_filters else None,
             layer=layer,
             transform=transform,
             cluster_rows=cluster_rows,

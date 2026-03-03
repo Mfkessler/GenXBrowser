@@ -345,17 +345,6 @@ class ConfigManager:
                     is_sample_metadata=True,
                 )
         
-        # Ensure module_colors is in column_definitions if it's in DEFAULT_META_COLUMNS
-        # (it gets added at runtime by transform functions, not from H5AD files)
-        if "module_colors" not in column_definitions and "module_colors" in DEFAULT_META_COLUMNS:
-            column_definitions["module_colors"] = type_inference.build_column_definition(
-                column_name="module_colors",
-                dtype="object",
-                is_array=False,
-                is_meta=True,
-                is_sample_metadata=False,
-            )
-
         # Add virtual gene columns (served dynamically, not stored in .var)
         VIRTUAL_GENE_COLUMNS = [
             ("newick_str",   "text"),

@@ -234,7 +234,8 @@ export function useClustering() {
     try {
       // Use backend for large datasets (> 100 rows)
       if (rows.length > BACKEND_CLUSTERING_THRESHOLD && tableName) {
-        console.log(`Using backend clustering for ${rows.length} rows`);
+        const what = clusterRows && clusterCols ? 'rows + cols' : clusterRows ? 'rows' : 'cols';
+        console.log(`Using backend clustering for ${rows.length} genes × ${dataColumns.length} samples (${what})`);
         
         const result = await performBackendClustering(
           tableName,
