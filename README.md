@@ -107,14 +107,8 @@ Backend environment variables (automatically set by `genxprep app`):
 | `FILTER_STORE_PATH` | `<H5AD_DATA_DIR>/filters` | Directory for shareable filter storage |
 | `GO_OBO_PATH` | `<H5AD_DATA_DIR>/go-basic.obo` | Path to Gene Ontology OBO file |
 | `GO_AUTO_DOWNLOAD` | `true` | Auto-download GO OBO if missing |
-| `GUNICORN_WORKERS` | `1` | Number of Gunicorn workers |
-| `GUNICORN_THREADS` | `8` | Threads per worker (shares in-memory cache) |
-| `GUNICORN_TIMEOUT` | `120` | Request timeout in seconds |
-| `VITE_BASE_URL` | `/` | Base path for the app (build-time) |
-| `VITE_API_BASE_URL` | `/api` | Frontend API base URL (build-time) |
-| `VITE_DATA_TYPE` | `Genes` | Display label — `Genes` or `Isoforms` |
-| `VITE_PHOTO_DISPLAY_MODE` | `circular` | Species photo display mode (`circular` or `watermark`) |
-| `SPECIES_PHOTOS_DIR` | `/data/species_photos` | Directory containing species photos |
+| `SPECIES_PHOTOS_DIR` | — | Directory containing species photos (optional) |
+| `ADMIN_TOKEN` | — | Bearer token for admin API auth (disabled when unset) |
 | `FLASK_DEBUG` | `true` | Enable debug mode for local development |
 
 ### Species Photos (Optional)
@@ -124,21 +118,12 @@ GenXBrowser supports displaying species photos in catalog cards. Photos are auto
 **Setup:**
 
 1. **Prepare photos** — PNG, JPEG, or WebP files.
-2. **Name photos** — Match species names (e.g., `capnoides_sempervirens.jpg` for "Capnoides sempervirens")
-3. **Mount photos directory** — Add volume mount in your `docker-compose.yml`:
+2. **Name photos** — Match species names (e.g., `capnoides_sempervirens.jpg` for "Capnoides sempervirens").
+3. **Set the photos directory** — pass `SPECIES_PHOTOS_DIR` before running `genxprep app`:
 
-```yaml
-services:
-  backend:
-    volumes:
-      - ./photos:/data/species_photos:ro  # Backend serves photos
-    environment:
-      - SPECIES_PHOTOS_DIR=/data/species_photos
-  
-  frontend:
-    build:
-      args:
-        VITE_PHOTO_DISPLAY_MODE: circular  # or "watermark"
+```bash
+export SPECIES_PHOTOS_DIR=/path/to/photos
+genxprep app config.yml
 ```
 
 **Display Modes:**
@@ -219,9 +204,13 @@ The `.h5ad` file should contain:
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| GET | `/api/admin/auth/check` | Check auth requirement and token validity |
 | GET | `/api/admin/health` | Admin health check |
 | GET/PUT | `/api/admin/config` | Get/update project configuration |
 | POST | `/api/admin/config/reload` | Reload config from disk |
+| GET | `/api/admin/config/profiles` | List saved config profiles |
+| POST | `/api/admin/config/save-profile` | Save current config as a named profile |
+| POST | `/api/admin/config/load-profile` | Load a saved config profile |
 | POST | `/api/admin/restart` | Trigger backend restart |
 | GET | `/api/admin/species` | List all species configs |
 | PUT | `/api/admin/species/<code>` | Update species configuration |
@@ -230,6 +219,9 @@ The `.h5ad` file should contain:
 | GET/PUT | `/api/admin/frontend-settings` | Frontend display settings |
 | GET | `/api/admin/datasets` | List datasets with status info |
 | PATCH | `/api/admin/datasets/<code>/enabled` | Enable/disable dataset |
+| POST | `/api/admin/metadata/import` | Validate metadata CSV for import |
+| POST | `/api/admin/metadata/import/confirm` | Apply validated metadata import to H5AD |
+| DELETE | `/api/admin/metadata/<column_name>` | Remove custom metadata column |
 
 ## Development
 

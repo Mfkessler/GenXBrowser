@@ -101,9 +101,13 @@ python run.py
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| `GET` | `/api/admin/auth/check` | Check auth requirement and token validity |
 | `GET` | `/api/admin/health` | Admin health check |
 | `GET/PUT` | `/api/admin/config` | Get/update project configuration |
 | `POST` | `/api/admin/config/reload` | Reload config from disk |
+| `GET` | `/api/admin/config/profiles` | List saved config profiles |
+| `POST` | `/api/admin/config/save-profile` | Save current config as a named profile |
+| `POST` | `/api/admin/config/load-profile` | Load a saved config profile |
 | `POST` | `/api/admin/restart` | Trigger backend restart |
 | `GET` | `/api/admin/species` | List all species configs |
 | `PUT` | `/api/admin/species/<code>` | Update species configuration |
@@ -112,6 +116,9 @@ python run.py
 | `GET/PUT` | `/api/admin/frontend-settings` | Frontend display settings |
 | `GET` | `/api/admin/datasets` | List datasets with status info |
 | `PATCH` | `/api/admin/datasets/<code>/enabled` | Enable/disable dataset |
+| `POST` | `/api/admin/metadata/import` | Validate metadata CSV for import |
+| `POST` | `/api/admin/metadata/import/confirm` | Apply validated metadata import to H5AD |
+| `DELETE` | `/api/admin/metadata/<column_name>` | Remove custom metadata column |
 
 ### Example Data Query
 
@@ -141,6 +148,8 @@ POST /api/data
 | `CACHE_MAX_SIZE_MB` | LRU cache size in MB | `2048` |
 | `GO_OBO_PATH` | Path to Gene Ontology OBO file | `<H5AD_DATA_DIR>/go-basic.obo` |
 | `GO_AUTO_DOWNLOAD` | Auto-download GO OBO if missing | `true` |
+| `SPECIES_PHOTOS_DIR` | Directory containing species photos | — (optional) |
+| `ADMIN_TOKEN` | Bearer token for admin API auth | — (auth disabled when unset) |
 
 ### Auto-Discovery
 
