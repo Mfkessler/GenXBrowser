@@ -14,7 +14,6 @@ function buildProxy() {
   const routes: Record<string, object> = {
     "/api": { target: backendTarget, changeOrigin: true },
     "/health": { target: backendTarget, changeOrigin: true },
-    "/gene_tree": { target: backendTarget, changeOrigin: true },
   };
   // When running behind a sub-path, add rewriting proxy entries
   if (apiBase && apiBase !== "/" && apiBase !== "") {
@@ -25,11 +24,6 @@ function buildProxy() {
       rewrite: (path: string) => path.replace(new RegExp(`^${prefix}`), ""),
     };
     routes[`${prefix}/health`] = {
-      target: backendTarget,
-      changeOrigin: true,
-      rewrite: (path: string) => path.replace(new RegExp(`^${prefix}`), ""),
-    };
-    routes[`${prefix}/gene_tree`] = {
       target: backendTarget,
       changeOrigin: true,
       rewrite: (path: string) => path.replace(new RegExp(`^${prefix}`), ""),

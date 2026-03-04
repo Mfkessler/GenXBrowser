@@ -5,7 +5,7 @@
       <LoadingOverlay v-if="loading"/>
     </div>
 
-    <div v-show="!loading && newickstr !== null" class="flex-grow relative h-[90vh] w-full">
+    <div v-if="!loading && newickstr !== null" class="flex-grow relative h-[90vh] w-full">
       <!-- Phylogenetic Tree Title + Buttons in same row -->
       <div v-if="commonOGs_array.length > 0" class="flex flex-wrap items-center gap-3 mb-1 p-3 bg-gray-50 rounded-lg border border-gray-200">
         <!-- Orthogroup Selector - same styling as Compare view -->
@@ -86,7 +86,7 @@
     />
 
     <div v-if="newickstr===null" class="flex-grow relative h-[90vh] w-full">
-      <NoNewickComponent :og="og"/>
+      <NoNewickComponent :og="og" :show-full-tree="true" @show-full-tree="loadFullNewickForOG" />
     </div>
 
 
@@ -171,6 +171,9 @@ const columns = ref<RowType[]>([]);
 const newicks = ref<Record<string, string>>({});
 const newickstr = ref("");
 const loading = ref(false);
+// Holds the full (unfiltered) Newick loaded via the "Show full tree" button.
+// Acts as fallback in renderTreeForSelectedOG so watchers don't wipe it out.
+const fullNewick = ref<string | null>(null);
 
 // Selected orthogroup - computed property linked to store
 const selectedOrthogroup = computed({
@@ -439,7 +442,14 @@ async function fetchAllSelected() {
       selectedOrthogroup.value = commonOGs_array.value[0];
     }
   } else {
-    selectedOrthogroup.value = '';
+    // Keep the current selection when the species filter yields no matching OGs,
+    // so the "Show full tree" button can still call loadFullNewickForOG with the
+    // correct OG id. Only clear if there was truly nothing selected to begin with.
+    if (!currentSelection) {
+      selectedOrthogroup.value = '';
+    }
+    // else: leave selectedOrthogroup as-is so NoNewickComponent shows the right OG
+    // and loadFullNewickForOG doesn't bail out on the empty-string guard.
   }
 
   loading.value = false
@@ -1432,6 +1442,14 @@ async function initPhylotree(newick_str: string, metrics: any) {
 // Helper function to render tree for currently selected orthogroup
 async function renderTreeForSelectedOG() {
   if (!selectedOrthogroup.value || !newicks.value[selectedOrthogroup.value]) {
+    // Fall back to the directly-loaded full Newick (button was clicked)
+    if (fullNewick.value) {
+      const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
+      newickstr.value = fullNewick.value;
+      await nextTick();
+      initPhylotree(newickstr.value, metrics);
+      return;
+    }
     newickstr.value = null as any;
     return;
   }
@@ -1441,6 +1459,54 @@ async function renderTreeForSelectedOG() {
   if (newickstr.value !== null) {
     await nextTick();
     initPhylotree(newickstr.value, metrics);
+  }
+}
+
+// Load the full Newick for the selected OG directly from the API,
+// bypassing the species filter (useful when the current species has
+// no entry in the selected orthogroup).
+async function loadFullNewickForOG() {
+  if (!selectedOrthogroup.value) return;
+  try {
+    const response = await axios.get<{ og_id: string; newick: string }>(
+      `${API_BASE_URL}/api/gene_tree/${selectedOrthogroup.value}`
+    );
+    const newick = response.data.newick;
+    if (!newick) return;
+
+    fullNewick.value = newick;  // persist so watchers can't wipe it
+    newickstr.value = newick;
+
+    // Re-fetch all available datasets with the SAME merged filters (which already
+    // include the orthogroup filter from the sidebar), but for ALL species — not
+    // just the catalog-selected ones.  Per-species row count for a single OG is
+    // always small (<1000), so the rowCount guard inside fetchData is never hit.
+    const allDatasets = Object.keys(props.allTables);
+
+    const entries = await Promise.all(
+      allDatasets.map(async (tbl) => {
+        const { data: count } = await axios.post(`${API_BASE_URL}/api/count`, {
+          table_name: tbl,
+          filters: filtersStore.getMergedFilters(tbl),
+        });
+        const rowCount = count.count;
+        if (rowCount === 0) return null;
+        const data = await fetchData(tbl, rowCount);
+        return data ? { tableName: tbl, data } : null;
+      })
+    );
+
+    const results: Record<string, any> = {};
+    for (const entry of entries) {
+      if (entry) results[entry.tableName] = entry.data;
+    }
+    tableData.value = results;
+
+    const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
+    await nextTick();
+    initPhylotree(newickstr.value, metrics);
+  } catch (e) {
+    console.error("Failed to load full gene tree:", e);
   }
 }
 
@@ -1504,6 +1570,7 @@ watch(
   async () => {
     if (initialUrlParsing.value) return;
     if (props.hashLoading) return;
+    fullNewick.value = null;  // clear full-tree override when user picks a new OG
     updateUrlFromState();
     await renderTreeForSelectedOG();
   }
