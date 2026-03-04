@@ -251,22 +251,102 @@ def select_optimal_layer(adata, transform: str, requested_layer: Optional[str] =
 # ============================================================================
 
 class SequenceStore:
-    """Loads and caches FASTA sequences for genes."""
-    
+    """Loads and caches FASTA sequences for genes.
+
+    Sequence files are discovered by scanning the directory at initialisation
+    time.  The filename is parsed as follows:
+
+        <species_code><separator><type_label>[.<ext>]
+
+    where separator is any run of dots or underscores that separates the
+    species code prefix from the remainder of the stem, and type_label is
+    matched case-insensitively against two keyword sets:
+        protein  - 'protein', 'proteins', 'prot', 'pep', 'aa'
+        RNA      - 'rna', 'transcript', 'transcripts', 'mrna', 'cdna', 'cds', 'nucl', 'mrna'
+
+    This handles all observed naming conventions across projects:
+        AT.protein.fas
+        AT.RNA.fas
+        AT_proteins.faa 
+        AT_transcripts.fa
+    """
+
+    _FASTA_SUFFIXES: frozenset = frozenset({'.fas', '.fa', '.faa', '.fasta', '.fna'})
+    _PROTEIN_KEYWORDS: frozenset = frozenset({'protein', 'proteins', 'prot', 'pep', 'aa'})
+    _RNA_KEYWORDS: frozenset = frozenset({'rna', 'transcript', 'transcripts', 'mrna', 'cdna', 'cds', 'nucl'})
+
     def __init__(self, sequences_dir: str):
         self._sequences_dir = Path(sequences_dir)
         self._cache: Dict[str, Dict[str, str]] = {}
-    
-    def _load_fasta(self, file_path: Path) -> Dict[str, str]:
-        """Load FASTA file and return dict of gene_id -> sequence."""
-        sequences = {}
-        current_id = None
-        current_seq = []
-        
+        # index: {species_code: {'protein': Path, 'RNA': Path}}
+        self._index: Dict[str, Dict[str, Path]] = self._build_index()
+
+    def _build_index(self) -> Dict[str, Dict[str, Path]]:
+        """Scan sequences_dir and build a lookup index keyed by species code and sequence type."""
+        index: Dict[str, Dict[str, Path]] = {}
+
+        if not self._sequences_dir.exists():
+            logger.warning(f"Sequences directory not found: {self._sequences_dir}")
+            return index
+
+        for path in self._sequences_dir.iterdir():
+            if not path.is_file():
+                continue
+            # Collect multi-part suffixes like .protein.fas → suffix is the last part only
+            # Use the full stem (everything before the last dot-extension) for parsing
+            suffix = path.suffix.lower()
+            if suffix not in self._FASTA_SUFFIXES:
+                continue
+
+            # Strip the recognised file extension to get the full stem
+            stem = path.stem  # e.g. "AT.protein", "AT_proteins", "AT.RNA"
+
+            # Split stem on the first dot or underscore to separate species code from type label
+            parts = re.split(r'[._]', stem, maxsplit=1)
+            if len(parts) != 2:
+                logger.debug(f"Skipping sequence file with unexpected name format: {path.name}")
+                continue
+
+            code, type_label = parts[0], parts[1].lower()
+
+            if type_label in self._PROTEIN_KEYWORDS:
+                seq_type = 'protein'
+            elif type_label in self._RNA_KEYWORDS:
+                seq_type = 'RNA'
+            else:
+                logger.debug(f"Skipping sequence file with unrecognised type label '{type_label}': {path.name}")
+                continue
+
+            index.setdefault(code, {})[seq_type] = path
+
+        if index:
+            summary = ', '.join(
+                f"{code}:[{','.join(sorted(types))}]" for code, types in sorted(index.items())
+            )
+            logger.info(f"SequenceStore: indexed {len(index)} species — {summary}")
+        else:
+            logger.warning(f"SequenceStore: no sequence files found in {self._sequences_dir}")
+
+        return index
+
+    def _resolve_fasta_path(self, species_code: str, seq_type: str) -> Optional[Path]:
+        """Return the indexed FASTA path for a species code and sequence type, or None."""
+        return self._index.get(species_code, {}).get(seq_type)
+
+    def _load_fasta(self, file_path: Optional[Path]) -> Dict[str, str]:
+        """Load a FASTA file and return a mapping of sequence ID to sequence string."""
+        sequences: Dict[str, str] = {}
+
+        if file_path is None:
+            return sequences
+
         if not file_path.exists():
             logger.warning(f"FASTA file not found: {file_path}")
             return sequences
-        
+
+        current_id = None
+        current_seq: list = []
+
         with open(file_path, 'r') as f:
             for line in f:
                 line = line.strip()
@@ -277,32 +357,36 @@ class SequenceStore:
                     current_seq = []
                 elif current_id:
                     current_seq.append(line)
-            
+
             if current_id:
                 sequences[current_id] = ''.join(current_seq)
-        
+
         return sequences
-    
+
     def get_protein_seq(self, species_code: str, gene_id: str) -> str:
-        """Get protein sequence for a gene."""
+        """Return the protein sequence for a gene, or an empty string if unavailable."""
         cache_key = f"{species_code}_protein"
-        
+
         if cache_key not in self._cache:
-            fasta_file = self._sequences_dir / f"{species_code}.protein.fas"
+            fasta_file = self._resolve_fasta_path(species_code, 'protein')
+            if fasta_file is None:
+                logger.warning(f"No protein sequence file indexed for species '{species_code}'")
             self._cache[cache_key] = self._load_fasta(fasta_file)
             logger.info(f"Loaded {len(self._cache[cache_key])} protein sequences for {species_code}")
-        
+
         return self._cache[cache_key].get(gene_id, '')
-    
+
     def get_rna_seq(self, species_code: str, gene_id: str) -> str:
-        """Get RNA sequence for a gene."""
+        """Return the RNA/transcript sequence for a gene, or an empty string if unavailable."""
         cache_key = f"{species_code}_RNA"
-        
+
         if cache_key not in self._cache:
-            fasta_file = self._sequences_dir / f"{species_code}.RNA.fas"
+            fasta_file = self._resolve_fasta_path(species_code, 'RNA')
+            if fasta_file is None:
+                logger.warning(f"No RNA sequence file indexed for species '{species_code}'")
             self._cache[cache_key] = self._load_fasta(fasta_file)
             logger.info(f"Loaded {len(self._cache[cache_key])} RNA sequences for {species_code}")
-        
+
         return self._cache[cache_key].get(gene_id, '')
 
 
@@ -663,7 +747,7 @@ class GenXBrowserService:
                     for col in adata.var.columns:
                         display_name = self._to_display_column_name(col)
 
-                        # All .var columns are gene/transcript metadata – no whitelist needed.
+                        # All .var columns are gene/transcript metadata - no whitelist needed.
                         # The column_definitions visibility flag controls what the user sees.
 
                         if display_name not in seen:

@@ -864,7 +864,7 @@ def get_filter(hash_id: str):
 # Gene Trees
 # ============================================================================
 
-@api_bp.route('/gene_tree/<og_id>', methods=['GET'])
+@api_bp.route('/api/gene_tree/<og_id>', methods=['GET'])
 def get_gene_tree(og_id: str):
     """Get Newick tree for an orthogroup."""
     service = get_service()
