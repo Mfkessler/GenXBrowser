@@ -310,7 +310,6 @@ const goTermInfoCache = ref<Record<string, { name: string; namespace: string; de
 const isGoTermEnrichment = computed(() => {
   const colName = visualizationStore.oraColumnName.toLowerCase();
   return colName.includes('go') || 
-         colName === 'go_term' || 
          colName === 'go_terms' ||
          colName === 'gene_ontology' ||
          colName.startsWith('go_');
@@ -1550,12 +1549,11 @@ let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
 let lastContainerWidth = 0;
 
 onMounted(async () => {
-  // Set GO terms as default column if available and current is still default (orthogroup)
-  if (visualizationStore.oraColumnName === 'orthogroup' && columnsStore.rowColumns.length > 0) {
+  // Set GO terms as default column if available and current is still default (ortho_id)
+  if (visualizationStore.oraColumnName === 'ortho_id' && columnsStore.rowColumns.length > 0) {
     const goColumn = columnsStore.rowColumns.find(col => {
       const colName = col.column_name.toLowerCase();
       return colName.includes('go') || 
-             colName === 'go_term' || 
              colName === 'go_terms' ||
              colName === 'gene_ontology' ||
              colName.startsWith('go_');

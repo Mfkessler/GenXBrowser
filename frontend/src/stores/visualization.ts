@@ -72,7 +72,7 @@ function getDefaultState(): VisualizationState {
   return {
     rowLabel: true,
     colLabel: true,
-    rowSideColors: [],  // Will be initialized with ['orthogroup'] if available
+    rowSideColors: [],  // Will be initialized with ['ortho_id'] if available
     colSideColors: [],  // Will be initialized with ['tissue_types'] if available
     rowOrder: { name: "", order: "asc" },
     colOrder: { name: "", order: "asc" },
@@ -85,7 +85,7 @@ function getDefaultState(): VisualizationState {
     hideEmpty: true,  // Default: hide empty columns
     legend: true,
     oraRowSideColor: true,
-    oraColumnName: "orthogroup",
+    oraColumnName: "ortho_id",
     oraOrder: { name: "", order: "asc" },
     significance: "0.01",
     oraTopN: 50,
@@ -131,12 +131,12 @@ export const useVisualizationStore = defineStore("visualization", {
       // Set config-dependent data here
       this.rowOrder.name = id_column;
       this.colOrder.name = "tissue_types"; // Default column order — assumes tissue_types is available
-      this.oraColumnName = "orthogroup"; // Default ORA grouping column — requires orthogroup data
+      this.oraColumnName = "ortho_id"; // Default ORA grouping column — requires ortho_id data
       this.oraOrder.name = "p_value";
       
-      // Set default rowSideColors to include 'orthogroup' if available
-      if (availableRowColumns && availableRowColumns.includes('orthogroup') && this.rowSideColors.length === 0) {
-        this.rowSideColors = ['orthogroup'];
+      // Set default rowSideColors to include 'ortho_id' if available
+      if (availableRowColumns && availableRowColumns.includes('ortho_id') && this.rowSideColors.length === 0) {
+        this.rowSideColors = ['ortho_id'];
       }
       
       // Set default colSideColors to include 'tissue_types' if available
@@ -295,8 +295,8 @@ export const useVisualizationStore = defineStore("visualization", {
      */
     initializeDefaultSideColors(availableRowColumns: string[], availableColColumns: string[]) {
       // Only set defaults if not already configured
-      if (this.rowSideColors.length === 0 && availableRowColumns.includes('orthogroup')) {
-        this.rowSideColors = ['orthogroup'];
+      if (this.rowSideColors.length === 0 && availableRowColumns.includes('ortho_id')) {
+        this.rowSideColors = ['ortho_id'];
       }
       if (this.colSideColors.length === 0 && availableColColumns.includes('tissue_types')) {
         this.colSideColors = ['tissue_types'];

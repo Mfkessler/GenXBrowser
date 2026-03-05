@@ -27,7 +27,7 @@ def serialize_dataframe(df, column_defs=None):
     backwards-compatibility when column_defs is not provided.
     """
     # Legacy fallback sets (used only when no column_defs provided)
-    COMMA_ARRAY_COLUMNS = {'go_term', 'interpro_term', 'pfam_term'}
+    COMMA_ARRAY_COLUMNS = {'go_terms', 'ipr_id', 'pfam_id'}
     PIPE_ARRAY_COLUMNS = {'ipr_desc', 'pfam_desc'}
 
     records = df.to_dict(orient='records')
@@ -927,7 +927,7 @@ def go_search():
     try:
         # Get GO terms that exist in the dataset
         service = get_service()
-        dataset_go_terms = set(service.get_unique_values('go_term'))
+        dataset_go_terms = set(service.get_unique_values('go_terms'))
         
         if not dataset_go_terms:
             return jsonify({
@@ -1116,7 +1116,7 @@ def calculate_ora():
     Request Body:
         {
             "table_name": "species_name",
-            "column_name": "orthogroup",  // Column containing attributes (e.g., GO terms, orthogroups)
+            "column_name": "ortho_id",  // Column containing attributes (e.g., GO terms, orthogroups)
             "filters": [...],              // Filters defining the gene subset (e.g., TF Family = MIKC)
             "significance": 0.01,          // FDR threshold (default: 0.01)
             "top_n": 50,                   // Max results to return (default: 50)
@@ -1251,7 +1251,7 @@ def cluster_data():
     Request Body:
         {
             "table_name": "gene_expression_aquilegia_coerulea",
-            "filters": [{"column": "orthogroup", "value": "OG0000001"}],
+            "filters": [{"column": "ortho_id", "value": "OG0000001"}],
             "sample_filters": {},
             "layer": "getmm",           // Optional: expression layer
             "transform": "zscore",      // 'raw', 'log2', 'zscore'

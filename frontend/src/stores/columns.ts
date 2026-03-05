@@ -15,8 +15,8 @@ export interface ColumnsState {
   distinctValues: Record<string, string[]>;
 }
 
-// Tissue column names that should be recognized (including 'tissue' from h5ad)
-const TISSUE_COLUMNS = ['tissue_col', 'tissue_x_col', 'tissue_type_col', 'tissue'];
+// Tissue column name — h5ad files use 'tissue' directly
+const TISSUE_COLUMNS = ['tissue'];
 
 // Columns to hide from sample-metadata column selectors
 const HIDDEN_COL_COLUMNS = ['type', 'ismeta'];
@@ -31,18 +31,8 @@ export const useColumnsStore = defineStore("columns", {
   }),
   actions: {
     setRowColumns(columns: MetaFormat[]) {
-      // If both 'og' and 'orthogroup' exist, hide 'orthogroup' (it's just an alias)
-      const hasOg = columns.some(c => c.column_name === 'og');
-      const hasOrthogroup = columns.some(c => c.column_name === 'orthogroup');
-      
-      // Filter out tissue_col - it's a sample property, not a gene property
-      const filteredColumns = columns.filter(c => c.column_name !== 'tissue_col');
-      
-      if (hasOg && hasOrthogroup) {
-        this.rowColumns = filteredColumns.filter(c => c.column_name !== 'orthogroup');
-      } else {
-        this.rowColumns = filteredColumns;
-      }
+      // Filter out tissue — it's a sample property, not a gene property
+      this.rowColumns = columns.filter(c => c.column_name !== 'tissue');
     },
     setColColumns(columns: MetaFormat[]) {
       // Filter out hidden internal columns
@@ -51,9 +41,8 @@ export const useColumnsStore = defineStore("columns", {
       const tissueColumns = cleaned.filter(c => TISSUE_COLUMNS.includes(c.column_name));
       const nonTissueColumns = cleaned.filter(c => !TISSUE_COLUMNS.includes(c.column_name));
       
-      // Find any tissue column (tissue_col or tissue)
-      const tissueColEntry = columns.find(c => c.column_name === 'tissue_col') 
-                          || columns.find(c => c.column_name === 'tissue');
+      // Find tissue column
+      const tissueColEntry = columns.find(c => c.column_name === 'tissue');
       
       if (tissueColEntry) {
         // For filtering: use the tissue column directly (it has the actual values)
@@ -79,7 +68,7 @@ export const useColumnsStore = defineStore("columns", {
           { column_name: "tissue_types", type: "string" },
         ];
       } else {
-        // No tissue_col - keep original columns
+        // No tissue column — keep original columns
         this.filterableColColumns = columns;
         this.orderableColColumns = [
           ...columns,
@@ -101,7 +90,7 @@ export const useColumnsStore = defineStore("columns", {
     },
     // Helper to get the actual column name for filtering
     getActualColumnName(displayName: string): string {
-      return displayName; // No mapping needed anymore, we use tissue_col directly
+      return displayName; // h5ad names are the standard — no mapping needed
     },
     // Refresh columns from backend (called after admin config save)
     async refreshColumns() {

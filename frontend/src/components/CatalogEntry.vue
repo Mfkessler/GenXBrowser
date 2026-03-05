@@ -511,13 +511,13 @@ async function calculate_tissues(tableName: string, filters: any) {
   try {
     console.log(`[calculate_tissues] Fetching tissues for ${tableName} with filters:`, filters);
     
-    // Common tissue column names across datasets
-    const TISSUE_COLUMNS = ['tissue_col', 'tissue_x_col', 'tissue_type_col', 'tissue'];
+    // Tissue column name (h5ad standard)
+    const TISSUE_COLUMNS = ['tissue'];
     
     // Sample metadata columns that can be filtered
     const SAMPLE_METADATA_COLUMNS = [
       ...TISSUE_COLUMNS,
-      'assigned_reads',
+      'assigned',
       'pct_unmapped',
       'pct_no_feature',
       'pct_trimmed'
@@ -737,7 +737,7 @@ watch(
     if (!props.tableName) return;
 
     // Check for orthogroup filter
-    isOG.value = Object.keys(newFilters).includes("orthogroup");
+    isOG.value = Object.keys(newFilters).includes("ortho_id");
     const isEmpty = Object.keys(newFilters).length === 0;
 
     console.log(`[CatalogEntry watcher] isEmpty:`, isEmpty, 'filter keys:', Object.keys(newFilters));

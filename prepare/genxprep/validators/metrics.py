@@ -1,7 +1,11 @@
 """Metrics validator – validates RNA-seq quality metrics files.
 
 Expected format: TSV with columns ``sample``, ``assigned``,
-``pct unmapped``, ``pct no_feature``, ``pct trimmed``.
+``pct_unmapped``, ``pct_no_feature``, ``pct_trimmed``.
+
+Column names are normalized on read: spaces → underscores, hyphens → underscores,
+lowercase. This ensures consistent column names in the resulting h5ad files regardless
+of the original TSV header style.
 """
 
 from __future__ import annotations
@@ -15,9 +19,9 @@ from genxprep.reporter import ValidationResult
 _EXPECTED_COLUMNS = {
     "sample",
     "assigned",
-    "pct unmapped",
-    "pct no_feature",
-    "pct trimmed",
+    "pct_unmapped",
+    "pct_no_feature",
+    "pct_trimmed",
 }
 
 
@@ -39,6 +43,9 @@ def validate_metrics(
     except Exception as exc:
         vr.error(f"Could not read metrics file: {exc}")
         return None
+
+    # Normalize column names: spaces → underscores, hyphens → underscores, lowercase
+    df.columns = [c.strip().lower().replace(" ", "_").replace("-", "_") for c in df.columns]
 
     if df.empty:
         vr.error("Metrics file is empty.")
@@ -93,7 +100,7 @@ def validate_metrics(
         )
 
     # -- numeric check on metric cols --------------------------------------
-    metric_cols = [col_lower[c] for c in ("assigned", "pct unmapped", "pct no_feature", "pct trimmed") if c in col_lower]
+    metric_cols = [col_lower[c] for c in ("assigned", "pct_unmapped", "pct_no_feature", "pct_trimmed") if c in col_lower]
     for mc in metric_cols:
         if not pd.api.types.is_numeric_dtype(df[mc]):
             coerced = pd.to_numeric(df[mc], errors="coerce")

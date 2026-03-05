@@ -528,13 +528,13 @@ class GenXBrowserService:
     # =========================================================================
     
     def _to_display_column_name(self, h5ad_name: str) -> str:
-        """Convert H5AD column name to display column name."""
+        """Normalize column name for display (identity: h5ad names are the standard)."""
         if h5ad_name in self._column_mappings:
             return self._column_mappings[h5ad_name]
-        return h5ad_name.replace(' ', '_').replace('-', '_').lower()
+        return h5ad_name
     
     def _to_h5ad_column_name(self, display_name: str) -> str:
-        """Convert display column name to H5AD column name."""
+        """Convert display column name to H5AD column name (identity: names match)."""
         if display_name in self._reverse_column_mappings:
             return self._reverse_column_mappings[display_name]
         return display_name
@@ -960,8 +960,8 @@ class GenXBrowserService:
         
         # Add virtual columns (only when requested and enabled)
         if include_virtual_columns:
-            if 'orthogroup' in df.columns and ('newick_str' in columns or not columns):
-                df['newick_str'] = df['orthogroup'].apply(
+            if 'ortho_id' in df.columns and ('newick_str' in columns or not columns):
+                df['newick_str'] = df['ortho_id'].apply(
                     lambda og: self.gene_trees.get(og) if pd.notna(og) and og else None
                 )
             
@@ -1032,26 +1032,20 @@ class GenXBrowserService:
                 'ismeta': False,
             }
             
-            # Add sample metadata
-            for obs_col, row_key in [
-                ('tissue', 'tissue_col'),
-                ('tissue', 'tissue_x_col'),
-                ('tissue', 'tissue_type_col'),
-                ('assigned', 'assigned_reads'),
-                ('pct unmapped', 'pct_unmapped'),
-                ('pct no_feature', 'pct_no_feature'),
-                ('pct trimmed', 'pct_trimmed'),
+            # Add sample metadata — column names match h5ad directly
+            for obs_col in [
+                'tissue', 'assigned', 'pct_unmapped', 'pct_no_feature', 'pct_trimmed',
             ]:
                 if obs_col in adata.obs.columns:
                     val = sample_row.get(obs_col, None)
-                    row[row_key] = float(val) if isinstance(val, (int, float)) and not pd.isna(val) else val
+                    row[obs_col] = float(val) if isinstance(val, (int, float)) and not pd.isna(val) else val
                 else:
-                    row[row_key] = None
+                    row[obs_col] = None
             
             rows.append(row)
         
-        # NOTE: Gene metadata columns (go_term, description, gene_name, ec_number,
-        # description_long, interpro_term, pfam_term, is_tf, tf_family, orthogroup,
+        # NOTE: Gene metadata columns (go_terms, description, genename, ecnumber,
+        # description_long, ipr_id, pfam_id, is_tf, tf_family, ortho_id,
         # module_colors) are intentionally NOT included here.
         # They are accessible via the Data Manager / Inspect Data modal.
         
@@ -1503,7 +1497,7 @@ class GenXBrowserService:
         
         Args:
             table_name: Species table name
-            column_name: Attribute column (e.g., 'orthogroup', 'go_term')
+            column_name: Attribute column (e.g., 'ortho_id', 'go_terms')
             filters: Filter list defining gene subset
             significance: FDR q-value threshold (default: 0.01)
             top_n: Maximum results to return (default: 50)

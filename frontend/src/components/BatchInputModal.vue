@@ -293,7 +293,7 @@ function clearSelectedOptions() {
 // Check if this filter is for GO terms
 const isGoTermFilter = computed(() => {
   const label = (props.columnName || props.columnLabel).toLowerCase();
-  return label === 'go_term' || label === 'go term' || label === 'goterm';
+  return label === 'go_terms' || label === 'go_term' || label === 'go term' || label === 'goterm';
 });
 
 const detectedSeparatorLabel = computed(() => {

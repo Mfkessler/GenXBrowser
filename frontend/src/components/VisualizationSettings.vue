@@ -866,7 +866,6 @@ watch(() => store.oraMinCount, (newValue) => {
 const isGoTermColumn = computed(() => {
   const colName = store.oraColumnName.toLowerCase();
   return colName.includes('go') || 
-         colName === 'go_term' || 
          colName === 'go_terms' ||
          colName === 'gene_ontology' ||
          colName.startsWith('go_');

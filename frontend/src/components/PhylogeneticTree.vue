@@ -309,14 +309,14 @@ async function fetchData(tableName: string, rowCount: number) {
 
       Object.entries(data).map(([_, v]) => {
         // Store newick with lowercase OG key to match getAllOGs() filtering
-        const ogKey = String(v["orthogroup"]).trim().toLowerCase();
+        const ogKey = String(v["ortho_id"]).trim().toLowerCase();
         newicks.value[ogKey] = v["newick_str"];
       })
 
       const filteredColumns = Object.values(columns.value).reduce((acc, item) => {
         if ('column_name' in item) {
-          // Prefer tissue_col, fallback to tissue_x_col, then "Unknown"
-          const tissue_type = item.tissue_col ?? item.tissue_x_col ?? "Unknown";
+          // Use tissue column directly from h5ad
+          const tissue_type = item.tissue ?? "Unknown";
           if (tissue_type && tissue_type !== "") {
             acc['tissue_type_' + item.column_name] = tissue_type;
           } else {
@@ -359,7 +359,7 @@ function getAllOGs(dataRef: Record<string, any>, newicksRef: Record<string, stri
       const arr = Array.isArray(items) ? items : Object.values(toRaw(items));
 
       const ogs = arr
-        .map((o: any) => o?.og ?? o?.orthogroup)
+        .map((o: any) => o?.ortho_id)
         .filter((v: any) => v != null && String(v).trim() !== "")
         .map((v: any) => String(v).trim().toLowerCase());
 

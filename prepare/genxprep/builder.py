@@ -124,14 +124,14 @@ def build_species(
             # Map columns to H5AD names expected by backend (manager.py)
             col_map = {
                 "Description": "description",
-                "Description long": "description long",
+                "Description long": "description_long",
                 "Genename": "genename",
                 "ECNumber": "ecnumber",
                 "GO": "go_terms",
-                "DB Accession": "db accession",
-                "Query Coverage": "query coverage",
-                "DB Coverage": "db coverage",
-                "Tax-ID": "tax-id",
+                "DB Accession": "db_accession",
+                "Query Coverage": "query_coverage",
+                "DB Coverage": "db_coverage",
+                "Tax-ID": "tax_id",
             }
             # Find columns case-insensitively
             available = {c.lower().strip(): c for c in uni_df.columns}

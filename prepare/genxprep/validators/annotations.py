@@ -24,8 +24,8 @@ from genxprep.reporter import ValidationResult
 
 _UNIPROT_EXPECTED = {
     "id", "description", "genename", "ecnumber", "go",
-    "description long", "db accession", "query coverage", "db coverage",
-    "tax-id",
+    "description_long", "db_accession", "query_coverage", "db_coverage",
+    "tax_id",
 }
 
 

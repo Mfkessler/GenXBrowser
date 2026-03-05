@@ -409,18 +409,18 @@ const page = ref(1);
 
 // Column name mappings
 const COLUMN_DISPLAY_NAMES: Record<string, string> = {
-  'tissue_col': 'TISSUE',
-  'assigned_reads': 'ASSIGNED READS',
+  'tissue': 'TISSUE',
+  'assigned': 'ASSIGNED READS',
   'pct_unmapped': 'PCT UNMAPPED',
   'pct_no_feature': 'PCT NO FEATURE',
   'pct_trimmed': 'PCT TRIMMED',
 };
 
 // Columns to hide
-const HIDDEN_COLUMNS = new Set(['tissue_x_col', 'tissue_type_col']);
+const HIDDEN_COLUMNS = new Set<string>([]);
 
 // RNA metrics columns
-const RNA_METRICS = ['assigned_reads', 'pct_unmapped', 'pct_no_feature', 'pct_trimmed'];
+const RNA_METRICS = ['assigned', 'pct_unmapped', 'pct_no_feature', 'pct_trimmed'];
 
 // Get available columns (non-empty, non-hidden)
 const availableColumns = computed(() => {
@@ -640,7 +640,7 @@ function setDefaultColumns() {
   // Default: Sample ID + TISSUE + 4 RNA metrics
   const defaults = [
     sampleIdColumn.value,
-    'tissue_col',
+    'tissue',
     ...RNA_METRICS
   ];
   

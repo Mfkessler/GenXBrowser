@@ -606,7 +606,7 @@ function getAllOGs(dataRef: Record<string, any>): Set<string> {
       const arr = Array.isArray(items) ? items : Object.values(toRaw(items));
 
       const ogs = arr
-        .map((o: any) => o?.og ?? o?.orthogroup)
+        .map((o: any) => o?.ortho_id)
         .filter((v: any) => v != null && String(v).trim() !== "")
         .map((v: any) => String(v).trim().toLowerCase());
 
@@ -640,9 +640,8 @@ async function fetchUnfilteredData(tableName: string, ogIds: string[]) {
     const currentGeneFilters = getMergedGeneFilters(tableName).value;
     console.log('[FetchUnfiltered] Current active gene filters:', JSON.stringify(currentGeneFilters, null, 2));
 
-    // Determine the correct OG column name by checking existing filtered data
-    // Different datasets may use 'og' or 'orthogroup' as the column name
-    let ogFilterKey = 'orthogroup'; // default
+    // Determine the correct OG column name — h5ad standard is 'ortho_id'
+    let ogFilterKey = 'ortho_id'; // default
     const existingData = tableData.value[tableName];
     if (existingData?.items) {
       const items = Array.isArray(existingData.items) 
@@ -651,10 +650,8 @@ async function fetchUnfilteredData(tableName: string, ogIds: string[]) {
       if (items.length > 0) {
         const firstItem = items[0];
         // Check which column exists in the data
-        if (firstItem.hasOwnProperty('og')) {
-          ogFilterKey = 'og';
-        } else if (firstItem.hasOwnProperty('orthogroup')) {
-          ogFilterKey = 'orthogroup';
+        if (firstItem.hasOwnProperty('ortho_id')) {
+          ogFilterKey = 'ortho_id';
         }
       }
     }
@@ -681,7 +678,7 @@ async function fetchUnfilteredData(tableName: string, ogIds: string[]) {
           : Object.values(existingData.items);
         const lowerToOriginalMap = new Map<string, string>();
         items.forEach((item: any) => {
-          const ogVal = item?.og ?? item?.orthogroup;
+          const ogVal = item?.ortho_id;
           if (ogVal) {
             const lower = String(ogVal).trim().toLowerCase();
             if (!lowerToOriginalMap.has(lower)) {
@@ -745,7 +742,7 @@ async function fetchUnfilteredData(tableName: string, ogIds: string[]) {
     if (data && dataKeys > 0) {
       const ogSet = new Set<string>();
       Object.values(data).forEach((item: any) => {
-        const ogVal = item?.og ?? item?.orthogroup;
+        const ogVal = item?.ortho_id;
         if (ogVal) ogSet.add(String(ogVal));
       });
       console.log('[FetchUnfiltered] Unique OGs in response:', Array.from(ogSet).sort());
@@ -811,7 +808,7 @@ function processDataForPlotting(og: string): ProcessedData | null {
 
     // Filter by orthogroup
     const matchingItems = items.filter((item: any) => {
-      const ogVal = item?.og ?? item?.orthogroup;
+      const ogVal = item?.ortho_id;
       return ogVal != null && String(ogVal).trim().toLowerCase() === needle;
     });
 
@@ -866,7 +863,7 @@ function processDataForPlotting(og: string): ProcessedData | null {
       console.log('[ProcessData] Table', tableName, '- items:', items.length, 'tissueMap keys:', Object.keys(tissueMap).length);
 
       const matchingItems = items.filter((item: any) => {
-        const ogVal = item?.og ?? item?.orthogroup;
+        const ogVal = item?.ortho_id;
         return ogVal != null && String(ogVal).trim().toLowerCase() === needle;
       });
       
@@ -874,7 +871,7 @@ function processDataForPlotting(og: string): ProcessedData | null {
       
       // Debug: Show some OG values that ARE in the data
       if (matchingItems.length === 0 && items.length > 0) {
-        const sampleOGs = items.slice(0, 5).map((item: any) => item?.og ?? item?.orthogroup);
+        const sampleOGs = items.slice(0, 5).map((item: any) => item?.ortho_id);
         console.warn('[ProcessData] No matches! Sample OG values in data:', sampleOGs);
         console.warn('[ProcessData] Looking for (needle):', needle);
       }

@@ -12,9 +12,9 @@ logger = logging.getLogger(__name__)
 
 # Known array columns
 KNOWN_ARRAY_COLUMNS = {
-    "go_terms", "go_term",
-    "ipr_id", "interpro_term",
-    "pfam_id", "pfam_term",
+    "go_terms",
+    "ipr_id",
+    "pfam_id",
     "uniprot_term",
     "family",
     # Pipe-delimited description arrays
@@ -187,23 +187,24 @@ class ColumnTypeInference:
         # Special cases
         special_cases = {
             "gene_id": "Gene ID",
-            "orthogroup": "Orthogroup",
-            "go_term": "GO Term",
+            "ortho_id": "Orthogroup",
+            "genename": "Gene Name",
+            "ecnumber": "EC Number",
             "go_terms": "GO Terms",
-            "ec_number": "EC Number",
+            "ipr_id": "InterPro",
+            "pfam_id": "Pfam",
+            "ipr_desc": "InterPro Desc",
+            "pfam_desc": "Pfam Desc",
             "is_tf": "Is TF",
             "tf_family": "TF Family",
             "rna_seq": "RNA Sequence",
             "protein_seq": "Protein Sequence",
             "newick_str": "Newick Tree",
             "tissue": "Tissue",
-            "tissue_col": "Tissue",
-            "assigned_reads": "Assigned Reads",
+            "assigned": "Assigned Reads",
             "pct_unmapped": "% Unmapped",
             "pct_no_feature": "% No Feature",
             "pct_trimmed": "% Trimmed",
-            "interpro_term": "InterPro Term",
-            "pfam_term": "Pfam Term",
             "uniprot_term": "UniProt Term",
             "module_colors": "Module",
         }

@@ -218,7 +218,7 @@
                 @input="updateArray('default_columns', ($event.target as HTMLInputElement).value)"
                 type="text"
                 class="form-control"
-                placeholder="gene_id, description, orthogroup"
+                placeholder="gene_id, description, ortho_id"
               />
             </div>
 

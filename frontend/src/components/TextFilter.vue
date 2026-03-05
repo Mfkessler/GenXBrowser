@@ -378,7 +378,7 @@ const searchResults = ref<
 // Check if this filter is for GO terms
 const isGoTermFilter = computed(() => {
   const label = (props.id || props.label).toLowerCase();
-  return label === 'go_term' || label === 'go term' || label === 'goterm';
+  return label === 'go_terms' || label === 'go_term' || label === 'go term' || label === 'goterm';
 });
 
 //Handle suggestions

@@ -24,32 +24,35 @@ logger = logging.getLogger(__name__)
 
 
 # Default column name mappings (H5AD -> display)
-DEFAULT_COLUMN_MAPPINGS = {
-    "ortho_id": "orthogroup",
-    "description long": "description_long",
-    "db accession": "db_accession",
-    "query coverage": "query_coverage",
-    "db coverage": "db_coverage",
-    "tax-id": "tax_id",
-    "genename": "gene_name",
-    "ecnumber": "ec_number",
-    "go_terms": "go_term",
-    "ipr_id": "interpro_term",
-    "pfam_id": "pfam_term",
-    "is_tf": "is_tf",
-    "tf_family": "tf_family",
-    "pct unmapped": "pct_unmapped",
-    "pct no_feature": "pct_no_feature",
-    "pct trimmed": "pct_trimmed",
-    "assigned": "assigned_reads",
-    "tissue": "tissue_col",
+# Empty: column names are used as-is from h5ad files (single source of truth).
+# Pipelines (genxprep, CoNeXForge) normalize column names at creation time.
+DEFAULT_COLUMN_MAPPINGS = {}
+
+# Legacy mapping for auto-migration of old configs
+_LEGACY_DISPLAY_TO_H5AD = {
+    "orthogroup": "ortho_id",
+    "gene_name": "genename",
+    "ec_number": "ecnumber",
+    "go_term": "go_terms",
+    "interpro_term": "ipr_id",
+    "pfam_term": "pfam_id",
+    "assigned_reads": "assigned",
+    "tissue_col": "tissue",
+    "description_long": "description_long",
+    "db_accession": "db_accession",
+    "query_coverage": "query_coverage",
+    "db_coverage": "db_coverage",
+    "tax_id": "tax_id",
+    "pct_unmapped": "pct_unmapped",
+    "pct_no_feature": "pct_no_feature",
+    "pct_trimmed": "pct_trimmed",
 }
 
 # Default array columns
 DEFAULT_ARRAY_COLUMNS = {
-    "go_terms", "go_term",
-    "ipr_id", "interpro_term",
-    "pfam_id", "pfam_term",
+    "go_terms",
+    "ipr_id",
+    "pfam_id",
     "uniprot_term",
     "family",
     # Pipe-delimited description arrays
@@ -58,8 +61,8 @@ DEFAULT_ARRAY_COLUMNS = {
 
 # Default meta columns (shown in Genes tab)
 DEFAULT_META_COLUMNS = {
-    "gene_id", "description", "description_long", "orthogroup", "hog",
-    "gene_name", "ec_number", "go_term", "interpro_term", "pfam_term",
+    "gene_id", "description", "description_long", "ortho_id", "hog",
+    "genename", "ecnumber", "go_terms", "ipr_id", "pfam_id",
     "uniprot_term", "family", "is_tf", "tf_family",
     "protein_seq", "rna_seq", "newick_str",
     "module_colors",  # WGCNA module assignments
@@ -147,6 +150,8 @@ class ConfigManager:
                 with open(self._config_path, "r") as f:
                     self._config = json.load(f)
                 logger.info(f"Loaded config: {self._config.get('project_name', 'Unknown')}")
+                # Auto-migrate old configs with legacy column names
+                self._migrate_config()
                 # Ensure all .var columns from h5ad files are in config and marked is_meta=True
                 self._ensure_all_var_columns_in_config()
                 # Back-fill any virtual columns that weren't present when config was created
@@ -166,6 +171,90 @@ class ConfigManager:
                 logger.info(f"Saved config to {self._config_path}")
             except Exception as e:
                 logger.error(f"Failed to save config: {e}")
+
+    def _migrate_config(self) -> None:
+        """Auto-migrate old configs that used legacy display column names.
+
+        Detects old-style column_mappings (e.g. ortho_id→orthogroup) and renames
+        keys in column_definitions, meta_columns, array_columns, and
+        frontend_settings.default_columns to use h5ad-native names.
+        Also adds 'tissue_column' if missing, and clears old column_mappings.
+        """
+        changed = False
+
+        # 1. Check if migration is needed by looking for old display names
+        col_defs = self._config.get("column_definitions", {})
+        old_mappings = self._config.get("column_mappings", {}).get("h5ad_to_display", {})
+        needs_migration = any(
+            old_display in col_defs
+            for old_display in _LEGACY_DISPLAY_TO_H5AD
+            if old_display != _LEGACY_DISPLAY_TO_H5AD[old_display]  # skip identity mappings
+        )
+        has_old_mappings = bool(old_mappings)
+
+        if not needs_migration and not has_old_mappings:
+            # Ensure tissue_column exists even on fresh configs
+            if "tissue_column" not in self._config:
+                # Auto-detect: if 'tissue' exists in obs columns, use it
+                obs_cols = [k for k, v in col_defs.items() if v.get("is_sample_metadata")]
+                self._config["tissue_column"] = "tissue" if "tissue" in obs_cols else None
+                changed = True
+            if changed:
+                self._save_config()
+            return
+
+        logger.info("Migrating config: renaming legacy display column names to h5ad names")
+
+        # 2. Rename keys in column_definitions
+        for old_display, h5ad_name in _LEGACY_DISPLAY_TO_H5AD.items():
+            if old_display == h5ad_name:
+                continue  # Identity mapping, skip
+            if old_display in col_defs and h5ad_name not in col_defs:
+                col_defs[h5ad_name] = col_defs.pop(old_display)
+                changed = True
+
+        # 3. Rename entries in meta_columns list
+        meta_cols = self._config.get("meta_columns", [])
+        if meta_cols:
+            new_meta = []
+            for c in meta_cols:
+                new_meta.append(_LEGACY_DISPLAY_TO_H5AD.get(c, c))
+            self._config["meta_columns"] = new_meta
+            changed = True
+
+        # 4. Rename entries in array_columns list
+        array_cols = self._config.get("array_columns", [])
+        if array_cols:
+            new_array = []
+            for c in array_cols:
+                new_array.append(_LEGACY_DISPLAY_TO_H5AD.get(c, c))
+            # Deduplicate
+            self._config["array_columns"] = list(dict.fromkeys(new_array))
+            changed = True
+
+        # 5. Rename in frontend_settings.default_columns
+        fs = self._config.get("frontend_settings", {})
+        default_cols = fs.get("default_columns", [])
+        if default_cols:
+            fs["default_columns"] = [
+                _LEGACY_DISPLAY_TO_H5AD.get(c, c) for c in default_cols
+            ]
+            changed = True
+
+        # 6. Clear old column_mappings (no longer needed)
+        if has_old_mappings:
+            self._config["column_mappings"] = {"h5ad_to_display": {}}
+            changed = True
+
+        # 7. Add tissue_column if missing
+        if "tissue_column" not in self._config:
+            obs_cols = [k for k, v in col_defs.items() if v.get("is_sample_metadata")]
+            self._config["tissue_column"] = "tissue" if "tissue" in obs_cols else None
+            changed = True
+
+        if changed:
+            self._save_config()
+            logger.info("Config migration complete: legacy column names updated to h5ad names")
 
     def _ensure_virtual_columns(self) -> None:
         """
@@ -325,20 +414,18 @@ class ConfigManager:
         column_definitions = {}
         
         for col in var_cols:
-            display_col = DEFAULT_COLUMN_MAPPINGS.get(col, col)
-            column_definitions[display_col] = type_inference.build_column_definition(
-                column_name=display_col,
+            column_definitions[col] = type_inference.build_column_definition(
+                column_name=col,
                 dtype=var_dtypes.get(col, "object"),
-                is_array=col in DEFAULT_ARRAY_COLUMNS or display_col in DEFAULT_ARRAY_COLUMNS,
+                is_array=col in DEFAULT_ARRAY_COLUMNS,
                 is_meta=True,  # All .var columns are gene/transcript metadata by definition
                 is_sample_metadata=False,
             )
         
         for col in obs_cols:
-            display_col = DEFAULT_COLUMN_MAPPINGS.get(col, col)
-            if display_col not in column_definitions:
-                column_definitions[display_col] = type_inference.build_column_definition(
-                    column_name=display_col,
+            if col not in column_definitions:
+                column_definitions[col] = type_inference.build_column_definition(
+                    column_name=col,
                     dtype=obs_dtypes.get(col, "object"),
                     is_array=False,
                     is_meta=False,
@@ -373,7 +460,7 @@ class ConfigManager:
             "version": self.DEFAULT_VERSION,
             "description": "Auto-generated configuration",
             "species": species,
-            "column_mappings": {"h5ad_to_display": DEFAULT_COLUMN_MAPPINGS.copy()},
+            "column_mappings": {"h5ad_to_display": {}},
             "column_definitions": column_definitions,
             "array_columns": list(DEFAULT_ARRAY_COLUMNS),
             "meta_columns": list(DEFAULT_META_COLUMNS),
@@ -382,9 +469,10 @@ class ConfigManager:
                 "columns": list(obs_cols),
             },
             "frontend_settings": {
-                "default_columns": ["gene_id", "description", "orthogroup"],
+                "default_columns": ["gene_id", "description", "ortho_id"],
                 "hidden_columns": [],
             },
+            "tissue_column": "tissue" if "tissue" in obs_cols else None,
             "data_paths": {
                 "h5ad_dir": str(self._h5ad_dir),
             },
@@ -639,8 +727,14 @@ class ConfigManager:
         """Convert column name to display name."""
         special = {
             "gene_id": "Gene ID",
-            "go_term": "GO Term",
-            "ec_number": "EC Number",
+            "ortho_id": "Orthogroup",
+            "genename": "Gene Name",
+            "ecnumber": "EC Number",
+            "go_terms": "GO Terms",
+            "ipr_id": "InterPro",
+            "pfam_id": "Pfam",
+            "ipr_desc": "InterPro Desc",
+            "pfam_desc": "Pfam Desc",
             "is_tf": "Is TF",
             "tf_family": "TF Family",
             "module_colors": "Module",

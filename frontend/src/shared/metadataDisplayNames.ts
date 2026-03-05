@@ -7,27 +7,26 @@ import { beautifyLabel } from "./utils";
 import { useColumnsStore } from "@/stores/columns";
 
 export const metadataDisplayNames: Record<string, string> = {
-  // Core identifiers - gene_id is dynamic, gene_name stays as "Gene Name"
+  // Core identifiers - gene_id is dynamic, genename stays as "Gene Name"
   gene_id: getEntityIdLabel(),
-  gene_name: "Gene Name",
+  genename: "Gene Name",
   
   // Descriptions
   description: "Description",
   description_long: "Long Description",
   
   // Groupings
-  orthogroup: "Orthogroup",
+  ortho_id: "Orthogroup",
   hog: "HOG",
   family: "Family",
   
   // Annotations
-  ec_number: "EC Number",
-  go_term: "GO Term",
+  ecnumber: "EC Number",
   go_terms: "GO Terms",
-  interpro_term: "InterPro Term",
-  ipr_id: "InterPro ID",
-  pfam_term: "Pfam Term",
-  pfam_id: "Pfam ID",
+  ipr_id: "InterPro",
+  ipr_desc: "InterPro Desc",
+  pfam_id: "Pfam",
+  pfam_desc: "Pfam Desc",
   uniprot_term: "UniProt Term",
   
   // Transcription factors
@@ -45,6 +44,7 @@ export const metadataDisplayNames: Record<string, string> = {
   newick_str: "Newick String",
   
   // Sample metadata (common column side colors)
+  tissue: "Tissue",
   tissue_type: "Tissue Type",
   tissue_types: "Tissue Types",
   species: "Species",
@@ -54,6 +54,10 @@ export const metadataDisplayNames: Record<string, string> = {
   batch: "Batch",
   developmental_stage: "Developmental Stage",
   treatment: "Treatment",
+  assigned: "Assigned Reads",
+  pct_unmapped: "% Unmapped",
+  pct_no_feature: "% No Feature",
+  pct_trimmed: "% Trimmed",
 };
 
 /**
@@ -105,11 +109,10 @@ export const verboseFields = ["description_long"];
  */
 export const arrayFields = [
   "go_terms",
-  "go_term",
   "ipr_id",
-  "interpro_term",
   "pfam_id",
-  "pfam_term",
   "uniprot_term",
   "family",
+  "ipr_desc",
+  "pfam_desc",
 ];

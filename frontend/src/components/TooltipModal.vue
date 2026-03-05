@@ -41,7 +41,7 @@ const metadataFields = computed(() => {
 
 const identificationFields = computed(() => {
   return metadataFields.value.filter((key) =>
-    ["gene_id", "gene_name", "orthogroup", "hog"].includes(key)
+    ["gene_id", "genename", "ortho_id", "hog"].includes(key)
   );
 });
 
