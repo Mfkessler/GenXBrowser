@@ -29,7 +29,7 @@
     <!-- Info Banner -->
     <div class="chip-info">
       <span class="info-icon">ℹ️</span>
-      Drag to reorder · Click 👁 to show/hide · Double-click label to rename · Change the green badge to override the data type · Click <strong>sep:</strong> badge on array columns to toggle the multi-value separator
+      Drag to reorder · Click 👁 to show/hide · Double-click label to rename · Change the green badge to override the data type · Click <strong>sep:</strong> badge on array columns to toggle the multi-value separator · Click <strong>🧬 tissue</strong> badge on sample columns to set/unset the tissue role
     </div>
 
     <!-- Draggable Chips -->
@@ -102,6 +102,16 @@
             sep:<code>{{ element.array_separator }}</code>
           </button>
 
+          <!-- Tissue Role Badge (only for obs/sample columns) -->
+          <button
+            v-if="element.is_sample_metadata"
+            :class="['chip-tissue-badge', { active: element.name === tissueColumn }]"
+            :title="element.name === tissueColumn ? 'This is the tissue column — click to unset' : 'Click to set as tissue column'"
+            @click.stop="toggleTissueRole(element)"
+          >
+            🧬 {{ element.name === tissueColumn ? 'tissue ✓' : 'tissue?' }}
+          </button>
+
           <!-- Delete button for custom columns -->
           <button
             v-if="element.source === 'custom'"
@@ -171,8 +181,13 @@ export default defineComponent({
       type: Object as PropType<Record<string, any>>,
       required: true,
     },
+    /** The currently configured tissue column name (from config.tissue_column) */
+    tissueColumn: {
+      type: String as PropType<string | null>,
+      default: null,
+    },
   },
-  emits: ['update:columns', 'add-metadata', 'delete-column'],
+  emits: ['update:columns', 'add-metadata', 'delete-column', 'update:tissueColumn'],
   setup(props, { emit }) {
     const activeTarget = ref<'var' | 'obs'>('var');
     const searchQuery = ref('');
@@ -322,6 +337,12 @@ export default defineComponent({
       emitUpdate();
     }
 
+    function toggleTissueRole(chip: ChipItem) {
+      // If already the tissue column, unset it; otherwise set it
+      const newVal = chip.name === props.tissueColumn ? null : chip.name;
+      emit('update:tissueColumn', newVal);
+    }
+
     function emitUpdate() {
       // Rebuild column definitions from chips with updated order
       const result: Record<string, any> = {};
@@ -389,6 +410,7 @@ export default defineComponent({
       finishEditing,
       cancelEditing,
       onDragEnd,
+      toggleTissueRole,
       shortenType,
       TYPE_OPTIONS,
       changeType,
@@ -668,6 +690,30 @@ export default defineComponent({
   font-family: monospace;
   font-size: 11px;
   background: transparent;
+}
+
+.chip-tissue-badge {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid #d97706;
+  background: #fef3c7;
+  color: #92400e;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.chip-tissue-badge.active {
+  background: #d97706;
+  color: #fff;
+  border-color: #b45309;
+}
+
+.chip-tissue-badge:hover {
+  background: #f59e0b;
+  color: #fff;
+  border-color: #d97706;
 }
 
 .add-chip {

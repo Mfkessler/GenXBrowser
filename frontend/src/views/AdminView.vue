@@ -201,7 +201,9 @@
             <MetadataChipManager
               v-if="config.column_definitions"
               :column-definitions="config.column_definitions"
+              :tissue-column="config.tissue_column ?? null"
               @update:columns="onColumnsUpdate"
+              @update:tissue-column="config.tissue_column = $event"
               @add-metadata="openMetadataImport"
               @delete-column="deleteColumn"
             />
@@ -331,6 +333,7 @@ interface Config {
   column_mappings: { h5ad_to_display: Record<string, string> };
   column_definitions: Record<string, any>;
   sample_metadata_columns?: { enabled: boolean; columns: string[] };
+  tissue_column?: string | null;
   frontend_settings: {
     default_columns: string[];
     hidden_columns: string[];

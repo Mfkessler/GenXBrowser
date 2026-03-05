@@ -502,11 +502,15 @@ async function fetchData(tableName: string) {
     );
 
     // Create tissue mapping
+    // Backend returns obs column names directly (h5ad standard: 'tissue')
     const tissueMap: Record<string, string> = {};
     columns.forEach((item: RowType) => {
-      if ("column_name" in item && "tissue_x_col" in item) {
-        const tissue = item.tissue_x_col != null ? String(item.tissue_x_col).toLowerCase() : "";
-        tissueMap[item.column_name as string] = tissue;
+      if ("column_name" in item) {
+        // Try 'tissue' first (h5ad standard), fall back to 'tissue_x_col' for old data
+        const tissueVal = (item as any).tissue ?? (item as any).tissue_x_col ?? null;
+        if (tissueVal != null) {
+          tissueMap[item.column_name as string] = String(tissueVal).toLowerCase();
+        }
       }
     });
 
