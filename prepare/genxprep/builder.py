@@ -164,7 +164,7 @@ def build_species(
         tf_df = ann_val.validate_tf(sp.metadata.tf, gene_ids, tf_vr)
         if tf_df is not None:
             if "is_tf" in tf_df.columns:
-                var["is_tf"] = tf_df["is_tf"].reindex(var.index).fillna(False).infer_objects(copy=False).astype(bool)
+                var["is_tf"] = tf_df["is_tf"].reindex(var.index, fill_value=False).astype(bool)
             if "tf_family" in tf_df.columns:
                 var["tf_family"] = tf_df["tf_family"].reindex(var.index).fillna("")
 
