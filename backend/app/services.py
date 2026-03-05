@@ -678,6 +678,7 @@ class GenXBrowserService:
                 # Hide internal/technical columns from the UI
                 HIDDEN_SAMPLE_COLUMNS = {'type', 'ismeta'}
                 column_defs = self.config_manager.get_column_definitions()
+                tissue_column = self.config_manager.get_config().get('tissue_column')
                 obs_candidates = []
                 for col in adata.obs.columns:
                     pg_name = self._to_display_column_name(col)
@@ -711,6 +712,7 @@ class GenXBrowserService:
                             'description': '',
                             'format': format_str,
                             'isMeta': False,
+                            'is_tissue': pg_name == tissue_column,
                             '_order': col_def.get('order', 9999),
                         })
 

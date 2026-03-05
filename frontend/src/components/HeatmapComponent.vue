@@ -492,8 +492,9 @@ function calculateSortedColumns(metaData: RowType[]): RowType[] {
   const primaryOrder = visualizationStore.colOrder.order;
 
   const sorted = [...metaData].sort((a, b) => {
-    // For tissue_types, use the tissue field
-    const actualPrimaryKey = primaryKey === "tissue_types" ? "tissue" : primaryKey;
+    // For tissue_types, use the configured tissue column
+    const tissueKey = columnStore.tissueColumnName ?? 'tissue';
+    const actualPrimaryKey = primaryKey === "tissue_types" ? tissueKey : primaryKey;
     const compPrimary = compareValues(
       a[actualPrimaryKey],
       b[actualPrimaryKey],
@@ -503,8 +504,8 @@ function calculateSortedColumns(metaData: RowType[]): RowType[] {
 
     if (primaryKey !== "tissue_types") {
       const compTissue = compareValues(
-        a.tissue ?? "",
-        b.tissue ?? "",
+        a[tissueKey] ?? "",
+        b[tissueKey] ?? "",
         "asc",
       );
       if (compTissue !== 0) return compTissue;
@@ -655,7 +656,8 @@ async function getOrCreateSideColorMapping(
       return mapping;
     } else if (column_name === "tissue_types") {
       // Get unique tissue values from column metadata
-      const tissueValues = sortedColumns.value.map((meta) => meta.tissue ?? meta.column_name);
+      const tissueKey = columnStore.tissueColumnName ?? 'tissue';
+      const tissueValues = sortedColumns.value.map((meta) => meta[tissueKey] ?? meta.column_name);
       const uniqueTissues = [...new Set(tissueValues)].filter(Boolean);
       
       // Use dynamic color palette that scales to any number of tissues
@@ -1473,11 +1475,12 @@ async function renderHeatmap() {
         xLabelsForColoring = dataColumnNames.value.filter((name) =>
           visibleColumns.value.includes(name),
         );
-        // Get actual tissue values from column metadata (tissue)
+        // Get actual tissue values from column metadata using configured tissue column
+        const tissueKey = columnStore.tissueColumnName ?? 'tissue';
         const filteredColMeta = sortedColumns.value.filter((meta) =>
           visibleColumns.value.includes(meta.column_name),
         );
-        attributeValues = filteredColMeta.map((meta) => meta.tissue ?? meta.column_name);
+        attributeValues = filteredColMeta.map((meta) => meta[tissueKey] ?? meta.column_name);
       } else {
         xLabelsForColoring = heatmapCols; // already filtered by visibleColumns
         // Filter metadata to only visible columns

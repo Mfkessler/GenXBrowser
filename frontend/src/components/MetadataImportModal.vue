@@ -58,7 +58,7 @@
           </div>
 
           <div class="form-group">
-            <label>Data <span class="hint">(Tab-separated: ID column + value column, with header)</span></label>
+            <label>Data <span class="hint">(Any delimiter, with header row — select ID &amp; value columns below)</span></label>
             <div class="data-input-actions">
               <button class="btn-link" @click="triggerFileUpload">📁 Upload TSV file</button>
               <span class="hint">or paste below</span>
@@ -74,10 +74,52 @@
               v-model="form.data"
               class="form-control data-textarea"
               rows="10"
-              :placeholder="`${target === 'var' ? 'gene_id' : 'sample_id'}\tvalue\nID001\t42\nID002\t17\n...`"
+              :placeholder="`col1\tcol2\tcol3\nID001\t42\tTissue A\nID002\t17\tTissue B\n...`"
             ></textarea>
             <div class="data-stats" v-if="form.data">
               {{ dataLineCount }} data rows (excluding header)
+            </div>
+          </div>
+
+          <!-- Column Mapping (shown as soon as header row is detectable) -->
+          <div v-if="parsedHeaders.length >= 2" class="column-mapping-box">
+            <div class="column-mapping-header">
+              <span class="column-mapping-title">Column Mapping</span>
+              <span class="column-mapping-hint">Choose which column contains the IDs and which the values</span>
+            </div>
+            <div class="column-mapping-row">
+              <div class="column-mapping-field">
+                <label class="column-mapping-label">
+                  🔑 ID Column
+                  <span class="hint">(matched against dataset IDs)</span>
+                </label>
+                <select v-model="form.idColumn" class="form-control form-control-sm">
+                  <option v-for="(col, idx) in parsedHeaders" :key="idx" :value="col">
+                    {{ col }}
+                  </option>
+                </select>
+              </div>
+              <div class="column-mapping-arrow">→</div>
+              <div class="column-mapping-field">
+                <label class="column-mapping-label">
+                  📊 Value Column
+                  <span class="hint">(imported as the new metadata column)</span>
+                </label>
+                <select v-model="form.valueColumn" class="form-control form-control-sm">
+                  <option v-for="(col, idx) in parsedHeaders" :key="idx" :value="col">
+                    {{ col }}
+                  </option>
+                </select>
+              </div>
+            </div>
+            <div v-if="columnMappingWarning" class="column-mapping-warning">
+              ⚠️ {{ columnMappingWarning }}
+            </div>
+            <div v-if="parsedSampleRow" class="column-mapping-preview">
+              <span class="preview-label">Preview (first row):</span>
+              <span class="preview-id">ID: <code>{{ parsedSampleRow.id }}</code></span>
+              <span class="preview-sep">→</span>
+              <span class="preview-value">Value: <code>{{ parsedSampleRow.value }}</code></span>
             </div>
           </div>
 
@@ -92,6 +134,9 @@
               </label>
               <label class="radio-label">
                 <input type="radio" v-model="form.separator" value=";" /> Semicolon
+              </label>
+              <label class="radio-label">
+                <input type="radio" v-model="form.separator" value="\s+" /> Whitespace
               </label>
             </div>
           </div>
@@ -275,7 +320,7 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, ref, computed, type PropType } from 'vue';
+import { defineComponent, ref, computed, watch, type PropType } from 'vue';
 import axios from 'axios';
 import { getEntityLabel } from '@/shared/dataTypeLabels';
 
@@ -319,6 +364,8 @@ export default defineComponent({
       data: '',
       separator: '\t',
       applyToAll: false,
+      idColumn: '',
+      valueColumn: '',
     });
 
     const validating = ref(false);
@@ -330,6 +377,54 @@ export default defineComponent({
     const confirmError = ref('');
     const confirmResult = ref<any>(null);
     const persistToH5ad = ref(false);
+
+    // Split a line by the current separator (handles whitespace regex)
+    function splitLine(line: string, sep: string): string[] {
+      if (sep === '\\s+' || sep === '\s+') {
+        return line.trim().split(/\s+/).filter((c: string) => c);
+      }
+      const realSep = sep === '\\t' ? '\t' : sep;
+      return line.split(realSep).map((c: string) => c.trim());
+    }
+
+    // Parse the header row from the current data
+    const parsedHeaders = computed<string[]>(() => {
+      if (!form.value.data.trim()) return [];
+      const firstLine = form.value.data.trim().split('\n')[0];
+      const cols = splitLine(firstLine, form.value.separator).filter((c: string) => c);
+      return cols.length >= 2 ? cols : [];
+    });
+
+    // Auto-set idColumn / valueColumn when headers change
+    watch(parsedHeaders, (headers: string[]) => {
+      if (!headers.length) return;
+      const defaultId = props.target === 'var' ? 'gene_id' : 'sample_id';
+      // Try to find a matching ID column, else use first
+      const bestId = headers.find((h: string) => h.toLowerCase() === defaultId)
+        || headers.find((h: string) => h.toLowerCase().includes('id'))
+        || headers[0];
+      form.value.idColumn = bestId;
+      // Value column: first column that isn't the ID column
+      form.value.valueColumn = headers.find((h: string) => h !== bestId) || headers[1];
+    }, { immediate: true });
+
+    const columnMappingWarning = computed<string>(() => {
+      if (!parsedHeaders.value.length) return '';
+      if (form.value.idColumn === form.value.valueColumn) return 'ID and value column must be different.';
+      return '';
+    });
+
+    const parsedSampleRow = computed<{ id: string; value: string } | null>(() => {
+      if (!form.value.data.trim() || parsedHeaders.value.length < 2) return null;
+      const lines = form.value.data.trim().split('\n');
+      if (lines.length < 2) return null;
+      const headers = splitLine(lines[0], form.value.separator);
+      const row = splitLine(lines[1], form.value.separator);
+      const idIdx = headers.indexOf(form.value.idColumn);
+      const valIdx = headers.indexOf(form.value.valueColumn);
+      if (idIdx < 0 || valIdx < 0) return null;
+      return { id: row[idIdx] ?? '', value: row[valIdx] ?? '' };
+    });
 
     const dataLineCount = computed(() => {
       const lines = form.value.data.trim().split('\n');
@@ -344,7 +439,17 @@ export default defineComponent({
     });
 
     const canValidate = computed(() => {
-      return form.value.dataset && form.value.columnName.trim() && form.value.data.trim();
+      return (
+        form.value.dataset &&
+        form.value.columnName.trim() &&
+        form.value.data.trim() &&
+        // If headers are detectable, require valid distinct mapping
+        (parsedHeaders.value.length < 2 || (
+          form.value.idColumn &&
+          form.value.valueColumn &&
+          form.value.idColumn !== form.value.valueColumn
+        ))
+      );
     });
 
     function getHeaders() {
@@ -380,6 +485,7 @@ export default defineComponent({
         if (firstLine.includes('\t')) form.value.separator = '\t';
         else if (firstLine.includes(';')) form.value.separator = ';';
         else if (firstLine.includes(',')) form.value.separator = ',';
+        else if (/\s{2,}/.test(firstLine) || / /.test(firstLine.replace(/^\S+/, ''))) form.value.separator = '\s+';
       };
       reader.readAsText(file);
     }
@@ -399,6 +505,8 @@ export default defineComponent({
             display_name: form.value.displayName.trim(),
             data: form.value.data,
             separator: form.value.separator === '\\t' ? '\t' : form.value.separator,
+            id_column: form.value.idColumn || undefined,
+            value_column: form.value.valueColumn || undefined,
           },
           { headers: getHeaders() }
         );
@@ -433,6 +541,8 @@ export default defineComponent({
             display_name: form.value.displayName.trim(),
             data: form.value.data,
             separator: form.value.separator === '\\t' ? '\t' : form.value.separator,
+            id_column: form.value.idColumn || undefined,
+            value_column: form.value.valueColumn || undefined,
             type_override: typeOverride.value || undefined,
             persist_to_h5ad: persistToH5ad.value,
             apply_to_all_datasets: form.value.applyToAll,
@@ -460,7 +570,7 @@ export default defineComponent({
     function close() {
       // Reset state
       step.value = 1;
-      form.value = { dataset: '', columnName: '', displayName: '', data: '', separator: '\t', applyToAll: false };
+      form.value = { dataset: '', columnName: '', displayName: '', data: '', separator: '\t', applyToAll: false, idColumn: '', valueColumn: '' };
       validationResult.value = null;
       validationError.value = '';
       confirmResult.value = null;
@@ -485,6 +595,9 @@ export default defineComponent({
       dataLineCount,
       matchPercent,
       canValidate,
+      parsedHeaders,
+      columnMappingWarning,
+      parsedSampleRow,
       autoDisplayName,
       triggerFileUpload,
       onFileUpload,
@@ -802,6 +915,98 @@ export default defineComponent({
   background: #22c55e;
   border-radius: 4px;
   transition: width 0.3s;
+}
+
+/* Column Mapping */
+.column-mapping-box {
+  margin-top: 12px;
+  background: #f0f7ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.column-mapping-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.column-mapping-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1d4ed8;
+}
+
+.column-mapping-hint {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.column-mapping-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.column-mapping-field {
+  flex: 1;
+}
+
+.column-mapping-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: #374151;
+  margin-bottom: 4px;
+}
+
+.column-mapping-arrow {
+  font-size: 20px;
+  color: #6b7280;
+  padding-bottom: 6px;
+  flex-shrink: 0;
+}
+
+.column-mapping-warning {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #b45309;
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 4px;
+  padding: 6px 10px;
+}
+
+.column-mapping-preview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 6px 10px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #374151;
+}
+
+.preview-label {
+  color: #9ca3af;
+  margin-right: 4px;
+}
+
+.preview-sep {
+  color: #9ca3af;
+}
+
+.preview-id code,
+.preview-value code {
+  background: #f3f4f6;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 12px;
 }
 
 .match-percent {

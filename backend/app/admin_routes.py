@@ -581,6 +581,21 @@ def toggle_species_enabled(species_code):
 # Metadata Import Endpoints
 # ============================================================================
 
+import re as _re
+
+def _parse_rows(data_str: str, separator: str) -> list:
+    """Parse delimited data string into a list of rows (list of lists).
+    Supports '\\s+' as a special sentinel for splitting on any whitespace."""
+    if separator == '\\s+' or separator == r'\s+':
+        return [
+            _re.split(r'\s+', line.strip())
+            for line in data_str.strip().splitlines()
+            if line.strip()
+        ]
+    reader = csv.reader(io.StringIO(data_str.strip()), delimiter=separator)
+    return list(reader)
+
+
 @admin_bp.route('/metadata/import', methods=['POST'])
 @require_admin_token
 def validate_metadata_import():
@@ -610,7 +625,9 @@ def validate_metadata_import():
     display_name = body.get('display_name', '').strip()
     data_str = body.get('data', '')
     separator = body.get('separator', '\t')
-    
+    id_column = body.get('id_column')   # column name or None
+    value_column = body.get('value_column')  # column name or None
+
     # Validation
     if not dataset:
         return jsonify({"success": False, "error": "Missing 'dataset' (species code)"}), 400
@@ -632,25 +649,34 @@ def validate_metadata_import():
     
     try:
         # Parse TSV data
-        reader = csv.reader(io.StringIO(data_str.strip()), delimiter=separator)
-        rows = list(reader)
-        
-        if len(rows) < 2:
-            return jsonify({"success": False, "error": "Data must have at least a header row and one data row"}), 400
+        rows = _parse_rows(data_str, separator)
         
         header = rows[0]
         if len(header) < 2:
             return jsonify({
-                "success": False, 
+                "success": False,
                 "error": f"Expected at least 2 columns (ID + value), got {len(header)}"
             }), 400
-        
+
+        # Resolve id_col / value_col indices from column names (or default to 0/1)
+        if id_column and id_column in header:
+            id_idx = header.index(id_column)
+        else:
+            id_idx = 0
+        if value_column and value_column in header:
+            val_idx = header.index(value_column)
+        else:
+            val_idx = 1 if id_idx != 1 else 0
+
+        if id_idx == val_idx:
+            return jsonify({"success": False, "error": "ID column and value column must be different"}), 400
+
         # Parse into dict: ID -> value
         data_dict = {}
         for row in rows[1:]:
-            if len(row) >= 2:
-                data_dict[row[0].strip()] = row[1].strip()
-        
+            if len(row) > max(id_idx, val_idx):
+                data_dict[row[id_idx].strip()] = row[val_idx].strip()
+
         if not data_dict:
             return jsonify({"success": False, "error": "No valid data rows found"}), 400
         
@@ -746,19 +772,31 @@ def confirm_metadata_import():
     type_override = body.get('type_override')
     persist = body.get('persist_to_h5ad', False)
     apply_all = body.get('apply_to_all_datasets', False)
-    
+    id_column = body.get('id_column')
+    value_column = body.get('value_column')
+
     if not all([dataset, target, column_name, data_str]):
         return jsonify({"success": False, "error": "Missing required fields"}), 400
-    
+
     try:
-        # Parse TSV
-        reader = csv.reader(io.StringIO(data_str.strip()), delimiter=separator)
-        rows = list(reader)
+        # Parse data
+        rows = _parse_rows(data_str, separator)
         header = rows[0]
+
+        # Resolve id/value column indices
+        if id_column and id_column in header:
+            id_idx = header.index(id_column)
+        else:
+            id_idx = 0
+        if value_column and value_column in header:
+            val_idx = header.index(value_column)
+        else:
+            val_idx = 1 if id_idx != 1 else 0
+
         data_dict = {}
         for row in rows[1:]:
-            if len(row) >= 2:
-                data_dict[row[0].strip()] = row[1].strip()
+            if len(row) > max(id_idx, val_idx):
+                data_dict[row[id_idx].strip()] = row[val_idx].strip()
         
         # Determine type
         inferred_type = type_override or "text"

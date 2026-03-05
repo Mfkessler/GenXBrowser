@@ -12,5 +12,6 @@ dependencies:
   - biopython>=1.83
   - rich>=13.0
   - click>=8.1
+  - nodejs
   - pip:
       - -e .

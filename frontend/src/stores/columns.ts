@@ -15,9 +15,6 @@ export interface ColumnsState {
   distinctValues: Record<string, string[]>;
 }
 
-// Tissue column name — h5ad files use 'tissue' directly
-const TISSUE_COLUMNS = ['tissue'];
-
 // Columns to hide from sample-metadata column selectors
 const HIDDEN_COL_COLUMNS = ['type', 'ismeta'];
 
@@ -31,51 +28,51 @@ export const useColumnsStore = defineStore("columns", {
   }),
   actions: {
     setRowColumns(columns: MetaFormat[]) {
-      // Filter out tissue — it's a sample property, not a gene property
-      this.rowColumns = columns.filter(c => c.column_name !== 'tissue');
+      // Filter out columns that are sample-level (is_tissue marks the tissue col as obs-only)
+      this.rowColumns = columns.filter(c => !c.is_tissue);
     },
     setColColumns(columns: MetaFormat[]) {
       // Filter out hidden internal columns
       const cleaned = columns.filter(c => !HIDDEN_COL_COLUMNS.includes(c.column_name.toLowerCase()));
-      // Check for tissue columns
-      const tissueColumns = cleaned.filter(c => TISSUE_COLUMNS.includes(c.column_name));
-      const nonTissueColumns = cleaned.filter(c => !TISSUE_COLUMNS.includes(c.column_name));
-      
-      // Find tissue column
-      const tissueColEntry = columns.find(c => c.column_name === 'tissue');
-      
+      // Find the column the admin has marked as the tissue role
+      const tissueColEntry = cleaned.find(c => c.is_tissue);
+      const nonTissueColumns = cleaned.filter(c => !c.is_tissue);
+
       if (tissueColEntry) {
+        const tissueDisplayName = tissueColEntry.display_name || tissueColEntry.column_name;
+
         // For filtering: use the tissue column directly (it has the actual values)
         this.filterableColColumns = [
-          { 
-            column_name: tissueColEntry.column_name, 
+          {
+            column_name: tissueColEntry.column_name,
             type: tissueColEntry.type || "text",
-            display_name: "Tissue"
+            display_name: tissueDisplayName,
+            is_tissue: true,
           },
           ...nonTissueColumns,
         ];
-        
-        // For ordering: include tissue_types pseudo-column
+
+        // For ordering: include the tissue column by name + tissue_types pseudo-column
         this.orderableColColumns = [
-          { column_name: tissueColEntry.column_name, type: "string" },
+          { column_name: tissueColEntry.column_name, type: "string", display_name: tissueDisplayName, is_tissue: true },
           ...nonTissueColumns,
-          { column_name: "tissue_types", type: "string" },
+          { column_name: "tissue_types", type: "string", display_name: tissueDisplayName },
         ];
-        
-        // colColumns for ColSideColors: Only tissue_types (no duplicate)
+
+        // colColumns for ColSideColors: tissue_types pseudo-column carries the admin display name
         this.colColumns = [
           ...nonTissueColumns,
-          { column_name: "tissue_types", type: "string" },
+          { column_name: "tissue_types", type: "string", display_name: tissueDisplayName },
         ];
       } else {
-        // No tissue column — keep original columns
-        this.filterableColColumns = columns;
+        // No tissue column configured — keep original columns as-is
+        this.filterableColColumns = cleaned;
         this.orderableColColumns = [
-          ...columns,
+          ...cleaned,
           { column_name: "tissue_types", type: "string" },
         ];
         this.colColumns = [
-          ...columns,
+          ...cleaned,
           { column_name: "tissue_types", type: "string" },
         ];
       }
@@ -88,7 +85,7 @@ export const useColumnsStore = defineStore("columns", {
     getDistinctValues(columnName: string): string[] {
       return this.distinctValues[columnName] || [];
     },
-    // Helper to get the actual column name for filtering
+    // Get the actual column name for filtering
     getActualColumnName(displayName: string): string {
       return displayName; // h5ad names are the standard — no mapping needed
     },
@@ -112,16 +109,12 @@ export const useColumnsStore = defineStore("columns", {
     },
     // Get tissue column name if it exists
     tissueColumnName(state): string | null {
-      const tissueCol = state.filterableColColumns.find(c => 
-        TISSUE_COLUMNS.includes(c.column_name)
-      );
+      const tissueCol = state.filterableColColumns.find(c => c.is_tissue);
       return tissueCol?.column_name || null;
     },
     // Get cached tissue values
     tissueValues(state): string[] {
-      const tissueCol = state.filterableColColumns.find(c => 
-        TISSUE_COLUMNS.includes(c.column_name)
-      );
+      const tissueCol = state.filterableColColumns.find(c => c.is_tissue);
       if (tissueCol) {
         return state.distinctValues[tissueCol.column_name] || [];
       }

@@ -511,8 +511,8 @@ async function calculate_tissues(tableName: string, filters: any) {
   try {
     console.log(`[calculate_tissues] Fetching tissues for ${tableName} with filters:`, filters);
     
-    // Tissue column name (h5ad standard)
-    const TISSUE_COLUMNS = ['tissue'];
+    // Tissue column name — read from admin config via store
+    const TISSUE_COLUMNS = columnsStore.tissueColumnName ? [columnsStore.tissueColumnName] : [];
     
     // Sample metadata columns that can be filtered
     const SAMPLE_METADATA_COLUMNS = [
