@@ -661,6 +661,8 @@ def start_services(
     backend_env["PROJECT_CONFIG_PATH"] = str(data_dir / "config" / "project_config.json")
     backend_env["FILTER_STORE_PATH"] = str(data_dir / "filters")
     backend_env["GO_OBO_PATH"] = str(data_dir / "go-basic.obo")
+    backend_env["SEQUENCES_DIR"] = str(data_dir / "Metadata" / "fas")
+    backend_env["GENE_TREES_PATH"] = str(data_dir / "Metadata" / "Resolved_Gene_Trees.txt")
     backend_env["FLASK_DEBUG"] = "true"
     backend_env["PORT"] = str(backend_port)
     backend_env["PYTHONUNBUFFERED"] = "1"  # For real-time output
