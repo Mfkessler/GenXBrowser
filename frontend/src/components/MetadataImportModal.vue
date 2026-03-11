@@ -323,6 +323,7 @@
 import { defineComponent, ref, computed, watch, type PropType } from 'vue';
 import axios from 'axios';
 import { getEntityLabel } from '@/shared/dataTypeLabels';
+import { resolveColumnMapping, splitDelimitedLine } from '@/shared/metadataImport';
 
 interface Dataset {
   code: string;
@@ -378,34 +379,23 @@ export default defineComponent({
     const confirmResult = ref<any>(null);
     const persistToH5ad = ref(false);
 
-    // Split a line by the current separator (handles whitespace regex)
-    function splitLine(line: string, sep: string): string[] {
-      if (sep === '\\s+' || sep === '\s+') {
-        return line.trim().split(/\s+/).filter((c: string) => c);
-      }
-      const realSep = sep === '\\t' ? '\t' : sep;
-      return line.split(realSep).map((c: string) => c.trim());
-    }
-
     // Parse the header row from the current data
     const parsedHeaders = computed<string[]>(() => {
       if (!form.value.data.trim()) return [];
       const firstLine = form.value.data.trim().split('\n')[0];
-      const cols = splitLine(firstLine, form.value.separator).filter((c: string) => c);
+      const cols = splitDelimitedLine(firstLine, form.value.separator).filter((c: string) => c);
       return cols.length >= 2 ? cols : [];
     });
 
-    // Auto-set idColumn / valueColumn when headers change
+    // Keep manual selections when the parsed headers still contain them.
     watch(parsedHeaders, (headers: string[]) => {
       if (!headers.length) return;
-      const defaultId = props.target === 'var' ? 'gene_id' : 'sample_id';
-      // Try to find a matching ID column, else use first
-      const bestId = headers.find((h: string) => h.toLowerCase() === defaultId)
-        || headers.find((h: string) => h.toLowerCase().includes('id'))
-        || headers[0];
-      form.value.idColumn = bestId;
-      // Value column: first column that isn't the ID column
-      form.value.valueColumn = headers.find((h: string) => h !== bestId) || headers[1];
+      const mapping = resolveColumnMapping(headers, props.target, {
+        idColumn: form.value.idColumn,
+        valueColumn: form.value.valueColumn,
+      });
+      form.value.idColumn = mapping.idColumn;
+      form.value.valueColumn = mapping.valueColumn;
     }, { immediate: true });
 
     const columnMappingWarning = computed<string>(() => {
@@ -418,8 +408,8 @@ export default defineComponent({
       if (!form.value.data.trim() || parsedHeaders.value.length < 2) return null;
       const lines = form.value.data.trim().split('\n');
       if (lines.length < 2) return null;
-      const headers = splitLine(lines[0], form.value.separator);
-      const row = splitLine(lines[1], form.value.separator);
+      const headers = splitDelimitedLine(lines[0], form.value.separator);
+      const row = splitDelimitedLine(lines[1], form.value.separator);
       const idIdx = headers.indexOf(form.value.idColumn);
       const valIdx = headers.indexOf(form.value.valueColumn);
       if (idIdx < 0 || valIdx < 0) return null;

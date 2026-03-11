@@ -62,16 +62,19 @@ export function getDefaultDatabase(type: BlastType): BlastDatabase {
 }
 
 /**
- * Get BLAST URL and parameters for a sequence
+ * Get BLAST URL and parameters that open the search form with the query prefilled.
  */
 export function getBlastConfig(sequence: string, type: BlastType, database?: BlastDatabase) {
   const db = database || getDefaultDatabase(type);
+  const program = type === 'protein' ? 'blastp' : 'blastn';
   
   return {
     url: 'https://blast.ncbi.nlm.nih.gov/Blast.cgi',
     params: {
-      CMD: 'Put',
-      PROGRAM: type === 'protein' ? 'blastp' : 'blastn',
+      CMD: 'Web',
+      PAGE_TYPE: 'BlastSearch',
+      PROGRAM: program,
+      BLAST_PROGRAMS: program,
       DATABASE: db,
       QUERY: sequence
     }
@@ -93,8 +96,8 @@ export function getBlastType(fieldKey: string): BlastType {
 }
 
 /**
- * Open NCBI BLAST in a new tab for the given sequence
- * Uses POST form submission to handle unlimited sequence lengths
+ * Open NCBI BLAST in a new tab with the query field prefilled.
+ * Uses POST form submission to avoid URL length limits for long sequences.
  */
 export function openBlast(fieldType: string, sequence: string, database?: BlastDatabase): void {
   if (!sequence || sequence === '[Loading...]' || sequence === '—' || sequence === '[BLOB]') {

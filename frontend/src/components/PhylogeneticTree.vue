@@ -117,6 +117,7 @@ import TooltipModal from "@/components/TooltipModal.vue";
 import DropdownMenu from "@/components/DropdownMenu.vue";
 import { getDisplayName, sequenceFields, verboseFields } from "@/shared/metadataDisplayNames";
 import { getEntityIdLabel } from "@/shared/dataTypeLabels";
+import { buildOrthogroupScopedFilters } from "@/shared/orthogroupFilters";
 import type { Config } from "@/shared/Config";
 import { hierarchicalCluster } from "@/shared/clustering";
 import { useRoute, useRouter } from 'vue-router';
@@ -169,6 +170,7 @@ const columnNames = ref<string[]>([]);
 const dataColumnNames = ref<string[]>([]);
 const columns = ref<RowType[]>([]);
 const newicks = ref<Record<string, string>>({});
+const orthogroupCaseMap = ref<Record<string, string>>({});
 const newickstr = ref("");
 const loading = ref(false);
 // Holds the full (unfiltered) Newick loaded via the "Show full tree" button.
@@ -260,7 +262,11 @@ const tableNameOptions = computed(() => {
 });
 
 
-async function fetchData(tableName: string, rowCount: number) {
+async function fetchData(
+  tableName: string,
+  rowCount: number,
+  requestFilters: Record<string, any> = filtersStore.getMergedFilters(tableName),
+) {
   try {
 
     if (rowCount <= 1000 && rowCount > 0) {
@@ -277,7 +283,7 @@ async function fetchData(tableName: string, rowCount: number) {
           `${API_BASE_URL}/api/data`,
           {
             table_name: tableName,
-            filters: filtersStore.getMergedFilters(tableName),
+            filters: requestFilters,
             layer: visualizationStore.expressionDisplay.layer,
             transform: visualizationStore.expressionDisplay.transform,
           },
@@ -310,6 +316,7 @@ async function fetchData(tableName: string, rowCount: number) {
       Object.entries(data).map(([_, v]) => {
         // Store newick with lowercase OG key to match getAllOGs() filtering
         const ogKey = String(v["ortho_id"]).trim().toLowerCase();
+        orthogroupCaseMap.value[ogKey] = String(v["ortho_id"]).trim();
         newicks.value[ogKey] = v["newick_str"];
       })
 
@@ -519,6 +526,46 @@ function computeMetrics(dataRef: any, calcOption: string, codeMap?: Record<strin
       return [groupName, perGene]
     })
   )
+}
+
+async function fetchOrthogroupDataForAllSpecies() {
+  if (!selectedOrthogroup.value) return false;
+
+  const allDatasets = Object.keys(props.allTables);
+  if (allDatasets.length === 0) return false;
+  const originalCaseOrthogroup = orthogroupCaseMap.value[selectedOrthogroup.value] || selectedOrthogroup.value;
+
+  const entries = await Promise.all(
+    allDatasets.map(async (tableName) => {
+      const scopedFilters = buildOrthogroupScopedFilters(
+        filtersStore.getMergedFilters(tableName),
+        originalCaseOrthogroup,
+      );
+
+      const { data: count } = await axios.post(`${API_BASE_URL}/api/count`, {
+        table_name: tableName,
+        filters: scopedFilters,
+      });
+
+      const rowCount = count.count;
+      if (rowCount === 0) return null;
+
+      const data = await fetchData(tableName, rowCount, scopedFilters);
+      return data ? { tableName, data } : null;
+    })
+  );
+
+  const results: Record<string, any> = {};
+  for (const entry of entries) {
+    if (entry) results[entry.tableName] = entry.data;
+  }
+
+  if (Object.keys(results).length === 0) {
+    return false;
+  }
+
+  tableData.value = results;
+  return true;
 }
 
 function mean(arr: number[]): number {
@@ -1453,6 +1500,8 @@ async function renderTreeForSelectedOG() {
     newickstr.value = null as any;
     return;
   }
+
+  await fetchOrthogroupDataForAllSpecies();
   
   const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
   newickstr.value = newicks.value[selectedOrthogroup.value];
@@ -1469,7 +1518,7 @@ async function loadFullNewickForOG() {
   if (!selectedOrthogroup.value) return;
   try {
     const response = await axios.get<{ og_id: string; newick: string }>(
-      `${API_BASE_URL}/api/gene_tree/${selectedOrthogroup.value}`
+      `${API_BASE_URL}/api/gene_tree/${orthogroupCaseMap.value[selectedOrthogroup.value] || selectedOrthogroup.value}`
     );
     const newick = response.data.newick;
     if (!newick) return;
@@ -1481,26 +1530,7 @@ async function loadFullNewickForOG() {
     // include the orthogroup filter from the sidebar), but for ALL species — not
     // just the catalog-selected ones.  Per-species row count for a single OG is
     // always small (<1000), so the rowCount guard inside fetchData is never hit.
-    const allDatasets = Object.keys(props.allTables);
-
-    const entries = await Promise.all(
-      allDatasets.map(async (tbl) => {
-        const { data: count } = await axios.post(`${API_BASE_URL}/api/count`, {
-          table_name: tbl,
-          filters: filtersStore.getMergedFilters(tbl),
-        });
-        const rowCount = count.count;
-        if (rowCount === 0) return null;
-        const data = await fetchData(tbl, rowCount);
-        return data ? { tableName: tbl, data } : null;
-      })
-    );
-
-    const results: Record<string, any> = {};
-    for (const entry of entries) {
-      if (entry) results[entry.tableName] = entry.data;
-    }
-    tableData.value = results;
+    await fetchOrthogroupDataForAllSpecies();
 
     const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
     await nextTick();
@@ -1548,6 +1578,18 @@ watch(
     }
   },
   { immediate: true }
+)
+
+
+watch(
+  () => Object.keys(props.allTables).length,
+  async (newCount, oldCount) => {
+    if (props.hashLoading) return;
+    if (newCount === 0 || newCount === oldCount) return;
+    if (!selectedOrthogroup.value) return;
+
+    await renderTreeForSelectedOG();
+  }
 )
 
 

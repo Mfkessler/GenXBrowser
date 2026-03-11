@@ -206,11 +206,17 @@ onMounted(async () => {
     },
   );
 
+  const nextAllTables: Record<string, string> = {};
+  const nextSpeciesCodeMap: Record<string, string> = {};
+
   response.data.forEach((t) => {
-    allTables.value[t.table_name] = beautifyLabel(t.table_name);
+    nextAllTables[t.table_name] = beautifyLabel(t.table_name);
     if (t._species_code) {
-      speciesCodeMap.value[t.table_name] = t._species_code;
+      nextSpeciesCodeMap[t.table_name] = t._species_code;
     }
   });
+
+  allTables.value = nextAllTables;
+  speciesCodeMap.value = nextSpeciesCodeMap;
 });
 </script>

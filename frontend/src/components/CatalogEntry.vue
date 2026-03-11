@@ -52,7 +52,7 @@
           <h2 class="text-lg italic font-semibold text-gray-700 text-center mb-1">
             {{ beautifyLabel(tableName) }}
           </h2>
-          <p :class="['text-gray-400 text-sm transition-colors duration-500 text-center', countFlash ? 'count-flash' : '']"><b>Count: </b>{{ displayCount }}</p>
+          <p :class="['text-gray-400 text-sm transition-colors duration-500 text-center', countFlash ? 'count-flash' : '']"><b>Count: </b>{{ displayCount }} {{ entityLabelPlural }}</p>
           <div class="flex items-center justify-center">
             <p :class="['text-gray-400 text-sm transition-colors duration-500', tissueFlash ? 'count-flash' : '']">
               <b>Tissues: </b>{{ tissues }}
@@ -77,7 +77,7 @@
         <h2 class="text-lg italic font-semibold text-gray-700 w-full flex items-center mb-1">
           {{ beautifyLabel(tableName) }}
         </h2>
-        <p :class="['text-gray-400 text-sm transition-colors duration-500', countFlash ? 'count-flash' : '']"><b>Count: </b>{{ displayCount }}</p>
+        <p :class="['text-gray-400 text-sm transition-colors duration-500', countFlash ? 'count-flash' : '']"><b>Count: </b>{{ displayCount }} {{ entityLabelPlural }}</p>
         <div class="flex items-center">
           <p :class="['text-gray-400 text-sm transition-colors duration-500', tissueFlash ? 'count-flash' : '']">
             <b>Tissues: </b>{{ tissues }}
@@ -332,6 +332,7 @@ import {storeToRefs} from "pinia";
 import {computed, inject, nextTick, onMounted, ref, watch} from "vue";
 
 import {API_BASE_URL, type Config} from "@/shared/Config";
+import { getEntityLabelPlural } from "@/shared/dataTypeLabels";
 import {useFiltersStore} from "@/stores/filters";
 import {useColumnsStore} from "@/stores/columns";
 import {beautifyLabel} from "@/shared/utils";
@@ -394,6 +395,7 @@ const MAX_VISIBLE_TAGS = 4;
 
 const visibleTags = computed(() => tagItems.value.slice(0, MAX_VISIBLE_TAGS));
 const hiddenTags = computed(() => tagItems.value.slice(MAX_VISIBLE_TAGS));
+const entityLabelPlural = getEntityLabelPlural();
 
 const displayCount = computed(() => {
   if (loadingCount.value) return "...";
@@ -551,7 +553,7 @@ async function calculate_tissues(tableName: string, filters: any) {
     // CLIENT-SIDE FILTERING: Apply all sample-level filters
     const appliedFilters: string[] = [];
     
-    for (const [columnName, filterValue] of Object.entries(filters)) {
+    for (const [columnName, filterValue] of Object.entries(filters as Record<string, unknown>)) {
       // Only process sample metadata columns
       if (!SAMPLE_METADATA_COLUMNS.includes(columnName)) {
         console.log(`[calculate_tissues] Skipping non-sample filter: ${columnName}`);
@@ -583,7 +585,7 @@ async function calculate_tissues(tableName: string, filters: any) {
           });
           appliedFilters.push(`${columnName}='${filterValue}'`);
         }
-      } else if (typeof filterValue === 'object' && filterValue !== null) {
+      } else if (typeof filterValue === 'object' && filterValue !== null && 'value' in filterValue) {
         // Object format with value property
         if (filterValue.value !== undefined) {
           const value = filterValue.value;
