@@ -244,11 +244,22 @@ const sortedColumns = ref<RowType[]>([]);
 const sideColorCache: Record<string, Record<string, string>> = {};
 
 const heatmapContainer = ref<HTMLDivElement | null>(null);
+const heatmapInstanceId = `heatmap-${Math.random().toString(36).slice(2, 10)}`;
+const colorLegendId = `${heatmapInstanceId}-color-legend`;
+const sideColorTooltipId = `${heatmapInstanceId}-side-color-tooltip`;
 
 // Guards against concurrent renders: if a second render is requested while
 // one is already in progress, it will be queued and run immediately after.
 let isRendering = false;
 let renderPending = false;
+let renderFrame: number | null = null;
+let renderTimer: ReturnType<typeof setTimeout> | null = null;
+let isUnmounting = false;
+
+const LEGEND_WIDTH = 30;
+const SIDE_COLOR_WIDTH = 18;
+const SIDE_COLOR_GAP = 2;
+const MAX_RENDER_RETRIES = 18;
 
 // geneFilters and sampleFilters are now provided by useFilterSeparation composable
 
@@ -352,9 +363,6 @@ async function fetchAndPrepareData() {
         dataColumnNames.value.includes(meta.column_name as string),
       );
 
-      sortedRows.value = calculateSortedRows(processedRows.value);
-      sortedColumns.value = calculateSortedColumns(columns.value);
-
       processedRows.value = calculateProcessedRows();
 
       // Initialize tooltip fields with all available metadata fields except sequences and verbose fields
@@ -395,7 +403,7 @@ async function fetchAndPrepareData() {
       }
 
       await nextTick();
-      renderHeatmap();
+      scheduleHeatmapRender();
     }
   } catch (e) {
     console.error("Error fetching data:", e);
@@ -432,11 +440,6 @@ function maskRows(
 function recalculateData() {
   sortedRows.value = calculateSortedRows(processedRows.value);
   sortedColumns.value = calculateSortedColumns(columns.value);
-
-  // Sync rows with sorted data to reflect reorder in UI parts bound to rows
-  rows.value = sortedRows.value;
-
-  //Sync of the columns happens in visibleColumns
 }
 
 function calculateProcessedRows(): RowType[] {
@@ -524,6 +527,7 @@ function renderColorLegend(
   margin: { top: number; right: number; bottom: number; left: number },
   colorScale: d3.ScaleSequential<string>,
   legendWidth: number,
+  gradientId: string,
 ) {
   const svgWidth = +svg.attr("width");
   const svgHeight = +svg.attr("height");
@@ -534,7 +538,7 @@ function renderColorLegend(
   const defs = svg.append("defs");
   const gradient = defs
     .append("linearGradient")
-    .attr("id", "colorLegend")
+    .attr("id", gradientId)
     .attr("x1", "0%")
     .attr("y1", "100%") // from bottom to top
     .attr("x2", "0%")
@@ -565,7 +569,7 @@ function renderColorLegend(
     .append("rect")
     .attr("width", legendWidth)
     .attr("height", legendHeight)
-    .style("fill", "url(#colorLegend)");
+    .style("fill", `url(#${gradientId})`);
 
   // Scale for the legend axis according to colorScale domain
   const legendScale = d3
@@ -820,25 +824,30 @@ async function renderSideColors({
     }
 
     // Tooltip, unified for both
-    let tooltip = d3.select("#sideColorTooltip");
+    const containerNode = svg.node()?.parentNode as HTMLElement | null;
+    if (!containerNode) return;
 
-    tooltip = d3
-      .select(svg.node().parentNode)
-      .append("div")
-      .attr("id", "sideColorTooltip")
-      .style("position", "absolute")
-      .style("z-index", "50")
-      .style("visibility", "hidden")
-      .style("background-color", "#f9fafb")
-      .style("color", "#374151")
-      .style("font-size", "0.75rem")
-      .style("border-radius", "0.375rem")
-      .style("padding", "0.25rem 0.5rem")
-      .style("min-width", "6rem")
-      .style("max-width", "20rem")
-      .style("border", "1px solid #d1d5db")
-      .style("box-shadow", "0 1px 2px rgba(0,0,0,0.05)")
-      .style("pointer-events", "none");
+    let tooltip = d3.select(containerNode).select<HTMLDivElement>(`#${sideColorTooltipId}`);
+
+    if (tooltip.empty()) {
+      tooltip = d3
+        .select(containerNode)
+        .append("div")
+        .attr("id", sideColorTooltipId)
+        .style("position", "absolute")
+        .style("z-index", "50")
+        .style("visibility", "hidden")
+        .style("background-color", "#f9fafb")
+        .style("color", "#374151")
+        .style("font-size", "0.75rem")
+        .style("border-radius", "0.375rem")
+        .style("padding", "0.25rem 0.5rem")
+        .style("min-width", "6rem")
+        .style("max-width", "20rem")
+        .style("border", "1px solid #d1d5db")
+        .style("box-shadow", "0 1px 2px rgba(0,0,0,0.05)")
+        .style("pointer-events", "none");
+    }
 
     rects
       .on("mouseover", function (event, d) {
@@ -960,39 +969,46 @@ function resetHeatmap() {
   d3.select(heatmapContainer.value).selectAll("*").remove();
 }
 
-async function renderHeatmap() {
-  if (isRendering) {
-    renderPending = true;
+function clearScheduledRender() {
+  if (renderFrame !== null) {
+    cancelAnimationFrame(renderFrame);
+    renderFrame = null;
+  }
+  if (renderTimer !== null) {
+    clearTimeout(renderTimer);
+    renderTimer = null;
+  }
+}
+
+function scheduleHeatmapRender(delay = 0, retries = MAX_RENDER_RETRIES) {
+  if (isUnmounting) return;
+
+  clearScheduledRender();
+
+  const runRender = async () => {
+    renderFrame = null;
+    const didRender = await renderHeatmap();
+    if (!didRender && retries > 0 && !isUnmounting) {
+      scheduleHeatmapRender(0, retries - 1);
+    }
+  };
+
+  if (delay > 0) {
+    renderTimer = setTimeout(() => {
+      renderTimer = null;
+      renderFrame = requestAnimationFrame(() => {
+        void runRender();
+      });
+    }, delay);
     return;
   }
-  isRendering = true;
-  renderPending = false;
-  try {
-  if (
-    !heatmapContainer.value ||
-    !sortedRows.value.length ||
-    !visibleColumns.value.length
-  ) {
-    return;
-  }
 
-  // If the container hasn't been laid out yet (zero dimensions),
-  // bail out — the ResizeObserver will trigger a re-render when the
-  // flex layout has assigned final dimensions to this container.
-  const container = heatmapContainer.value;
-  if (container.clientWidth === 0 || container.clientHeight === 0) {
-    return;
-  }
+  renderFrame = requestAnimationFrame(() => {
+    void runRender();
+  });
+}
 
-  resetHeatmap();
-
-  const width = container.clientWidth || 500;
-  const height = container.clientHeight || 400;
-
-  const legendWidth = 30;
-  const sideColorWidth = 18;
-  const sideColorGap = 2;
-
+function getHeatmapLayout(width: number, height: number) {
   let totalColSideColorHeight = 0;
   let totalRowSideColorWidth = 0;
 
@@ -1008,30 +1024,78 @@ async function renderHeatmap() {
 
   if (visualizationStore.rowSideColors.length > 0) {
     totalRowSideColorWidth =
-      visualizationStore.rowSideColors.length * (sideColorWidth + sideColorGap);
+      visualizationStore.rowSideColors.length * (SIDE_COLOR_WIDTH + SIDE_COLOR_GAP);
     margin.left += totalRowSideColorWidth;
     margin.bottom = Math.max(100, margin.bottom);
   }
 
   if (visualizationStore.colSideColors.length > 0) {
     totalColSideColorHeight =
-      visualizationStore.colSideColors.length * (sideColorWidth + sideColorGap);
-    margin.top += totalColSideColorHeight
+      visualizationStore.colSideColors.length * (SIDE_COLOR_WIDTH + SIDE_COLOR_GAP);
+    margin.top += totalColSideColorHeight;
     margin.left = Math.max(100, margin.left);
   }
 
   if (visualizationStore.legend) {
-    margin.right = legendWidth + 50;
+    margin.right = LEGEND_WIDTH + 50;
   }
 
   const svgW = width - margin.left - margin.right;
   const svgH = height - margin.top - margin.bottom;
+
+  return {
+    margin,
+    svgW,
+    svgH,
+    totalColSideColorHeight,
+    totalRowSideColorWidth,
+  };
+}
+
+async function renderHeatmap(): Promise<boolean> {
+  if (isRendering) {
+    renderPending = true;
+    return true;
+  }
+  isRendering = true;
+  renderPending = false;
+  try {
+    if (
+      !heatmapContainer.value ||
+      !sortedRows.value.length ||
+      !visibleColumns.value.length
+    ) {
+      return false;
+    }
+
+    const container = heatmapContainer.value;
+    const width = container.clientWidth;
+    const height = container.clientHeight;
+    if (width <= 0 || height <= 0) {
+      return false;
+    }
+
+    const {
+      margin,
+      svgW,
+      svgH,
+      totalColSideColorHeight,
+      totalRowSideColorWidth,
+    } = getHeatmapLayout(width, height);
+
+    // In the multi-heatmap gallery the card width changes while siblings mount.
+    // Skip drawing until the drawable SVG area is actually positive.
+    if (svgW <= 0 || svgH <= 0) {
+      return false;
+    }
+
+    resetHeatmap();
   
-  const svg = d3
-    .select(container)
-    .append("svg")
-    .attr("width", width)
-    .attr("height", height);
+    const svg = d3
+      .select(container)
+      .append("svg")
+      .attr("width", width)
+      .attr("height", height);
 
   svg
     .append("text")
@@ -1042,52 +1106,51 @@ async function renderHeatmap() {
     .attr("font-style", "italic")
     .text(beautifyLabel(localTableName.value));
 
-  const data = sortedRows.value;
-  console.log(data)
-  const heatmapCols = visibleColumns.value;
-  const currentIdColumn = idColumn.value;
+    const data = sortedRows.value;
+    const heatmapCols = visibleColumns.value;
+    const currentIdColumn = idColumn.value;
   
   // Determine if we should use deferred event binding for large datasets
-  const totalCells = data.length * heatmapCols.length;
-  const isLargeDataset = totalCells > 10000; // Defer events for > 10k cells
+    const totalCells = data.length * heatmapCols.length;
+    const isLargeDataset = totalCells > 10000; // Defer events for > 10k cells
 
   //X/Y Labels
-  const yLabels = data.map((row) =>
-    row[currentIdColumn] !== undefined ? String(row[currentIdColumn]) : "",
-  );
-  const xLabels = heatmapCols;
+    const yLabels = data.map((row) =>
+      row[currentIdColumn] !== undefined ? String(row[currentIdColumn]) : "",
+    );
+    const xLabels = heatmapCols;
 
   //console.log(xLabels);
   //console.log(yLabels);
 
-  const x = d3.scaleBand().domain(xLabels).range([0, svgW]).padding(0);
-  const y = d3.scaleBand().domain(yLabels).range([0, svgH]).padding(0);
+    const x = d3.scaleBand().domain(xLabels).range([0, svgW]).padding(0);
+    const y = d3.scaleBand().domain(yLabels).range([0, svgH]).padding(0);
 
   //Colorscaling
-  const allCellVals = data
-    .flatMap((row: RowType) =>
-      heatmapCols.map((c) => {
-        const val = row[c];
-        return val === "[BLOB]" ? NaN : +val;
-      }),
-    )
-    .filter((v) => !isNaN(v));
+    const allCellVals = data
+      .flatMap((row: RowType) =>
+        heatmapCols.map((c) => {
+          const val = row[c];
+          return val === "[BLOB]" ? NaN : +val;
+        }),
+      )
+      .filter((v) => !isNaN(v));
 
-  const colorScale = d3
-    .scaleSequential(
-      COLORSCALES[visualizationStore.colorScale] as (t: number) => string,
-    )
-    .domain([d3.min(allCellVals) ?? 0, d3.max(allCellVals) ?? 1]);
+    const colorScale = d3
+      .scaleSequential(
+        COLORSCALES[visualizationStore.colorScale] as (t: number) => string,
+      )
+      .domain([d3.min(allCellVals) ?? 0, d3.max(allCellVals) ?? 1]);
 
   // Calculate label thinning for readability
   // Approximate height/width per label to determine skip interval
-  const minLabelSpacing = 12; // minimum pixels between labels
-  const cellWidth = x.bandwidth();
-  const cellHeight = y.bandwidth();
+    const minLabelSpacing = 12; // minimum pixels between labels
+    const cellWidth = x.bandwidth();
+    const cellHeight = y.bandwidth();
   
   // Calculate skip intervals (show every nth label)
-  const xLabelSkip = cellWidth < minLabelSpacing ? Math.ceil(minLabelSpacing / cellWidth) : 1;
-  const yLabelSkip = cellHeight < minLabelSpacing ? Math.ceil(minLabelSpacing / cellHeight) : 1;
+    const xLabelSkip = cellWidth < minLabelSpacing ? Math.ceil(minLabelSpacing / cellWidth) : 1;
+    const yLabelSkip = cellHeight < minLabelSpacing ? Math.ceil(minLabelSpacing / cellHeight) : 1;
 
   // Conditionally render X-axis with label thinning
   if (visualizationStore.colLabel) {
@@ -1189,26 +1252,26 @@ async function renderHeatmap() {
 
 
   // Create a single tooltip div once, reuse in events
-  const tooltip = d3
-    .select(container)
-    .append("div")
-    .attr("class", "tooltip")
-    .style("position", "absolute")
-    .style("z-index", "50")
-    .style("visibility", "hidden")
-    .style("background-color", "#f9fafb") // bg-gray-50
-    .style("color", "#374151") // text-gray-700
-    .style("font-size", "0.75rem") // text-xs
-    .style("border-radius", "0.375rem") // rounded-md
-    .style("padding", "0.25rem 0.5rem") // px-2 py-1
-    .style("min-width", "8rem")
-    .style("white-space", "normal")
-    .style("word-wrap", "break-word")
-    .style("max-width", "24rem")
-    .style("border", "1px solid #d1d5db")
-    .style("box-shadow", "0 1px 2px rgba(0,0,0,0.05)")
-    .style("pointer-events", "auto")
-    .style("user-select", "text");
+    const tooltip = d3
+      .select(container)
+      .append("div")
+      .attr("class", "tooltip")
+      .style("position", "absolute")
+      .style("z-index", "50")
+      .style("visibility", "hidden")
+      .style("background-color", "#f9fafb") // bg-gray-50
+      .style("color", "#374151") // text-gray-700
+      .style("font-size", "0.75rem") // text-xs
+      .style("border-radius", "0.375rem") // rounded-md
+      .style("padding", "0.25rem 0.5rem") // px-2 py-1
+      .style("min-width", "8rem")
+      .style("white-space", "normal")
+      .style("word-wrap", "break-word")
+      .style("max-width", "24rem")
+      .style("border", "1px solid #d1d5db")
+      .style("box-shadow", "0 1px 2px rgba(0,0,0,0.05)")
+      .style("pointer-events", "auto")
+      .style("user-select", "text");
 
   let hideTimeout; // global merken
 
@@ -1421,9 +1484,9 @@ async function renderHeatmap() {
 
 
   // Render the color legend on the right
-  if (visualizationStore.legend) {
-    renderColorLegend(svg, margin, colorScale, legendWidth);
-  }
+    if (visualizationStore.legend) {
+      renderColorLegend(svg, margin, colorScale, LEGEND_WIDTH, colorLegendId);
+    }
 
   // Row side colors
   if (visualizationStore.rowSideColors) {
@@ -1441,7 +1504,7 @@ async function renderHeatmap() {
       await renderSideColors({
         svg,
         margin,
-        dimensionSize: sideColorWidth,
+        dimensionSize: SIDE_COLOR_WIDTH,
         labels: yLabels,
         attributeValues,
         column_name: col,
@@ -1449,7 +1512,7 @@ async function renderHeatmap() {
         xOffset:
           margin.left -
           totalRowSideColorWidth +
-          i * (sideColorWidth + sideColorGap),
+          i * (SIDE_COLOR_WIDTH + SIDE_COLOR_GAP),
         yOffset: margin.top,
         orientation: "row",
       });
@@ -1495,7 +1558,7 @@ async function renderHeatmap() {
       await renderSideColors({
         svg,
         margin,
-        dimensionSize: sideColorWidth,
+        dimensionSize: SIDE_COLOR_WIDTH,
         labels: xLabelsForColoring,
         attributeValues,
         column_name: col,
@@ -1504,17 +1567,18 @@ async function renderHeatmap() {
         yOffset:
           margin.top -
           totalColSideColorHeight +
-          i * (sideColorWidth + sideColorGap),
+          i * (SIDE_COLOR_WIDTH + SIDE_COLOR_GAP),
         orientation: "col",
         labelWidth: 40,
       });
     }
-  }
+    }
+    return true;
   } finally {
     isRendering = false;
     if (renderPending) {
       renderPending = false;
-      renderHeatmap();
+      scheduleHeatmapRender();
     }
   }
 }
@@ -1542,12 +1606,21 @@ async function removeHeatmap() {
 const emit = defineEmits(["openSettingsOverlay", "update:tableName"]);
 
 watch(
+  () => props.tableName,
+  async (newTableName) => {
+    localTableName.value = newTableName;
+    await nextTick();
+    scheduleHeatmapRender();
+  },
+);
+
+watch(
   [() => visualizationStore.expressionDisplay, () => filters.value, () => filtersStore.datasetIdFilters],
   async ([expressionDisplay]) => {
     if (!expressionDisplay) return; // guard against unset
     await fetchAndPrepareData();
     await nextTick();
-    renderHeatmap();
+    scheduleHeatmapRender();
   },
   {immediate: true, deep: true},
 );
@@ -1569,7 +1642,7 @@ watch(
   async () => {
     recalculateData();
     await nextTick();
-    renderHeatmap();
+    scheduleHeatmapRender();
   },
   {deep: true},
 );
@@ -1578,9 +1651,7 @@ watch(
   [sidebarOpen, () => props.existingTables],
   async () => {
     await nextTick();
-    setTimeout(() => {
-      renderHeatmap();
-    }, 300);
+    scheduleHeatmapRender(300);
   },
   {deep: true},
 );
@@ -1605,7 +1676,7 @@ watch(
       );
       recalculateData();
       await nextTick();
-      renderHeatmap();
+      scheduleHeatmapRender();
     }
   },
   { deep: true }
@@ -1620,7 +1691,7 @@ watch(
   async () => {
     recalculateData();
     await nextTick();
-    renderHeatmap();
+    scheduleHeatmapRender();
   },
   { deep: true }
 );
@@ -1632,6 +1703,8 @@ watch(
 let resizeObserver: ResizeObserver | null = null;
 let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
+// flush: 'post' is required for template refs in Vue 3 — the ref is only
+// populated after the DOM update, so a 'pre' flush would see null.
 watch(heatmapContainer, (newContainer) => {
   if (resizeObserver) {
     resizeObserver.disconnect();
@@ -1639,17 +1712,18 @@ watch(heatmapContainer, (newContainer) => {
   }
   if (newContainer) {
     resizeObserver = new ResizeObserver(() => {
-      if (sortedRows.value.length === 0) return; // no data yet
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       resizeDebounceTimer = setTimeout(() => {
-        renderHeatmap();
+        scheduleHeatmapRender();
       }, 100);
     });
     resizeObserver.observe(newContainer);
   }
-});
+}, { flush: 'post' });
 
 onBeforeUnmount(() => {
+  isUnmounting = true;
+  clearScheduledRender();
   if (resizeObserver) {
     resizeObserver.disconnect();
     resizeObserver = null;

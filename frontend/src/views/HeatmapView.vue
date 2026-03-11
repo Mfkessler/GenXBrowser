@@ -7,7 +7,7 @@
       <div
         v-for="tableName in tableNames"
         :key="tableName"
-        class="flex-grow min-w-[42rem] h-full flex flex-col min-h-0"
+        class="flex-none basis-[42rem] min-w-[42rem] h-full flex flex-col min-h-0"
       >
         <HeatmapComponent
           :table-name="tableName"
