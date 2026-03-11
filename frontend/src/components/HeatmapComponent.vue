@@ -163,7 +163,6 @@ import {
   computed,
   inject,
   nextTick,
-  onMounted,
   onBeforeUnmount,
   ref,
   type Ref,
@@ -245,6 +244,11 @@ const sortedColumns = ref<RowType[]>([]);
 const sideColorCache: Record<string, Record<string, string>> = {};
 
 const heatmapContainer = ref<HTMLDivElement | null>(null);
+
+// Guards against concurrent renders: if a second render is requested while
+// one is already in progress, it will be queued and run immediately after.
+let isRendering = false;
+let renderPending = false;
 
 // geneFilters and sampleFilters are now provided by useFilterSeparation composable
 
@@ -390,12 +394,6 @@ async function fetchAndPrepareData() {
         recalculateData(); // recalc with new cluster order
       }
 
-      await nextTick();
-      // Wait for layout to stabilize — on first load with multiple heatmaps,
-      // the flex container may not have final dimensions after nextTick alone.
-      // Use multiple animation frames to ensure flex layout is complete.
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       await nextTick();
       renderHeatmap();
     }
@@ -963,6 +961,13 @@ function resetHeatmap() {
 }
 
 async function renderHeatmap() {
+  if (isRendering) {
+    renderPending = true;
+    return;
+  }
+  isRendering = true;
+  renderPending = false;
+  try {
   if (
     !heatmapContainer.value ||
     !sortedRows.value.length ||
@@ -971,23 +976,12 @@ async function renderHeatmap() {
     return;
   }
 
-  // Guard: if the container hasn't been laid out yet (zero dimensions),
-  // defer rendering until the browser has completed layout.
+  // If the container hasn't been laid out yet (zero dimensions),
+  // bail out — the ResizeObserver will trigger a re-render when the
+  // flex layout has assigned final dimensions to this container.
   const container = heatmapContainer.value;
   if (container.clientWidth === 0 || container.clientHeight === 0) {
-    // When multiple heatmaps load simultaneously, the flex layout may not have
-    // stabilized yet. Retry with increasing delays to give the layout time to complete.
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    await nextTick();
-    if (!heatmapContainer.value || heatmapContainer.value.clientWidth === 0 || heatmapContainer.value.clientHeight === 0) {
-      // Schedule a retry after a short delay to allow flex layout to stabilize
-      setTimeout(() => {
-        if (heatmapContainer.value && heatmapContainer.value.clientWidth > 0 && heatmapContainer.value.clientHeight > 0) {
-          renderHeatmap();
-        }
-      }, 100);
-      return;
-    }
+    return;
   }
 
   resetHeatmap();
@@ -1516,6 +1510,13 @@ async function renderHeatmap() {
       });
     }
   }
+  } finally {
+    isRendering = false;
+    if (renderPending) {
+      renderPending = false;
+      renderHeatmap();
+    }
+  }
 }
 
 //Settings
@@ -1624,14 +1625,38 @@ watch(
   { deep: true }
 );
 
-function handleWindowResize() {
-  renderHeatmap();
-}
+// ResizeObserver re-renders the heatmap when the container gets its final size.
+// This is the primary fix for multi-heatmap rendering: when multiple heatmaps
+// share a flex layout, each container's width is not final until all siblings
+// have mounted. The observer fires as soon as dimensions stabilise.
+let resizeObserver: ResizeObserver | null = null;
+let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-onMounted(() => {
-  window.addEventListener("resize", handleWindowResize);
+watch(heatmapContainer, (newContainer) => {
+  if (resizeObserver) {
+    resizeObserver.disconnect();
+    resizeObserver = null;
+  }
+  if (newContainer) {
+    resizeObserver = new ResizeObserver(() => {
+      if (sortedRows.value.length === 0) return; // no data yet
+      if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+      resizeDebounceTimer = setTimeout(() => {
+        renderHeatmap();
+      }, 100);
+    });
+    resizeObserver.observe(newContainer);
+  }
 });
+
 onBeforeUnmount(() => {
-  window.removeEventListener("resize", handleWindowResize);
+  if (resizeObserver) {
+    resizeObserver.disconnect();
+    resizeObserver = null;
+  }
+  if (resizeDebounceTimer) {
+    clearTimeout(resizeDebounceTimer);
+    resizeDebounceTimer = null;
+  }
 });
 </script>
