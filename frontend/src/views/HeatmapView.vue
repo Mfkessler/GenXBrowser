@@ -1,13 +1,14 @@
 <template>
   <div class="h-[calc(100vh-7rem)] flex flex-col overflow-hidden">
-    <!-- Gallery container: flex wrap and gap for nice grid layout -->
     <div
-      class="flex gap-4 flex-grow p-2 overflow-x-auto overflow-y-hidden whitespace-nowrap min-h-0"
+      class="grid gap-4 flex-grow p-2 overflow-x-hidden overflow-y-auto min-h-0 items-stretch auto-rows-fr"
+      :style="heatmapGridStyle"
     >
       <div
         v-for="tableName in tableNames"
         :key="tableName"
-        class="flex-none basis-[42rem] min-w-[42rem] h-full flex flex-col min-h-0"
+        class="min-w-0 h-full flex flex-col min-h-0"
+        :style="heatmapCardStyle"
       >
         <HeatmapComponent
           :table-name="tableName"
@@ -35,6 +36,7 @@ import { useRoute, useRouter } from "vue-router";
 
 import { type CatalogMeta } from "@/shared/CatalogMeta";
 import { SharedColorRegistry } from "@/shared/colorMapping";
+import { getHeatmapCardMinHeight, getHeatmapGridTemplate } from "@/shared/heatmapLayout";
 import HeatmapComponent from "@/components/HeatmapComponent.vue";
 import { useFiltersStore } from "@/stores/filters";
 import { useVisualizationStore } from "@/stores/visualization";
@@ -58,6 +60,14 @@ const tableNames = computed(() => {
   const param = route.params.table_names;
   return typeof param === "string" ? param.split(",") : [];
 });
+
+const heatmapGridStyle = computed(() => ({
+  gridTemplateColumns: getHeatmapGridTemplate(tableNames.value.length),
+}));
+
+const heatmapCardStyle = computed(() => ({
+  minHeight: getHeatmapCardMinHeight(tableNames.value.length),
+}));
 
 const openSettingsOverlay = () => {
   showSettingsOverlay.value = true;

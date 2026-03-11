@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, inject, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { getDisplayName, sequenceFields } from "@/shared/metadataDisplayNames";
 import axios from "axios";
 import { API_BASE_URL, type Config } from "@/shared/Config";
 import { getEntityMetadataLabel } from "@/shared/dataTypeLabels";
 import { openBlast as openBlastUtil, isBlastableSequence } from "@/shared/blast";
 import type { BlastDatabase } from "@/shared/blast";
+import { buildPhyloRouteTarget } from "@/shared/phyloNavigation";
 import BlastWarningModal from "./BlastWarningModal.vue";
 import InfoTooltip from "./InfoTooltip.vue";
 
@@ -21,6 +23,8 @@ export interface TooltipModalProps {
 
 const config = inject("config") as Config;
 const props = defineProps<TooltipModalProps>();
+const route = useRoute();
+const router = useRouter();
 const emit = defineEmits<{
   close: [];
 }>();
@@ -82,8 +86,34 @@ const sequences = computed(() => {
   return metadataFields.value.filter((key) => sequenceFields.includes(key));
 });
 
+const selectedOrthogroup = computed(() => {
+  if (!props.rowData) return '';
+  const orthoId = props.rowData.ortho_id;
+  return typeof orthoId === 'string' ? orthoId.trim() : '';
+});
+
 const closeOverlay = () => {
   emit("close");
+};
+
+const isNewickField = (key: string): boolean => key === 'newick_str';
+
+const canOpenPhyloTree = (key: string): boolean => {
+  return isNewickField(key) && selectedOrthogroup.value.length > 0;
+};
+
+const openPhyloTree = () => {
+  if (!selectedOrthogroup.value) return;
+
+  router.push(
+    buildPhyloRouteTarget(
+      route.params.table_names,
+      props.tableName,
+      selectedOrthogroup.value,
+      route.query as Record<string, unknown>,
+    )
+  );
+  closeOverlay();
 };
 
 const getFieldValue = (key: string): string => {
@@ -341,12 +371,21 @@ watch(() => props.show, (isShown) => {
                 <span class="font-medium text-gray-600 text-sm">{{
                   getDisplayName(key)
                 }}</span>
-                <button
-                  @click="copyToClipboard(getFieldValue(key), key)"
-                  class="px-2 py-1 text-xs bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors"
-                >
-                  {{ copiedField === key ? "✓ Copied!" : "📋 Copy" }}
-                </button>
+                <div class="flex items-center gap-1">
+                  <button
+                    v-if="canOpenPhyloTree(key)"
+                    @click="openPhyloTree()"
+                    class="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 transition-colors"
+                  >
+                    View
+                  </button>
+                  <button
+                    @click="copyToClipboard(getFieldValue(key), key)"
+                    class="px-2 py-1 text-xs bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors"
+                  >
+                    {{ copiedField === key ? "✓ Copied!" : "📋 Copy" }}
+                  </button>
+                </div>
               </div>
               <div class="bg-white p-2 rounded border border-gray-300 text-sm break-all">
                 {{ getFieldValue(key) }}
@@ -375,6 +414,13 @@ watch(() => props.show, (isShown) => {
                   v-if="getFieldValue(key) && getFieldValue(key) !== '[Loading...]' && getFieldValue(key) !== '—'"
                   class="flex gap-1 items-center"
                 >
+                  <button
+                    v-if="canOpenPhyloTree(key)"
+                    @click="openPhyloTree()"
+                    class="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 transition-colors"
+                  >
+                    View
+                  </button>
                   <!-- BLAST Button -->
                   <button
                     v-if="isBlastableSequence(key)"
