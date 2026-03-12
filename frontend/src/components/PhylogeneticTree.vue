@@ -118,6 +118,7 @@ import DropdownMenu from "@/components/DropdownMenu.vue";
 import { getDisplayName, sequenceFields, verboseFields } from "@/shared/metadataDisplayNames";
 import { getEntityIdLabel } from "@/shared/dataTypeLabels";
 import { buildOrthogroupScopedFilters } from "@/shared/orthogroupFilters";
+import { buildPhyloMetricKeys, matchLeafToDataset, resolvePhyloLeafMatch } from "@/shared/phyloLeafMatching";
 import type { Config } from "@/shared/Config";
 import { hierarchicalCluster } from "@/shared/clustering";
 import { useRoute, useRouter } from 'vue-router';
@@ -506,20 +507,8 @@ function computeMetrics(dataRef: any, calcOption: string, codeMap?: Record<strin
           )
           const data = { tissueExpression, normalizationTissue }
 
-          // Build full species name key to match newick leaf names
-          // Format: "Capnoides_sempervirens_evm.model.ptg000011l.1659"
-          // groupName is like "capnoides_sempervirens", gene.gene_id is like "evm.model.ptg000011l.1659"
-          const speciesKey = groupName.charAt(0).toUpperCase() + groupName.slice(1)
-          const fullNameKey = `${speciesKey}_${gene.gene_id}`
-
-          // Also register with species code prefix for datasets using short codes (e.g., "AT_AT5G62165...")
-          const entries: [string, typeof data][] = [[fullNameKey, data]]
-          if (speciesCode) {
-            const codeKey = `${speciesCode}_${gene.gene_id}`
-            if (codeKey !== fullNameKey) {
-              entries.push([codeKey, data])
-            }
-          }
+          const entries = buildPhyloMetricKeys(groupName, String(gene.gene_id), speciesCode)
+            .map((key): [string, typeof data] => [key, data])
           return entries
         })
       )
@@ -595,20 +584,6 @@ function resetContainer() {
 function getPrefix(name: string): string {
   const m = name.match(/^([^_]+)/)
   return m ? m[1] : name
-}
-
-/**
- * Extract full species name from a leaf node name (e.g., "Capnoides_sempervirens_gene.123" -> "capnoides_sempervirens")
- * Uses the speciesNameToTable mapping keys to find matches.
- */
-function getSpeciesFromLeafName(leafName: string, speciesNames: string[]): string | null {
-  for (const speciesName of speciesNames) {
-    // Check if leaf name starts with species name (case-insensitive)
-    if (leafName.toLowerCase().startsWith(speciesName.toLowerCase() + '_')) {
-      return speciesName.toLowerCase();
-    }
-  }
-  return null;
 }
 
 /**
@@ -997,8 +972,7 @@ async function initPhylotree(newick_str: string, metrics: any) {
   })
   
   // === NODE INTERACTIVITY WITH COLLAPSE SUPPORT ===
-  const speciesTableNames = Object.values(speciesNameToTable);
-  
+
   // Helper to generate a unique node ID for internal nodes based on position
   function getNodeId(g: d3.Selection<SVGGElement, any, any, any>, datum: any): string {
     // Try to get name first
@@ -1072,7 +1046,7 @@ async function initPhylotree(newick_str: string, metrics: any) {
     // (phylotree.js handles internal node collapse via collapsible: true)
     if (!isInternalNode && nodeName) {
       // For leaf nodes - species hide/show behavior via context menu
-      const speciesTableName = getSpeciesFromLeafName(nodeName, speciesTableNames);
+      const speciesTableName = matchLeafToDataset(nodeName, groupNames, props.speciesCodeMap ?? {})?.tableName;
       if (!speciesTableName) return;
       
       g.on('contextmenu', function(event: MouseEvent) {
@@ -1244,22 +1218,11 @@ async function initPhylotree(newick_str: string, metrics: any) {
 
   leaves.forEach(leaf => {
     const leafName = leaf.name  // e.g., "Staphisagria_picta_evm.model.ptg000098l.1147"
-    
-    // Try to match against known species names
-    // Leaf format: "Species_name_gene.id..." where Species_name is title case
-    let matchedTable: string | null = null
-    let matchedSpecies: string | null = null
-    
-    for (const [speciesName, tableName] of Object.entries(speciesNameToTable)) {
-      // Check if leaf name starts with species name (case-insensitive)
-      if (leafName.toLowerCase().startsWith(speciesName.toLowerCase() + '_')) {
-        matchedTable = tableName
-        matchedSpecies = speciesName
-        break
-      }
-    }
-    
-    if (!matchedTable) return  // Unknown species prefix
+
+    const resolvedLeaf = resolvePhyloLeafMatch(leafName, metrics, props.speciesCodeMap ?? {})
+    if (!resolvedLeaf) return
+
+    const matchedTable = resolvedLeaf.tableName
 
     // Skip hidden species
     if (hiddenSpecies.value.has(matchedTable)) return;
@@ -1268,9 +1231,7 @@ async function initPhylotree(newick_str: string, metrics: any) {
       const genesObj = metrics[matchedTable]
       if (!genesObj) return
 
-      // The metrics key format is now: "Capnoides_Sempervirens_evm.model.ptg000011l.1659"
-      // We need to build the same key from leafName
-      const geneObj = genesObj[leafName]
+      const geneObj = genesObj[resolvedLeaf.matchedKey]
       if (!geneObj) return
 
       let v: any = geneObj.normalizationTissue?.[tissue]
@@ -1278,15 +1239,15 @@ async function initPhylotree(newick_str: string, metrics: any) {
       if (typeof v === 'number' && Number.isFinite(v)) {
         // Get the original row data for this gene from tableData
         const originalRowData = tableData.value[matchedTable]?.items?.find(
-          (item: any) => leafName === `${(matchedSpecies ?? '').charAt(0).toUpperCase() + (matchedSpecies ?? '').slice(1)}_${item[config.visualization.id_column]}`
+          (item: any) => String(item[config.visualization.id_column]) === resolvedLeaf.geneId
         );
         
         // Store references for tooltip/modal access
         const cellData = {
-          geneId: leafName,
+          geneId: resolvedLeaf.geneId,
           tissue: tissue,
           value: v,
-          species: matchedSpecies,
+          species: matchedTable,
           tableName: matchedTable,
           geneObj: geneObj,
           rowData: originalRowData || null // Store full row data for modal
