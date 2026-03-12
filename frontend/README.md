@@ -193,8 +193,6 @@ frontend/
 - **lodash-es** — Utility functions (debounce, throttle)
 - **yaml** — YAML config file parsing
 
-The phylogenetic tree heatmap matches leaf labels against transcript IDs with prefixed and unprefixed fallbacks, so Orthofinder trees work with both `AT_transcript_id` and bare `transcript_id` leaf formats.
-
 ## IDE Setup
 
 [VSCode](https://code.visualstudio.com/) + [Vue - Official](https://marketplace.visualstudio.com/items?itemName=Vue.volar) extension (replaces Vetur).

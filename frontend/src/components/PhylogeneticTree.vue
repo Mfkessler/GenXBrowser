@@ -117,7 +117,11 @@ import TooltipModal from "@/components/TooltipModal.vue";
 import DropdownMenu from "@/components/DropdownMenu.vue";
 import { getDisplayName, sequenceFields, verboseFields } from "@/shared/metadataDisplayNames";
 import { getEntityIdLabel } from "@/shared/dataTypeLabels";
-import { buildOrthogroupScopedFilters } from "@/shared/orthogroupFilters";
+import {
+  buildOrthogroupOnlyFilters,
+  buildOrthogroupScopedFilters,
+  hasNonOrthogroupFilters,
+} from "@/shared/orthogroupFilters";
 import { buildPhyloMetricKeys, matchLeafToDataset, resolvePhyloLeafMatch } from "@/shared/phyloLeafMatching";
 import type { Config } from "@/shared/Config";
 import { hierarchicalCluster } from "@/shared/clustering";
@@ -172,6 +176,7 @@ const dataColumnNames = ref<string[]>([]);
 const columns = ref<RowType[]>([]);
 const newicks = ref<Record<string, string>>({});
 const orthogroupCaseMap = ref<Record<string, string>>({});
+const highlightedGeneIds = ref<Record<string, Set<string>>>({});
 const newickstr = ref("");
 const loading = ref(false);
 // Holds the full (unfiltered) Newick loaded via the "Show full tree" button.
@@ -466,19 +471,20 @@ async function fetchAllSelected() {
 function computeMetrics(dataRef: any, calcOption: string, codeMap?: Record<string, string>) {
 
   return Object.fromEntries(
-    Object.entries(dataRef.value).map(([groupName, groupVal]) => {
-      const genes = Array.isArray(groupVal)
-        ? groupVal
-        : Array.isArray(groupVal?.items)
-          ? groupVal.items
-          : Object.values(groupVal?.items ?? {});
+    Object.entries(dataRef.value as Record<string, any>).map(([groupName, groupVal]) => {
+      const normalizedGroupVal = groupVal as { items?: RowType[] } | RowType[] | undefined;
+      const genes = (Array.isArray(normalizedGroupVal)
+        ? normalizedGroupVal
+        : Array.isArray(normalizedGroupVal?.items)
+          ? normalizedGroupVal.items
+          : Object.values(normalizedGroupVal?.items ?? {})) as Array<RowType & { gene_id?: string }>;
 
       // Look up species code for this group (e.g., "AT" for "arabidopsis_thaliana")
       const speciesCode = codeMap?.[groupName] ?? null
 
       const perGene = Object.fromEntries(genes.flatMap((gene) => {
-          const tissueExpression = {}
-          const normalizationTissue = {}
+          const tissueExpression: Record<string, number[]> = {}
+          const normalizationTissue: Record<string, number[]> = {}
 
           const sampleKeys = Object.keys(gene).filter(
             k => /\d+$/.test(k) && typeof gene[k] === "number"
@@ -486,14 +492,16 @@ function computeMetrics(dataRef: any, calcOption: string, codeMap?: Record<strin
 
           for (const k of sampleKeys) {
             const tissueKey = `tissue_type_${k}`
-            const tissue = gene[tissueKey] || "Unknown"
+            const tissue = typeof gene[tissueKey] === 'string' && gene[tissueKey]
+              ? String(gene[tissueKey])
+              : "Unknown"
             const value = gene[k]
 
             if (!tissueExpression[tissue]) tissueExpression[tissue] = []
-            tissueExpression[tissue].push(value)
+            tissueExpression[tissue].push(Number(value))
           }
 
-          Object.entries(tissueExpression).map(([key, value]) => {
+          Object.entries(tissueExpression as Record<string, number[]>).map(([key, value]) => {
               if (calcOption === "mean") {
                 const v = mean(value)
                 if (!normalizationTissue[key]) normalizationTissue[key] = []
@@ -526,10 +534,7 @@ async function fetchOrthogroupDataForAllSpecies() {
 
   const entries = await Promise.all(
     allDatasets.map(async (tableName) => {
-      const scopedFilters = buildOrthogroupScopedFilters(
-        filtersStore.getMergedFilters(tableName),
-        originalCaseOrthogroup,
-      );
+      const scopedFilters = buildOrthogroupOnlyFilters(originalCaseOrthogroup);
 
       const { data: count } = await axios.post(`${API_BASE_URL}/api/count`, {
         table_name: tableName,
@@ -555,6 +560,52 @@ async function fetchOrthogroupDataForAllSpecies() {
 
   tableData.value = results;
   return true;
+}
+
+async function fetchHighlightedGenesForAllSpecies() {
+  if (!selectedOrthogroup.value) {
+    highlightedGeneIds.value = {};
+    return;
+  }
+
+  const allDatasets = Object.keys(props.allTables);
+  if (allDatasets.length === 0) {
+    highlightedGeneIds.value = {};
+    return;
+  }
+
+  const originalCaseOrthogroup = orthogroupCaseMap.value[selectedOrthogroup.value] || selectedOrthogroup.value;
+
+  const entries = await Promise.all(
+    allDatasets.map(async (tableName) => {
+      const mergedFilters = filtersStore.getMergedFilters(tableName);
+      const scopedFilters = buildOrthogroupScopedFilters(mergedFilters, originalCaseOrthogroup);
+
+      if (!hasNonOrthogroupFilters(scopedFilters)) {
+        return { tableName, geneIds: new Set<string>() };
+      }
+
+      const response = await axios.post(
+        `${API_BASE_URL}/api/data`,
+        {
+          table_name: tableName,
+          filters: scopedFilters,
+          columns: [config.visualization.id_column],
+        },
+      );
+
+      const rows = response.data.data || response.data;
+      const geneIds = new Set<string>(
+        (Array.isArray(rows) ? rows : []).map((row: RowType) => String(row[config.visualization.id_column] ?? '')).filter(Boolean),
+      );
+
+      return { tableName, geneIds };
+    })
+  );
+
+  highlightedGeneIds.value = Object.fromEntries(
+    entries.map(({ tableName, geneIds }) => [tableName, geneIds]),
+  );
 }
 
 function mean(arr: number[]): number {
@@ -755,10 +806,41 @@ async function initPhylotree(newick_str: string, metrics: any) {
     if (!name) return
 
     const prefix = getPrefix(name)
-    const color = prefixColor(prefix)
+    const color = String(prefixColor(prefix))
+
+    const resolvedLeaf = resolvePhyloLeafMatch(name, metrics, props.speciesCodeMap ?? {})
+    const shouldHighlightLeaf = resolvedLeaf
+      ? highlightedGeneIds.value[resolvedLeaf.tableName]?.has(resolvedLeaf.geneId) ?? false
+      : false
+
+    g.selectAll('.filtered-leaf-marker').remove()
 
     g.select('circle').attr('fill', color)
-    g.select('text').attr('fill', color)
+    const textSelection = g.select('text')
+      .attr('fill', color)
+      .attr('font-weight', shouldHighlightLeaf ? 800 : 400)
+      .attr('stroke', shouldHighlightLeaf ? '#ffffff' : 'none')
+      .attr('stroke-width', shouldHighlightLeaf ? 0.8 : 0)
+      .attr('paint-order', shouldHighlightLeaf ? 'stroke' : null)
+
+    if (shouldHighlightLeaf) {
+      const textNode = textSelection.node() as SVGTextElement | null
+      if (textNode) {
+        const bbox = textNode.getBBox()
+        g.insert('text', 'text')
+          .attr('class', 'filtered-leaf-marker')
+          .attr('x', bbox.x - 13)
+          .attr('y', bbox.y + bbox.height / 2)
+          .attr('dominant-baseline', 'middle')
+          .attr('fill', '#b45309')
+          .attr('font-size', '13px')
+          .attr('font-weight', 900)
+          .attr('stroke', '#fffbeb')
+          .attr('stroke-width', 0.9)
+          .attr('paint-order', 'stroke')
+          .text('★')
+      }
+    }
   })
 
   // === BOOTSTRAP VALUES DISPLAY ===
@@ -1238,7 +1320,8 @@ async function initPhylotree(newick_str: string, metrics: any) {
       if (Array.isArray(v)) v = v[0]
       if (typeof v === 'number' && Number.isFinite(v)) {
         // Get the original row data for this gene from tableData
-        const originalRowData = tableData.value[matchedTable]?.items?.find(
+        const originalItems = (tableData.value[matchedTable] as { items?: RowType[] } | undefined)?.items ?? []
+        const originalRowData = originalItems.find(
           (item: any) => String(item[config.visualization.id_column]) === resolvedLeaf.geneId
         );
         
@@ -1367,6 +1450,7 @@ async function initPhylotree(newick_str: string, metrics: any) {
   })
 
   const heatmapWidth = columns.length * (cellSize + cellPad)
+  const hasHighlightedLeaves = Object.values(highlightedGeneIds.value).some((geneIds) => geneIds.size > 0)
 
   const legendWidth = 26
   const legendHeight = 230
@@ -1423,6 +1507,31 @@ async function initPhylotree(newick_str: string, metrics: any) {
     .attr('text-anchor', 'middle')
     .style('font-size', '14px')
     .text(getExpressionOption(visualizationStore.expressionDisplay.optionId)?.label || 'Expression values')
+
+  if (hasHighlightedLeaves) {
+    const markerLegend = legendGroup.append('g')
+      .attr('transform', `translate(-8, ${legendHeight + 34})`)
+
+    markerLegend.append('text')
+      .attr('x', 0)
+      .attr('y', 0)
+      .attr('dominant-baseline', 'middle')
+      .attr('fill', '#b45309')
+      .attr('font-size', '15px')
+      .attr('font-weight', 900)
+      .attr('stroke', '#fffbeb')
+      .attr('stroke-width', 0.9)
+      .attr('paint-order', 'stroke')
+      .text('★')
+
+    markerLegend.append('text')
+      .attr('x', 14)
+      .attr('y', 0)
+      .attr('dominant-baseline', 'middle')
+      .attr('fill', '#000000')
+      .style('font-size', '15px')
+      .text('passes current filters')
+  }
   }
 
 
@@ -1452,6 +1561,10 @@ async function renderTreeForSelectedOG() {
   if (!selectedOrthogroup.value || !newicks.value[selectedOrthogroup.value]) {
     // Fall back to the directly-loaded full Newick (button was clicked)
     if (fullNewick.value) {
+      await Promise.all([
+        fetchOrthogroupDataForAllSpecies(),
+        fetchHighlightedGenesForAllSpecies(),
+      ]);
       const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
       newickstr.value = fullNewick.value;
       await nextTick();
@@ -1462,7 +1575,10 @@ async function renderTreeForSelectedOG() {
     return;
   }
 
-  await fetchOrthogroupDataForAllSpecies();
+  await Promise.all([
+    fetchOrthogroupDataForAllSpecies(),
+    fetchHighlightedGenesForAllSpecies(),
+  ]);
   
   const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
   newickstr.value = newicks.value[selectedOrthogroup.value];
@@ -1487,11 +1603,10 @@ async function loadFullNewickForOG() {
     fullNewick.value = newick;  // persist so watchers can't wipe it
     newickstr.value = newick;
 
-    // Re-fetch all available datasets with the SAME merged filters (which already
-    // include the orthogroup filter from the sidebar), but for ALL species — not
-    // just the catalog-selected ones.  Per-species row count for a single OG is
-    // always small (<1000), so the rowCount guard inside fetchData is never hit.
-    await fetchOrthogroupDataForAllSpecies();
+    await Promise.all([
+      fetchOrthogroupDataForAllSpecies(),
+      fetchHighlightedGenesForAllSpecies(),
+    ]);
 
     const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
     await nextTick();
