@@ -124,8 +124,18 @@
         <transition name="collapse">
           <div v-show="oraInfoOpen" class="text-blue-800 space-y-1 mt-1">
             <div>
-              <strong>{{ getEntitySetLabel() }}:</strong> {{ oraMetadata.subset_size }} {{ getEntityLabelPluralLower() }} (filtered)
-              vs {{ oraMetadata.background_size }} {{ getEntityLabelPluralLower() }} ({{ localTableName }} species background)
+              <strong>{{ getEntitySetLabel() }}:</strong>
+              {{ oraMetadata.subset_size }} annotated {{ getEntityLabelPluralLower() }}
+              <span v-if="oraMetadata.raw_subset_size !== undefined">
+                of {{ oraMetadata.raw_subset_size }} filtered
+              </span>
+              vs {{ oraMetadata.background_size }} annotated {{ getEntityLabelPluralLower() }}
+              <span v-if="oraMetadata.raw_background_size !== undefined">
+                of {{ oraMetadata.raw_background_size }} in the {{ localTableName }} species background
+              </span>
+            </div>
+            <div v-if="oraMetadata.unannotated_subset_count > 0 || oraMetadata.unannotated_background_count > 0" class="text-xs text-blue-700">
+              Unannotated genes are excluded from the ORA universe for the selected metadata column.
             </div>
             <div>
               <strong>Enrichment Tests:</strong> {{ oraMetadata.total_tests }} total,

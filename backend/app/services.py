@@ -1586,21 +1586,17 @@ class GenXBrowserService:
         if background_df.empty:
             raise ValueError("Background dataset is empty")
         
-        subset_size = len(subset_df)
-        background_size = len(background_df)
-        
-        logger.info(f"ORA: subset_size={subset_size}, background_size={background_size}")
-        
         # 3. Build attribute -> gene index mappings
         def build_gene_attribute_map(df: pd.DataFrame, col: str, apply_filter: bool = False) -> tuple:
             """
             Map each attribute to set of gene indices that contain it.
             
             Returns:
-                Tuple of (attr_to_genes dict, removed_parents dict if filtering, else empty dict)
+                Tuple of (attr_to_genes dict, removed_parents dict if filtering, else empty dict, annotated_genes set)
             """
             attr_to_genes = {}
             removed_parents_per_gene = {}  # gene_idx -> list of removed parent GO IDs
+            annotated_genes = set()
             
             for gene_idx, row in df.iterrows():
                 value = row[col]
@@ -1620,13 +1616,14 @@ class GenXBrowserService:
                         elif '|' in value:
                             attributes = [v.strip() for v in value.split('|') if v.strip()]
                         else:
-                            attributes = [value.strip()]
+                            attributes = [value.strip()] if value.strip() else []
                     else:
                         # Simple text column: single attribute
-                        attributes = [value.strip()]
+                        attributes = [value.strip()] if value.strip() else []
                 else:
                     # Numeric or other: convert to string
-                    attributes = [str(value)]
+                    text_value = str(value).strip()
+                    attributes = [text_value] if text_value else []
                 
                 # Apply topological filtering if enabled (only for GO terms)
                 if apply_filter and go_hierarchy and attributes:
@@ -1634,6 +1631,11 @@ class GenXBrowserService:
                     if removed:
                         removed_parents_per_gene[gene_idx] = removed
                     attributes = filtered_attrs
+
+                if not attributes:
+                    continue
+
+                annotated_genes.add(gene_idx)
                 
                 # Add gene to each attribute's set
                 for attr in attributes:
@@ -1641,10 +1643,59 @@ class GenXBrowserService:
                         attr_to_genes[attr] = set()
                     attr_to_genes[attr].add(gene_idx)
             
-            return attr_to_genes, removed_parents_per_gene
+            return attr_to_genes, removed_parents_per_gene, annotated_genes
         
-        subset_map, subset_removed = build_gene_attribute_map(subset_df, column_name, apply_filter=apply_topo_filter)
-        background_map, _ = build_gene_attribute_map(background_df, column_name, apply_filter=apply_topo_filter)
+        subset_map, subset_removed, annotated_subset_genes = build_gene_attribute_map(
+            subset_df, column_name, apply_filter=apply_topo_filter
+        )
+        background_map, _, annotated_background_genes = build_gene_attribute_map(
+            background_df, column_name, apply_filter=apply_topo_filter
+        )
+
+        subset_size = len(annotated_subset_genes)
+        background_size = len(annotated_background_genes)
+        raw_subset_size = len(subset_df)
+        raw_background_size = len(background_df)
+
+        logger.info(
+            f"ORA: subset_size={subset_size}/{raw_subset_size} annotated, "
+            f"background_size={background_size}/{raw_background_size} annotated"
+        )
+
+        if subset_size == 0:
+            return {
+                'results': [],
+                'metadata': {
+                    'subset_size': 0,
+                    'background_size': background_size,
+                    'raw_subset_size': raw_subset_size,
+                    'raw_background_size': raw_background_size,
+                    'unannotated_subset_count': raw_subset_size,
+                    'unannotated_background_count': raw_background_size - background_size,
+                    'total_tests': 0,
+                    'significant_count': 0,
+                    'column_type': column_type,
+                    'message': f"No filtered genes have annotations in column '{column_name}'",
+                    'count': raw_subset_size,
+                }
+            }
+        if background_size == 0:
+            return {
+                'results': [],
+                'metadata': {
+                    'subset_size': subset_size,
+                    'background_size': 0,
+                    'raw_subset_size': raw_subset_size,
+                    'raw_background_size': raw_background_size,
+                    'unannotated_subset_count': raw_subset_size - subset_size,
+                    'unannotated_background_count': raw_background_size,
+                    'total_tests': 0,
+                    'significant_count': 0,
+                    'column_type': column_type,
+                    'message': f"No background genes have annotations in column '{column_name}'",
+                    'count': raw_subset_size,
+                }
+            }
         
         # Track which parent terms were filtered out (for display in frontend)
         filtered_parent_counts = {}
@@ -1655,7 +1706,7 @@ class GenXBrowserService:
             logger.info(f"Topological filtering removed {len(filtered_parent_counts)} unique parent GO terms")
         
         # 4. Calculate Fisher's Exact Test for each attribute
-        all_attributes = set(subset_map.keys()) | set(background_map.keys())
+        all_attributes = set(subset_map.keys())
         
         logger.info(f"ORA: Testing {len(all_attributes)} unique attributes")
         
@@ -1720,6 +1771,10 @@ class GenXBrowserService:
                 'metadata': {
                     'subset_size': subset_size,
                     'background_size': background_size,
+                    'raw_subset_size': raw_subset_size,
+                    'raw_background_size': raw_background_size,
+                    'unannotated_subset_count': raw_subset_size - subset_size,
+                    'unannotated_background_count': raw_background_size - background_size,
                     'total_tests': len(all_attributes),
                     'significant_count': 0,
                     'column_type': column_type,
@@ -1764,6 +1819,10 @@ class GenXBrowserService:
         metadata = {
             'subset_size': subset_size,
             'background_size': background_size,
+            'raw_subset_size': raw_subset_size,
+            'raw_background_size': raw_background_size,
+            'unannotated_subset_count': raw_subset_size - subset_size,
+            'unannotated_background_count': raw_background_size - background_size,
             'total_tests': n_tests,
             'significant_count': len(significant_results),
             'column_type': column_type,
@@ -1772,7 +1831,7 @@ class GenXBrowserService:
             'min_count_threshold': min_count,
             'top_n': top_n,
             'topological_filter_applied': apply_topo_filter,
-            'count': subset_size,
+            'count': raw_subset_size,
         }
         
         # Add filtered parents info if topological filtering was applied
