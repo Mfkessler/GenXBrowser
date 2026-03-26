@@ -25,6 +25,8 @@ from h5ad_lib.filters.storage import FilterStore
 
 logger = logging.getLogger(__name__)
 
+VIRTUAL_GENE_COLUMNS = {'newick_str', 'protein_seq', 'rna_seq'}
+
 
 # ============================================================================
 # Species Photo Utilities
@@ -522,6 +524,56 @@ class GenXBrowserService:
         # Recompute global bins in background after reload
         threading.Thread(target=self.precompute_global_bins, daemon=True).start()
         logger.info("Started background global bin precomputation after config reload")
+
+    def _resolve_axis_column(self, axis, column_name: str) -> Optional[str]:
+        """Resolve a configured column name to the actual AnnData axis column."""
+        h5ad_col = self._to_h5ad_column_name(column_name)
+        for candidate in (h5ad_col, column_name):
+            if candidate in axis.columns:
+                return candidate
+        return None
+
+    def _get_configured_metadata_columns(
+        self,
+        adata: Any,
+        *,
+        sample_metadata: bool,
+    ) -> List[Dict[str, Any]]:
+        """Return visible metadata columns backed by the current config."""
+        column_defs = self.config_manager.get_column_definitions()
+        configured_columns: List[Dict[str, Any]] = []
+        tissue_column = self.config_manager.get_config().get('tissue_column')
+
+        for column_name, col_def in column_defs.items():
+            if not col_def.get('visible', True):
+                continue
+
+            if sample_metadata:
+                if not col_def.get('is_sample_metadata', False):
+                    continue
+                actual_col = self._resolve_axis_column(adata.obs, column_name)
+                if actual_col is None:
+                    continue
+                dtype = str(adata.obs[actual_col].dtype)
+            else:
+                if col_def.get('is_sample_metadata', False) or not col_def.get('is_meta', False):
+                    continue
+                actual_col = self._resolve_axis_column(adata.var, column_name)
+                if actual_col is None and column_name not in VIRTUAL_GENE_COLUMNS:
+                    continue
+                dtype = str(adata.var[actual_col].dtype) if actual_col is not None else 'object'
+
+            configured_columns.append({
+                'column_name': column_name,
+                'display_name': col_def.get('display_name', column_name),
+                'actual_name': actual_col,
+                'type': col_def.get('type') or self._get_column_type(dtype, actual_col or column_name),
+                'order': col_def.get('order', 9999),
+                'is_tissue': sample_metadata and column_name == tissue_column,
+            })
+
+        configured_columns.sort(key=lambda item: (item['order'], item['column_name']))
+        return configured_columns
     
     # =========================================================================
     # Column Name Mapping
@@ -674,53 +726,33 @@ class GenXBrowserService:
                 continue
             
             if source == "column_meta":
-                # Sample metadata from .obs.columns
-                # Hide internal/technical columns from the UI
-                HIDDEN_SAMPLE_COLUMNS = {'type', 'ismeta'}
-                column_defs = self.config_manager.get_column_definitions()
-                tissue_column = self.config_manager.get_config().get('tissue_column')
                 obs_candidates = []
-                for col in adata.obs.columns:
-                    pg_name = self._to_display_column_name(col)
-
-                    # Skip hidden internal columns
-                    if pg_name.lower() in HIDDEN_SAMPLE_COLUMNS:
+                for col_info in self._get_configured_metadata_columns(adata, sample_metadata=True):
+                    actual_name = col_info['actual_name']
+                    if col_info['column_name'] in seen or actual_name is None:
                         continue
 
-                    if pg_name not in seen:
-                        seen.add(pg_name)
-                        dtype = str(adata.obs[col].dtype)
-                        col_type = self._get_column_type(dtype, col)
+                    seen.add(col_info['column_name'])
+                    format_str = ''
+                    if col_info['type'] in ('bigint', 'double precision'):
+                        try:
+                            col_min = float(adata.obs[actual_name].min())
+                            col_max = float(adata.obs[actual_name].max())
+                            format_str = f"{col_min},{col_max}"
+                        except (ValueError, TypeError):
+                            pass
 
-                        format_str = ''
-                        if col_type in ('bigint', 'double precision'):
-                            try:
-                                col_min = float(adata.obs[col].min())
-                                col_max = float(adata.obs[col].max())
-                                format_str = f"{col_min},{col_max}"
-                            except (ValueError, TypeError):
-                                pass
+                    obs_candidates.append({
+                        'column_name': col_info['column_name'],
+                        'display_name': col_info['display_name'],
+                        'type': col_info['type'],
+                        'description': '',
+                        'format': format_str,
+                        'isMeta': False,
+                        'is_tissue': col_info['is_tissue'],
+                    })
 
-                        col_def = column_defs.get(pg_name, {})
-                        if not col_def.get('visible', True):
-                            continue
-
-                        obs_candidates.append({
-                            'column_name': pg_name,
-                            'display_name': col_def.get('display_name', pg_name),
-                            'type': col_type,
-                            'description': '',
-                            'format': format_str,
-                            'isMeta': False,
-                            'is_tissue': pg_name == tissue_column,
-                            '_order': col_def.get('order', 9999),
-                        })
-
-                # Sort by saved order, then append
-                obs_candidates.sort(key=lambda c: (c['_order'], c['column_name']))
-                for c in obs_candidates:
-                    c.pop('_order', None)
-                    columns.append(c)
+                columns.extend(obs_candidates)
             
             else:  # source == "meta" or None
                 # Sample IDs as expression columns FIRST
@@ -742,82 +774,46 @@ class GenXBrowserService:
                 
                 # Gene metadata from .var.columns SECOND
                 if is_meta is None or is_meta is True:
-                    column_defs = self.config_manager.get_column_definitions()
-
-                    # Collect candidate meta columns first, then sort by saved order
                     meta_candidates = []
-                    for col in adata.var.columns:
-                        display_name = self._to_display_column_name(col)
+                    for col_info in self._get_configured_metadata_columns(adata, sample_metadata=False):
+                        if col_info['column_name'] in seen:
+                            continue
+                        seen.add(col_info['column_name'])
+                        meta_candidates.append({
+                            'column_name': col_info['column_name'],
+                            'display_name': col_info['display_name'],
+                            'type': col_info['type'],
+                            'description': '',
+                            'format': '',
+                            'isMeta': True,
+                        })
 
-                        # All .var columns are gene/transcript metadata - no whitelist needed.
-                        # The column_definitions visibility flag controls what the user sees.
-
-                        if display_name not in seen:
-                            seen.add(display_name)
-                            dtype = str(adata.var[col].dtype)
-                            col_type = self._get_column_type(dtype, col)
-                            col_def = column_defs.get(display_name, {})
-
-                            if not col_def.get('visible', True):
-                                continue
-
-                            meta_candidates.append({
-                                'column_name': display_name,
-                                'display_name': col_def.get('display_name', display_name),
-                                'type': col_type,
-                                'description': '',
-                                'format': '',
-                                'isMeta': True,
-                                '_order': col_def.get('order', 9999),
-                            })
-
-                    # Add virtual columns
-                    for vcol in ['newick_str', 'protein_seq', 'rna_seq']:
-                        if vcol not in seen:
-                            col_def = column_defs.get(vcol, {})
-                            if col_def.get('visible', True):
-                                seen.add(vcol)
-                                meta_candidates.append({
-                                    'column_name': vcol,
-                                    'display_name': col_def.get('display_name', vcol),
-                                    'type': 'text',
-                                    'description': '',
-                                    'format': '',
-                                    'isMeta': True,
-                                    '_order': col_def.get('order', 9999),
-                                })
-
-                    # Sort by saved order field, then append
-                    meta_candidates.sort(key=lambda c: (c['_order'], c['column_name']))
-                    for c in meta_candidates:
-                        c.pop('_order', None)
-                        columns.append(c)
+                    columns.extend(meta_candidates)
                 
                 # Add sample metadata for _meta tables
                 if include_sample_meta:
-                    for col in adata.obs.columns:
-                        pg_name = self._to_display_column_name(col)
-                        if pg_name not in seen:
-                            seen.add(pg_name)
-                            dtype = str(adata.obs[col].dtype)
-                            col_type = self._get_column_type(dtype, col)
-                            
-                            format_str = ''
-                            if col_type in ('bigint', 'double precision'):
-                                try:
-                                    col_min = float(adata.obs[col].min())
-                                    col_max = float(adata.obs[col].max())
-                                    format_str = f"{col_min},{col_max}"
-                                except (ValueError, TypeError):
-                                    pass
-                            
-                            columns.append({
-                                'column_name': pg_name,
-                                'type': col_type,
-                                'description': '',
-                                'format': format_str,
-                                'isMeta': False,
-                            })
+                    for col_info in self._get_configured_metadata_columns(adata, sample_metadata=True):
+                        actual_name = col_info['actual_name']
+                        if col_info['column_name'] in seen or actual_name is None:
+                            continue
+
+                        seen.add(col_info['column_name'])
+                        format_str = ''
+                        if col_info['type'] in ('bigint', 'double precision'):
+                            try:
+                                col_min = float(adata.obs[actual_name].min())
+                                col_max = float(adata.obs[actual_name].max())
+                                format_str = f"{col_min},{col_max}"
+                            except (ValueError, TypeError):
+                                pass
+
+                        columns.append({
+                            'column_name': col_info['column_name'],
+                            'type': col_info['type'],
+                            'description': '',
+                            'format': format_str,
+                            'isMeta': False,
+                        })
         
         return columns
     
@@ -1017,6 +1013,20 @@ class GenXBrowserService:
             allowed_sample_ids = self._filter_samples(adata, sample_filters)
         else:
             allowed_sample_ids = set(adata.obs_names)
+        configured_sample_columns = self._get_configured_metadata_columns(adata, sample_metadata=True)
+        configured_names = {item['column_name'] for item in configured_sample_columns}
+        requested_columns = [
+            column_name for column_name in columns
+            if column_name in configured_names
+        ] if columns else []
+
+        if requested_columns:
+            selected_sample_columns = [
+                item for item in configured_sample_columns
+                if item['column_name'] in requested_columns
+            ]
+        else:
+            selected_sample_columns = configured_sample_columns
         rows = []
         
         # Sample ID rows with metadata (from adata.obs) - filtered by sample_filters
@@ -1034,15 +1044,14 @@ class GenXBrowserService:
                 'ismeta': False,
             }
             
-            # Add sample metadata — column names match h5ad directly
-            for obs_col in [
-                'tissue', 'assigned', 'pct_unmapped', 'pct_no_feature', 'pct_trimmed',
-            ]:
-                if obs_col in adata.obs.columns:
-                    val = sample_row.get(obs_col, None)
-                    row[obs_col] = float(val) if isinstance(val, (int, float)) and not pd.isna(val) else val
-                else:
-                    row[obs_col] = None
+            for col_info in selected_sample_columns:
+                actual_name = col_info['actual_name']
+                if actual_name is None:
+                    row[col_info['column_name']] = None
+                    continue
+
+                val = sample_row.get(actual_name, None)
+                row[col_info['column_name']] = float(val) if isinstance(val, (int, float)) and not pd.isna(val) else val
             
             rows.append(row)
         

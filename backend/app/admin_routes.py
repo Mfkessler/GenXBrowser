@@ -1019,6 +1019,18 @@ def delete_metadata_column(column_name):
     smc_cols = smc.get('columns', [])
     if column_name in smc_cols:
         smc_cols.remove(column_name)
+    default_visible_cols = smc.get('default_visible_columns', [])
+    if column_name in default_visible_cols:
+        default_visible_cols.remove(column_name)
+
+    frontend_settings = config.get('frontend_settings', {})
+    for key in ('default_columns', 'hidden_columns', 'column_order'):
+        values = frontend_settings.get(key, [])
+        if column_name in values:
+            frontend_settings[key] = [value for value in values if value != column_name]
+
+    if config.get('tissue_column') == column_name:
+        config['tissue_column'] = None
     
     config_mgr.update_config(config)
     service.reload_config()

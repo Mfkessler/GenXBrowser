@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 import textwrap
+import importlib.util
 from pathlib import Path
 
 import pytest
 
-# SequenceStore lives in app.services; import it directly so this test file
-# can be run without a full Flask context.
-from app.services import SequenceStore
+def _load_services_module():
+    services_path = Path(__file__).resolve().parents[1] / "app" / "services.py"
+    spec = importlib.util.spec_from_file_location("genxbrowser_services", services_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+SequenceStore = _load_services_module().SequenceStore
 
 
 # ---------------------------------------------------------------------------

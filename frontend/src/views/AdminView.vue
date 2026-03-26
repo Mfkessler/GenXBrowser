@@ -577,6 +577,7 @@ export default defineComponent({
         );
         config.value = resp.data.config;
         originalConfig.value = JSON.stringify(config.value);
+        await columnsStore.refreshColumns();
         showStatus(`Profile '${name}' loaded`, 'success');
       } catch (err: any) {
         showStatus(err.response?.data?.error || 'Failed to load profile', 'error');
@@ -598,6 +599,7 @@ export default defineComponent({
 
     async function onMetadataImported() {
       await loadConfig();
+      await columnsStore.refreshColumns();
       showStatus('Metadata imported successfully', 'success');
     }
 
@@ -612,6 +614,7 @@ export default defineComponent({
           { headers: getAuthHeaders() }
         );
         await loadConfig();
+        await columnsStore.refreshColumns();
         showStatus(`Column '${columnName}' deleted`, 'success');
       } catch (err: any) {
         showStatus(err.response?.data?.error || 'Delete failed', 'error');
