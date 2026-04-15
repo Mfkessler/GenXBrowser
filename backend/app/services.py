@@ -879,7 +879,14 @@ class GenXBrowserService:
             allowed_sample_ids = set(adata.obs_names)
         
         result_data = {}
-        
+
+        # Track whether caller passed explicit columns.  When no columns are
+        # given we fall back to get_all_columns() which respects the admin-panel
+        # visibility flag – but virtual columns (newick_str, sequences) must
+        # always be injected regardless of that flag so trees / sequences still
+        # work even when the columns are hidden in the sidebar.
+        explicit_columns_requested = bool(columns)
+
         if not columns:
             all_cols_info = self.get_all_columns(table_name=table_name)
             columns = [c['column_name'] for c in all_cols_info]
@@ -969,19 +976,25 @@ class GenXBrowserService:
         
         df = pd.DataFrame(result_data)
         
-        # Add virtual columns (only when requested and enabled)
+        # Add virtual columns (only when requested and enabled).
+        # Virtual columns are injected whenever:
+        #   a) the caller explicitly listed them in `columns`, OR
+        #   b) no explicit column list was given (default full fetch) –
+        #      regardless of admin-panel visibility so trees/sequences are
+        #      always available even when the sidebar column is hidden.
         if include_virtual_columns:
-            if 'ortho_id' in df.columns and ('newick_str' in columns or not columns):
+            add_all_virtual = not explicit_columns_requested
+            if 'ortho_id' in df.columns and ('newick_str' in columns or add_all_virtual):
                 df['newick_str'] = df['ortho_id'].apply(
                     lambda og: self.gene_trees.get(og) if pd.notna(og) and og else None
                 )
             
             if 'gene_id' in df.columns:
-                if 'protein_seq' in columns or not columns:
+                if 'protein_seq' in columns or add_all_virtual:
                     df['protein_seq'] = df['gene_id'].apply(
                         lambda gid: self.sequences.get_protein_seq(species_code, gid) if pd.notna(gid) else ''
                     )
-                if 'rna_seq' in columns or not columns:
+                if 'rna_seq' in columns or add_all_virtual:
                     df['rna_seq'] = df['gene_id'].apply(
                         lambda gid: self.sequences.get_rna_seq(species_code, gid) if pd.notna(gid) else ''
                     )
