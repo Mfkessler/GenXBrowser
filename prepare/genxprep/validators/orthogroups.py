@@ -119,6 +119,11 @@ def validate_orthogroups(
         mapping: dict[str, str] = {}
         n_matched = 0
 
+        # OrthoFinder standard output prefixes every gene ID with
+        # "{column_name}_" to disambiguate species. Strip it so that
+        # bare IDs from the count matrix can be matched.
+        prefix = col_name.strip() + "_"
+
         for _, row in df.iterrows():
             og_id = str(row[og_col])
             cell = row.get(col_name)
@@ -126,8 +131,10 @@ def validate_orthogroups(
                 continue
             ids_in_cell = [g.strip() for g in str(cell).split(",") if g.strip()]
             for gid in ids_in_cell:
-                mapping[gid] = og_id
-                if gid in gene_ids:
+                # Strip species prefix if present
+                bare = gid[len(prefix):] if gid.startswith(prefix) else gid
+                mapping[bare] = og_id
+                if bare in gene_ids:
                     n_matched += 1
 
         og_data[code] = mapping
@@ -193,6 +200,11 @@ def extract_orthogroup_map(
     if sp_col is None:
         return {}
 
+    # OrthoFinder standard output prefixes every gene ID with
+    # "{column_name}_" to disambiguate species. Strip it so that
+    # bare IDs from the count matrix can be matched.
+    prefix = sp_col.strip() + "_"
+
     mapping: dict[str, str] = {}
     for _, row in df.iterrows():
         og_id = str(row[og_col])
@@ -202,5 +214,6 @@ def extract_orthogroup_map(
         for gid in str(cell).split(","):
             gid = gid.strip()
             if gid:
-                mapping[gid] = og_id
+                bare = gid[len(prefix):] if gid.startswith(prefix) else gid
+                mapping[bare] = og_id
     return mapping
