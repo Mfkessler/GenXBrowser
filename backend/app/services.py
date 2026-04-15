@@ -34,58 +34,60 @@ VIRTUAL_GENE_COLUMNS = {'newick_str', 'protein_seq', 'rna_seq'}
 
 def fuzzy_match_photo(species_name: str, photo_files: List[str]) -> Optional[str]:
     """
-    Match species name to photo filename using fuzzy matching.
-    
+    Match species name to photo filename using sequence-aware fuzzy matching.
+
     Algorithm:
-    1. Normalize both species name and filenames (lowercase, remove spaces/underscores)
-    2. Calculate character overlap
-    3. Return best match if overlap is significant (>70% of shorter string)
-    
+    1. Normalize both species name and filenames (lowercase, strip extension,
+       replace separators with spaces to get word tokens).
+    2. Require ALL words of the binomial name to appear as substrings in the
+       photo stem — if both words match, the file is a strong candidate.
+    3. Among all candidates also compute a SequenceMatcher ratio and require
+       it to be >= 0.80 to avoid false positives.
+
     Args:
-        species_name: Species table name (e.g., 'capnoides_sempervirens')
-        photo_files: List of photo filenames (e.g., ['capnoides_sempervirens.jpg'])
-    
+        species_name: Species display name (e.g., 'Aquilegia coerulea')
+        photo_files: List of photo filenames in the photos directory.
+
     Returns:
-        Matching filename or None
+        Best-matching filename, or None if no confident match is found.
     """
+    from difflib import SequenceMatcher
+
     def normalize(s: str) -> str:
-        """Remove extension, lowercase, remove non-alphanumeric."""
+        """Lowercase, strip extension, replace separators with space, keep alnum+space."""
         s = s.lower()
-        # Remove file extension
-        s = re.sub(r'\.[^.]+$', '', s)
-        # Keep only alphanumeric characters
-        s = re.sub(r'[^a-z0-9]', '', s)
-        return s
-    
+        s = re.sub(r'\.[^.]+$', '', s)          # strip extension
+        s = re.sub(r'[_\-]+', ' ', s)           # separators → space
+        s = re.sub(r'[^a-z0-9 ]', '', s)        # keep alnum + space
+        return s.strip()
+
     normalized_species = normalize(species_name)
-    
+    species_words = normalized_species.split()
+
+    if not species_words:
+        return None
+
     best_match = None
-    best_score = 0
-    
+    best_score = 0.0
+
     for photo_file in photo_files:
         normalized_photo = normalize(photo_file)
-        
-        # Calculate character overlap
-        common_chars = sum(1 for c in normalized_species if c in normalized_photo)
-        shorter_len = min(len(normalized_species), len(normalized_photo))
-        
-        if shorter_len == 0:
+
+        # All words of the species name must appear as substrings in the photo stem
+        if not all(w in normalized_photo for w in species_words):
             continue
-        
-        score = common_chars / shorter_len
-        
-        # Bonus for exact prefix match
-        if normalized_photo.startswith(normalized_species) or normalized_species.startswith(normalized_photo):
-            score += 0.2
-        
+
+        # Sequence-aware similarity (order-sensitive)
+        score = SequenceMatcher(None, normalized_species, normalized_photo).ratio()
+
         if score > best_score:
             best_score = score
             best_match = photo_file
-    
-    # Return match only if score is high enough (70% overlap)
-    if best_score >= 0.7:
+
+    # Only return a match when similarity is high (>= 0.80)
+    if best_score >= 0.80:
         return best_match
-    
+
     return None
 
 
@@ -405,6 +407,15 @@ class GeneTreeStore:
             return
         
         logger.info(f"Loading gene trees from {path}")
+
+        # Pre-compiled regex to strip duplicated species prefixes in leaf labels.
+        # Some pipelines (e.g. OrthoFinder with full-name prefixes) produce IDs like:
+        #   Thalictrum_thalictroides_Thalictrum_thalictroides_evm.model.ptg000008l.2819
+        # but the h5ad gene IDs (matching Orthogroups.tsv) are:
+        #   Thalictrum_thalictroides_evm.model.ptg000008l.2819
+        # The pattern [A-Z][a-z]+_[a-z]+ matches a two-word binomial species name;
+        # if it appears twice consecutively the second copy is stripped.
+        _dup_prefix_re = re.compile(r'([A-Z][a-z]+_[a-z]+)_\1_')
         
         with open(path, 'r') as f:
             for line in f:
@@ -416,6 +427,8 @@ class GeneTreeStore:
                 if len(parts) == 2:
                     og_id = parts[0].strip()
                     newick = parts[1].strip()
+                    # Strip duplicated species prefixes if present
+                    newick = _dup_prefix_re.sub(r'\1_', newick)
                     self._trees[og_id] = newick
         
         logger.info(f"Loaded {len(self._trees)} gene trees")
