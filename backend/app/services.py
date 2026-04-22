@@ -461,7 +461,18 @@ class GenXBrowserService:
             data_dir=self.config['h5ad_dir'],
             max_cache_size_mb=self.config.get('cache_max_size_mb', 2048),
         )
-        
+
+        # Custom metadata column overlays — values applied to each AnnData on load
+        # so that admin-imported columns stay available even after cache eviction /
+        # config reload, without requiring persistence to the .h5ad file.
+        self._custom_overlays_path = (
+            Path(self.config_manager.config_path).parent / 'custom_overlays.json'
+        )
+        self._custom_overlays: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        self._load_custom_overlays()
+        # Register post-load transform so every loaded AnnData gets overlays applied
+        self.registry.transform_fn = self._apply_custom_overlays
+
         # Register species from config
         self._register_species_from_config()
         
@@ -522,6 +533,154 @@ class GenXBrowserService:
         
         logger.info(f"Registered {len(self.registry)} species from config")
     
+    # =========================================================================
+    # Custom Metadata Overlays
+    # =========================================================================
+    #
+    # An "overlay" is a column that the admin added at runtime (see
+    # admin_routes.confirm_metadata_import). Overlays are stored in a sidecar
+    # JSON file next to the main config and applied to each AnnData right after
+    # load via ``self.registry.transform_fn``.  This ensures admin-imported
+    # columns remain available after cache eviction, reload_config, or full
+    # backend restarts — even when the admin chose not to persist to the .h5ad
+    # file on disk.
+
+    def _load_custom_overlays(self) -> None:
+        """Load custom metadata overlays from disk, if present."""
+        try:
+            if self._custom_overlays_path.exists():
+                import json
+                with open(self._custom_overlays_path, 'r') as fh:
+                    raw = json.load(fh)
+                if isinstance(raw, dict):
+                    self._custom_overlays = {
+                        str(species): {
+                            str(col): dict(entry)
+                            for col, entry in cols.items()
+                        }
+                        for species, cols in raw.items()
+                        if isinstance(cols, dict)
+                    }
+                    logger.info(
+                        f"Loaded custom metadata overlays for {len(self._custom_overlays)} species"
+                    )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning(f"Failed to load custom overlays: {e}")
+            self._custom_overlays = {}
+
+    def _save_custom_overlays(self) -> None:
+        """Persist custom metadata overlays to disk."""
+        try:
+            import json
+            self._custom_overlays_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._custom_overlays_path, 'w') as fh:
+                json.dump(self._custom_overlays, fh)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.error(f"Failed to save custom overlays: {e}")
+
+    def _apply_custom_overlays(self, adata: Any, species_code: str) -> Any:
+        """Apply registered overlay columns to an AnnData instance."""
+        overlays = self._custom_overlays.get(species_code)
+        if not overlays:
+            return adata
+        for column_name, entry in overlays.items():
+            try:
+                target = entry.get('target', 'obs')
+                values = entry.get('values', {}) or {}
+                dtype = entry.get('dtype', 'text')
+                axis_df = adata.var if target == 'var' else adata.obs
+                series = self._build_overlay_series(axis_df.index, values, dtype)
+                axis_df[column_name] = series
+            except Exception as e:
+                logger.warning(
+                    f"Failed to apply overlay '{column_name}' on {species_code}: {e}"
+                )
+        return adata
+
+    @staticmethod
+    def _build_overlay_series(index: Any, values: Dict[str, Any], dtype: str) -> pd.Series:
+        """Build a pandas Series aligned to ``index`` from a dict of id->value."""
+        default: Any
+        if dtype == 'bigint' or dtype == 'double precision':
+            default = np.nan
+        elif dtype == 'boolean':
+            default = False
+        else:
+            default = ''
+        data = []
+        for idx in index.astype(str):
+            if idx in values:
+                raw = values[idx]
+                try:
+                    if dtype == 'bigint':
+                        data.append(int(float(raw)) if raw not in (None, '', 'nan') else default)
+                    elif dtype == 'double precision':
+                        data.append(float(raw) if raw not in (None, '', 'nan') else default)
+                    elif dtype == 'boolean':
+                        if isinstance(raw, bool):
+                            data.append(raw)
+                        else:
+                            data.append(str(raw).strip().lower() in ('true', '1', 'yes'))
+                    else:
+                        data.append('' if raw is None else str(raw))
+                except (TypeError, ValueError):
+                    data.append(default)
+            else:
+                data.append(default)
+        return pd.Series(data, index=index)
+
+    def register_custom_overlay(
+        self,
+        species_code: str,
+        column_name: str,
+        target: str,
+        values: Dict[str, Any],
+        dtype: str,
+    ) -> None:
+        """Register a runtime metadata overlay for a species.
+
+        Args:
+            species_code: Species code the overlay applies to.
+            column_name: Name of the overlay column.
+            target: ``"var"`` for gene metadata, ``"obs"`` for sample metadata.
+            values: Mapping of id -> raw value.
+            dtype: One of ``text``, ``bigint``, ``double precision``, ``boolean``.
+        """
+        if target not in ('var', 'obs'):
+            raise ValueError(f"Invalid overlay target '{target}' (expected 'var' or 'obs')")
+        species_entry = self._custom_overlays.setdefault(species_code, {})
+        species_entry[column_name] = {
+            'target': target,
+            'dtype': dtype,
+            'values': {str(k): v for k, v in values.items()},
+        }
+        self._save_custom_overlays()
+        # Re-apply immediately to cached adata so the column is usable without
+        # waiting for a cache eviction.
+        adata = self.registry._cache.get(species_code) if hasattr(self.registry, '_cache') else None
+        if adata is not None:
+            try:
+                axis_df = adata.var if target == 'var' else adata.obs
+                series = self._build_overlay_series(axis_df.index, values, dtype)
+                axis_df[column_name] = series
+            except Exception as e:
+                logger.warning(
+                    f"Failed to apply overlay '{column_name}' on cached {species_code}: {e}"
+                )
+
+    def unregister_custom_overlay(self, column_name: str) -> None:
+        """Remove an overlay column from all species."""
+        changed = False
+        for species_code in list(self._custom_overlays.keys()):
+            cols = self._custom_overlays[species_code]
+            if column_name in cols:
+                del cols[column_name]
+                changed = True
+            if not cols:
+                del self._custom_overlays[species_code]
+        if changed:
+            self._save_custom_overlays()
+
     def reload_config(self) -> None:
         """Reload configuration and update internal state."""
         logger.info("Reloading service configuration...")

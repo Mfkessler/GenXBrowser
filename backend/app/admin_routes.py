@@ -864,7 +864,23 @@ def confirm_metadata_import():
                 else:
                     series = pd.Series(values, index=adata.obs.index, name=column_name)
                     adata.obs[column_name] = series
-                
+
+                # Register overlay so the column survives cache eviction /
+                # config reload / backend restart, even when the admin does
+                # not persist it to the .h5ad file on disk.
+                try:
+                    service.register_custom_overlay(
+                        species_code=ds_code,
+                        column_name=column_name,
+                        target=target,
+                        values=data_dict,
+                        dtype=inferred_type,
+                    )
+                except Exception as oe:
+                    logger.warning(
+                        f"Failed to register overlay for {ds_code}/{column_name}: {oe}"
+                    )
+
                 matched = len([v for v in data_dict if v in existing_ids])
                 results[ds_code] = {"status": "applied", "matched": matched, "total": len(existing_ids)}
                 
@@ -1034,7 +1050,13 @@ def delete_metadata_column(column_name):
     
     config_mgr.update_config(config)
     service.reload_config()
-    
+
+    # Remove any runtime overlay so the column is fully gone.
+    try:
+        service.unregister_custom_overlay(column_name)
+    except Exception as oe:
+        logger.warning(f"Failed to unregister overlay for {column_name}: {oe}")
+
     return jsonify({
         "success": True,
         "message": f"Column '{column_name}' deleted successfully"
