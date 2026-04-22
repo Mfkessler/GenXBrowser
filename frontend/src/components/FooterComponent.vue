@@ -48,11 +48,20 @@ import { getCcByMappings } from "@/shared/ccByMappings";
 
 const config = inject("config") as Config;
 
-// Dynamically resolve the logo path from public directory
-const baseUrl = import.meta.env.BASE_URL || "/";
-const logoUrl = config.corporate_identity.logo
-  ? `${baseUrl}${config.corporate_identity.logo}`
-  : "";
+function resolveLogoUrl(logo: string): string {
+  if (!logo) {
+    return "";
+  }
+
+  if (/^(?:https?:)?\/\//.test(logo) || logo.startsWith("/")) {
+    return logo;
+  }
+
+  const baseUrl = import.meta.env.BASE_URL || "/";
+  return `${baseUrl}${logo}`;
+}
+
+const logoUrl = resolveLogoUrl(config.corporate_identity.logo);
 const companyName = config.corporate_identity.company_name;
 
 // Dynamically resolve the CC-BY
