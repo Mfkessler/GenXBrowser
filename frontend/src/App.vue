@@ -37,7 +37,7 @@
             v-show="sidebarOpen"
             :disable-controls="disableControls"
             @toggle-sidebar="sidebarOpen = false"
-            @navigate-home="$router.push('/')"
+            @navigate-home="$router.push('/catalog')"
           />
         </div>
       </div>
@@ -53,6 +53,20 @@
     </main>
 
     <FooterComponent :hidden="footerHidden" />
+
+    <!-- Global AI assistant (always visible when enabled) -->
+    <template v-if="assistantStore.enabled">
+      <AssistantPanel />
+      <button
+        v-show="!assistantStore.open"
+        class="fixed bottom-6 right-6 z-40 cursor-pointer rounded-full bg-gradient-to-br from-accent1-500 to-accent2-500 hover:from-accent1-600 hover:to-accent2-600 text-white shadow-xl p-4 flex items-center justify-center"
+        :aria-label="`Open ${assistantStore.displayName}`"
+        v-tooltip:left="`Ask ${assistantStore.displayName}`"
+        @click="assistantStore.open = true"
+      >
+        <AiSparkleIcon class="w-6 h-6 drop-shadow" />
+      </button>
+    </template>
   </div>
 </template>
 <script setup lang="ts">
@@ -60,6 +74,9 @@ import { onMounted, provide, ref } from "vue";
 
 import FooterComponent from "./components/FooterComponent.vue";
 import SidebarComponent from "./components/SidebarComponent.vue";
+import AssistantPanel from "./components/AssistantPanel.vue";
+import AiSparkleIcon from "./components/icons/AiSparkleIcon.vue";
+import { useAssistantStore } from "./stores/assistant";
 
 // TODO: Optimize heatmap rendering performance for large datasets
 
@@ -67,10 +84,12 @@ const disableControls = ref(false);
 const sidebarOpen = ref(true);
 const footerHidden = ref(false);
 const showSidebarHint = ref(false);
+const assistantStore = useAssistantStore();
 
 provide("sidebarOpen", sidebarOpen);
 
 onMounted(() => {
+  assistantStore.loadFeatures();
   // Check if user has seen the sidebar hint before
   const hasSeenHint = localStorage.getItem('sidebar-hint-seen');
   if (!hasSeenHint) {

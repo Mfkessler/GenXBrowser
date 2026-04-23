@@ -205,6 +205,104 @@ class GOHierarchyHelper:
         }
 
 
+DEFAULT_LLM_SYSTEM_PROMPT = (
+    "You are the GenXBrowser scientific assistant. You help biologists explore "
+    "gene expression datasets loaded into the current GenXBrowser instance. "
+    "Answer questions precisely using only the dataset schema and summary "
+    "statistics provided in the CURRENT_DATA_CONTEXT. The USER_UI_CONTEXT "
+    "describes the view the user is currently looking at (route, active "
+    "tables, filters, visualization settings). Honour that context — when the "
+    "user says 'this heatmap' or 'the current selection', they mean the view "
+    "described there.\n\n"
+    "Format all replies as concise Markdown. Use **bold** for gene IDs / "
+    "species names, bullet lists for enumerations, and short code blocks for "
+    "identifiers. Never fabricate gene IDs, orthogroup IDs, species, or "
+    "metadata columns; if information is not in the context, say so plainly.\n\n"
+    "ACTIONS: When the user asks you to *do* something in the UI, emit one "
+    "single fenced JSON block per action. Each block has a language tag naming "
+    "the action kind and a JSON body. Prefer the most specific kind:\n\n"
+    "1) Navigate to another view (deep-link). Use this only when the user is "
+    "not already in the view they need. `tables` accepts species full names, "
+    "codes, or raw table_names; the backend normalises them.\n"
+    "```deeplink\n{\"view\": \"heatmap|compare|phylo|ora|catalog\", "
+    "\"tables\": [\"<code or full name>\"], \"filters\": {\"<column>\": {\"value\": \"<v>\", "
+    "\"strict\": false, \"empty\": false}}, \"visualizations\": {...}}\n```\n\n"
+    "2) Update visualization settings on the CURRENT view (no navigation). "
+    "The `patch` object is shallow-merged into the frontend visualization "
+    "store; only keys that already exist there are applied.\n"
+    "```viz_update\n{\"patch\": {\"rowSideColors\": [\"ortho_id\"], "
+    "\"colorScale\": \"Viridis\"}}\n```\n\n"
+    "3) Add / replace a sidebar filter on the CURRENT view. `column` is the "
+    "exact metadata column name; `value` is a string (comma-separated for "
+    "multi-value). Set `strict: true` for exact match, `empty: true` to match "
+    "empty cells.\n"
+    "```add_filter\n{\"column\": \"<column>\", \"value\": \"<value>\", "
+    "\"strict\": false, \"empty\": false}\n```\n\n"
+    "4) Remove a single sidebar filter:\n"
+    "```remove_filter\n{\"column\": \"<column>\"}\n```\n\n"
+    "5) Clear all sidebar filters:\n"
+    "```clear_filters\n{}\n```\n\n"
+    "6) Ask the backend to compute a derived statistic on the CURRENT view. "
+    "`tables` and `filters` default to the user's current context; you usually "
+    "don't need to set them.\n"
+    "```compute\n{\"op\": \"top_orthogroups|top_tfs|summary_stats\", "
+    "\"args\": {\"top_k\": 10}}\n```\n\n"
+    "Rules:\n"
+    "- Emit at most one action per message unless the user clearly requests "
+    "several independent steps.\n"
+    "- Prefer viz_update / add_filter over a deeplink when the user is "
+    "already in the target view.\n"
+    "- Before answering a quantitative question over the CURRENT filtered "
+    "data (e.g. 'which orthogroup is most represented?'), emit a "
+    "```compute``` block first, then interpret the numerical result in your "
+    "reply."
+)
+
+
+def _seed_llm_config_from_env(config_manager) -> None:
+    """Populate llm_config defaults from environment variables if unset.
+
+    Honors LLM_API_BASE, LLM_API_KEY, LLM_MODEL, LLM_FALLBACK_MODEL. The
+    assistant is marked enabled iff both api_base and api_key resolve to a
+    non-empty value after merging env + persisted config.
+    """
+    try:
+        cfg = config_manager.get_config()
+        existing = dict(cfg.get("llm_config") or {})
+
+        env_base = os.environ.get("LLM_API_BASE", "").strip()
+        env_key = os.environ.get("LLM_API_KEY", "").strip()
+        env_model = os.environ.get("LLM_MODEL", "").strip()
+        env_fallback = os.environ.get("LLM_FALLBACK_MODEL", "").strip()
+
+        seeded = {
+            "enabled": existing.get("enabled", False),
+            "api_base": existing.get("api_base") or env_base,
+            "api_key": existing.get("api_key") or env_key,
+            "model": existing.get("model") or env_model,
+            "fallback_model": existing.get("fallback_model") or env_fallback,
+            "system_prompt": existing.get("system_prompt") or DEFAULT_LLM_SYSTEM_PROMPT,
+            "request_timeout_s": int(existing.get("request_timeout_s") or 60),
+            "max_tokens": int(existing.get("max_tokens") or 1024),
+            "temperature": float(existing.get("temperature") if existing.get("temperature") is not None else 0.2),
+        }
+
+        # Auto-enable on first boot when env vars fully configure the endpoint.
+        if "enabled" not in existing and seeded["api_base"] and seeded["api_key"]:
+            seeded["enabled"] = True
+
+        if seeded != existing:
+            cfg["llm_config"] = seeded
+            config_manager.update_config(cfg)
+            logger.info(
+                "Seeded llm_config (enabled=%s, model=%s, fallback=%s, base=%s)",
+                seeded["enabled"], seeded["model"], seeded["fallback_model"],
+                seeded["api_base"] or "<unset>",
+            )
+    except Exception as e:
+        logger.warning(f"LLM config seeding failed: {e}")
+
+
 def create_app():
     """Create and configure the Flask application."""
     app = Flask(__name__)
@@ -225,6 +323,11 @@ def create_app():
     
     # Initialize GenXBrowser service (wrapper over h5ad-lib)
     app.h5ad_service = GenXBrowserService(app.config_manager)
+
+    # Seed LLM assistant configuration from environment variables on first boot.
+    # Persisted values in project_config.json take precedence once the admin
+    # panel has written them; env vars only fill missing fields.
+    _seed_llm_config_from_env(app.config_manager)
     
     # Initialize GO service from h5ad-lib
     go_obo_path = os.environ.get('GO_OBO_PATH', '/data/go-basic.obo')

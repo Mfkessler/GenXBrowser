@@ -479,7 +479,7 @@ class GenXBrowserService:
         # GenXBrowser-specific stores
         self.gene_trees = GeneTreeStore(self.config['gene_trees_path'])
         self.sequences = SequenceStore(self.config['sequences_dir'])
-        self.filter_store = FilterStore(path=self.config['filter_store_path'])
+        self.filter_store = self._build_filter_store(self.config['filter_store_path'])
         
         # Species photos detection
         photos_dir = os.environ.get('SPECIES_PHOTOS_DIR', '/data/species_photos')
@@ -502,13 +502,42 @@ class GenXBrowserService:
     
     def _load_config(self) -> Dict[str, Any]:
         """Load environment-based configuration."""
+        h5ad_dir = os.environ.get('H5AD_DATA_DIR', '/data/prepared')
+        # Default the share-ID store under the data dir so local/dev installs
+        # don't try to write to the root-owned /data/filters. Matches the
+        # behaviour documented in README.md.
+        default_filter_store = os.path.join(h5ad_dir, 'filters')
         return {
-            'h5ad_dir': os.environ.get('H5AD_DATA_DIR', '/data/prepared'),
+            'h5ad_dir': h5ad_dir,
             'gene_trees_path': os.environ.get('GENE_TREES_PATH', '/data/Metadata/Resolved_Gene_Trees.txt'),
             'sequences_dir': os.environ.get('SEQUENCES_DIR', '/data/Metadata/fas'),
-            'filter_store_path': os.environ.get('FILTER_STORE_PATH', '/data/filters'),
+            'filter_store_path': os.environ.get('FILTER_STORE_PATH', default_filter_store),
             'cache_max_size_mb': int(os.environ.get('CACHE_MAX_SIZE_MB', '2048')),
         }
+
+    @staticmethod
+    def _build_filter_store(path: str) -> FilterStore:
+        """Construct the share-ID FilterStore, falling back to a tempdir
+        when the configured path is not writable. Avoids hard-failing deep-link
+        creation (and the AI assistant) on mis-configured installs where the
+        default `/data/filters` is root-owned or doesn't exist."""
+        import tempfile
+        try:
+            store = FilterStore(path=path)
+            # Probe writability with a throwaway entry so we fail loudly here
+            # rather than later during an assistant tool call.
+            probe_path = Path(path) / ".write_probe"
+            probe_path.write_text("ok")
+            probe_path.unlink(missing_ok=True)
+            return store
+        except (PermissionError, OSError) as e:
+            fallback = os.path.join(tempfile.gettempdir(), "genxbrowser_filters")
+            logger.warning(
+                "FilterStore path %r not writable (%s); falling back to %r. "
+                "Set FILTER_STORE_PATH to a writable directory to silence this warning.",
+                path, e, fallback,
+            )
+            return FilterStore(path=fallback)
     
     def _register_species_from_config(self) -> None:
         """Register all species from ConfigManager into Registry."""

@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from "vue-router";
 
+const LandingView = () => import("@/views/LandingView.vue");
 const CatalogView = () => import("@/views/CatalogView.vue");
 const AboutView = () => import("@/views/AboutView.vue");
 const AdminView = () => import("@/views/AdminView.vue");
@@ -11,7 +12,8 @@ const OraView = () => import("@/views/OraView.vue");
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
-    { path: "/", name: "catalog", component: CatalogView },
+    { path: "/", name: "landing", component: LandingView },
+    { path: "/catalog", name: "catalog", component: CatalogView },
     { path: "/about", name: "about", component: AboutView },
     { path: "/admin", name: "admin", component: AdminView },
     {

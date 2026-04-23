@@ -1,0 +1,260 @@
+import { defineStore } from "pinia";
+import { ref, computed } from "vue";
+import axios from "axios";
+import { API_BASE_URL } from "@/shared/Config";
+import { fetchFeatures, type FeatureFlags } from "@/shared/landingApi";
+
+export type ActionKind =
+  | "deeplink"
+  | "viz_update"
+  | "add_filter"
+  | "remove_filter"
+  | "clear_filters"
+  | "select_tables"
+  | "set_expression_display"
+  | "compute";
+
+export interface AssistantAction {
+  kind: ActionKind;
+  spec: Record<string, unknown>;
+  url_path?: string;
+  view?: string;
+  status?: "pending" | "applied" | "error";
+  result?: unknown;
+  error?: string;
+}
+
+export interface ToolTrace {
+  id: string;
+  name: string;
+  status: "running" | "done";
+  args?: Record<string, unknown>;
+  summary?: Record<string, unknown>;
+}
+
+/** Snapshot of mutable UI state captured *before* a message applied actions. */
+export interface UndoSnapshot {
+  filters: Record<string, unknown> | null;
+  visualizations: Record<string, unknown> | null;
+  selectedTableNames: string[] | null;
+  route: string | null;
+}
+
+export interface ChatMessage {
+  role: "user" | "assistant" | "system";
+  content: string;
+  actions?: AssistantAction[];
+  deeplink?: { view: string; url_path: string } | null;
+  error?: string;
+  tools?: ToolTrace[];
+  /** When set, the UI shows an Undo button that restores this snapshot. */
+  undo?: UndoSnapshot | null;
+  /** True after the user clicks Undo — snapshot is cleared. */
+  undone?: boolean;
+}
+
+export interface ClientContext {
+  view?: string;
+  route?: string;
+  tables?: string[];
+  selected_table_names?: string[];
+  filters?: Record<string, unknown>;
+  visualizations?: Record<string, unknown>;
+  selection?: unknown;
+  visible_genes?: string[];
+}
+
+export const useAssistantStore = defineStore("assistant", () => {
+  const features = ref<FeatureFlags | null>(null);
+  const open = ref(false);
+  const streaming = ref(false);
+  const messages = ref<ChatMessage[]>([]);
+  const abortController = ref<AbortController | null>(null);
+
+  const enabled = computed(() => features.value?.assistant_enabled === true);
+  const displayName = computed(() => features.value?.assistant?.display_name || "AI Assistant");
+
+  async function loadFeatures() {
+    if (features.value) return;
+    try {
+      features.value = await fetchFeatures();
+    } catch {
+      features.value = null;
+    }
+  }
+
+  function reset() {
+    cancel();
+    messages.value = [];
+  }
+
+  function cancel() {
+    if (abortController.value) {
+      abortController.value.abort();
+      abortController.value = null;
+    }
+    streaming.value = false;
+  }
+
+  async function sendMessage(text: string, clientContext?: ClientContext) {
+    const clean = text.trim();
+    if (!clean || streaming.value) return;
+    messages.value.push({ role: "user", content: clean });
+    const assistantMsg: ChatMessage = { role: "assistant", content: "", actions: [] };
+    messages.value.push(assistantMsg);
+
+    streaming.value = true;
+    const controller = new AbortController();
+    abortController.value = controller;
+
+    try {
+      const body: Record<string, unknown> = {
+        messages: messages.value
+          .filter((m) => m.role !== "assistant" || m.content !== "")
+          .map((m) => ({ role: m.role, content: m.content })),
+        stream: true,
+        include_context: true,
+      };
+      if (clientContext) body.client_context = clientContext;
+
+      const resp = await fetch(`${API_BASE_URL}/api/assistant/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => resp.statusText);
+        assistantMsg.error = `Request failed (${resp.status}): ${errText.slice(0, 200)}`;
+        assistantMsg.content = "";
+        return;
+      }
+      if (!resp.body) {
+        assistantMsg.error = "No response body";
+        return;
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split(/\n\n/);
+        buffer = events.pop() || "";
+        for (const ev of events) {
+          const lines = ev.split(/\n/);
+          const eventLine = lines.find((l) => l.startsWith("event:"));
+          const dataLine = lines.find((l) => l.startsWith("data:"));
+          if (!dataLine) continue;
+          const evType = eventLine ? eventLine.slice(6).trim() : "";
+          const payload = dataLine.slice(5).trim();
+          if (!payload) continue;
+          try {
+            const obj = JSON.parse(payload);
+            if (evType === "tool") {
+              const trace: ToolTrace = {
+                id: String(obj.id || ""),
+                name: String(obj.name || ""),
+                status: obj.status === "done" ? "done" : "running",
+                args: obj.args,
+                summary: obj.summary,
+              };
+              assistantMsg.tools = assistantMsg.tools || [];
+              // Merge on id (running → done) instead of duplicating.
+              const idx = assistantMsg.tools.findIndex((t) => t.id === trace.id && t.id);
+              if (idx >= 0) assistantMsg.tools[idx] = { ...assistantMsg.tools[idx], ...trace };
+              else assistantMsg.tools.push(trace);
+            } else if (typeof obj.delta === "string") {
+              assistantMsg.content += obj.delta;
+            } else if (obj.error) {
+              assistantMsg.error = String(obj.error);
+            }
+          } catch {
+            /* ignore malformed frames */
+          }
+        }
+      }
+
+      await extractAndDispatchActions(assistantMsg, clientContext);
+    } catch (e: unknown) {
+      if ((e as { name?: string }).name !== "AbortError") {
+        assistantMsg.error = (e as Error).message || "Network error";
+      }
+    } finally {
+      streaming.value = false;
+      abortController.value = null;
+    }
+  }
+
+  async function extractAndDispatchActions(msg: ChatMessage, clientContext?: ClientContext) {
+    const re = /```(action|deeplink|viz_update|add_filter|remove_filter|clear_filters|select_tables|set_expression_display|compute)\s*\n([\s\S]*?)\n```/gi;
+    const blocks: RegExpExecArray[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(msg.content)) !== null) blocks.push(m);
+
+    msg.actions = msg.actions || [];
+    for (const match of blocks) {
+      const tag = match[1].toLowerCase();
+      let spec: Record<string, unknown>;
+      try {
+        spec = JSON.parse(match[2]);
+      } catch {
+        continue;
+      }
+      const kind = (tag === "action" ? String(spec.kind || "").toLowerCase() : tag) as AssistantAction["kind"];
+      if (!kind) continue;
+      const action: AssistantAction = { kind, spec, status: "pending" };
+      msg.actions.push(action);
+
+      if (kind === "deeplink") {
+        try {
+          const { data } = await axios.post(`${API_BASE_URL}/api/assistant/deeplink`, {
+            view: spec.view,
+            tables: spec.tables || [],
+            filters: spec.filters || {},
+            visualizations: spec.visualizations || {},
+          });
+          action.url_path = data.url_path;
+          action.view = data.view;
+          action.status = "applied";
+          if (!msg.deeplink) msg.deeplink = { view: data.view, url_path: data.url_path };
+        } catch (e) {
+          action.status = "error";
+          action.error = (e as Error).message || "deeplink failed";
+        }
+      } else if (kind === "compute") {
+        try {
+          const payload = {
+            op: spec.op,
+            args: spec.args || {},
+            tables: spec.tables || clientContext?.tables || [],
+            filters: spec.filters || clientContext?.filters || {},
+          };
+          const { data } = await axios.post(`${API_BASE_URL}/api/assistant/compute`, payload);
+          action.result = data;
+          action.status = "applied";
+        } catch (e) {
+          action.status = "error";
+          action.error = (e as Error).message || "compute failed";
+        }
+      }
+      // viz_update / add_filter stay "pending" and are applied from the UI via applyAction().
+    }
+  }
+
+  return {
+    features,
+    open,
+    streaming,
+    messages,
+    enabled,
+    displayName,
+    loadFeatures,
+    sendMessage,
+    cancel,
+    reset,
+  };
+});

@@ -10,6 +10,8 @@ from marshmallow import Schema, fields, validate, post_load, validates_schema, V
 import numpy as np
 import logging
 import os
+import json
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -1338,6 +1340,499 @@ def cluster_data():
     except Exception as e:
         logger.error(f"Clustering error: {e}", exc_info=True)
         return jsonify({'error': 'Failed to perform clustering', 'details': str(e)}), 500
+
+
+# ============================================================================
+# Landing Page / Overview / AI Assistant
+# ============================================================================
+
+from . import assistant as assistant_module
+from .overview import build_overview as _build_overview
+
+_assistant_limiter = assistant_module.RateLimiter(max_requests=30, window_seconds=60)
+
+ASSISTANT_DEEPLINK_VIEWS = {"heatmap", "compare", "phylo", "ora", "catalog"}
+
+
+def _client_ip() -> str:
+    return (request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+            or request.remote_addr or "anon")
+
+
+@api_bp.route('/api/features', methods=['GET'])
+def features():
+    """Public feature-flag endpoint. Never exposes secrets."""
+    try:
+        service = get_service()
+        cm = current_app.config_manager
+        tables = service.get_tables()
+        assistant_on = assistant_module.is_assistant_enabled(cm)
+        cfg = assistant_module.get_llm_config(cm) if assistant_on else {}
+        corporate = cm.get_config().get("corporate_identity", {}) or {}
+        return jsonify({
+            "assistant_enabled": assistant_on,
+            "assistant": {
+                "enabled": assistant_on,
+                "display_name": corporate.get("llm_name") or "AI Assistant",
+                "model": cfg.get("model") if assistant_on else None,
+            },
+            "dataset_count": len(tables),
+            "project_name": cm.get_config().get("project_name", "GenXBrowser"),
+            "version": cm.get_config().get("version", ""),
+        }), 200
+    except Exception as e:
+        logger.error(f"/api/features failed: {e}", exc_info=True)
+        return jsonify({
+            "assistant_enabled": False,
+            "dataset_count": 0,
+            "error": str(e),
+        }), 200
+
+
+@api_bp.route('/api/overview', methods=['GET'])
+def overview():
+    """Aggregate data-agnostic overview for the landing page."""
+    try:
+        service = get_service()
+        cm = current_app.config_manager
+        data = _build_overview(service, cm)
+        return jsonify(data), 200
+    except Exception as e:
+        logger.error(f"/api/overview failed: {e}", exc_info=True)
+        return jsonify({"error": "Failed to build overview", "details": str(e)}), 500
+
+
+@api_bp.route('/api/overview/mtime', methods=['GET'])
+def overview_mtime():
+    """Cheap cache-freshness probe — returns max mtime across H5ADs + config."""
+    try:
+        from .overview import _overview_mtime
+        service = get_service()
+        cm = current_app.config_manager
+        return jsonify({"mtime": _overview_mtime(service, cm)}), 200
+    except Exception as e:
+        logger.error(f"/api/overview/mtime failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+def _build_assistant_context(service, cm) -> str:
+    """Compact JSON description of loaded datasets injected into the system prompt."""
+    import json as _json
+    try:
+        overview_data = _build_overview(service, cm)
+        slim = {
+            "project": overview_data["project"],
+            "global": {
+                k: v for k, v in overview_data["global"].items()
+                if k in ("n_species", "n_samples", "n_genes", "orthogroup_count",
+                         "gene_tree_count", "tf_total")
+            },
+            "species": [
+                {
+                    "code": s["code"],
+                    "full_name": s["full_name"],
+                    "n_samples": s["n_samples"],
+                    "n_genes": s["n_genes"],
+                    "layers": s["layers"],
+                    "var_columns": s["var_columns"][:40],
+                    "obs_columns": s["obs_columns"][:40],
+                    "annotation_coverage": s.get("annotation_coverage", {}),
+                    "tissue_distribution": s.get("derived", {}).get("tissue_distribution", [])[:10],
+                    "tf_count": s.get("derived", {}).get("tf_count"),
+                    "orthogroup_count": s.get("derived", {}).get("orthogroup_count"),
+                }
+                for s in overview_data["species"]
+            ],
+        }
+        return _json.dumps(slim, ensure_ascii=False)
+    except Exception as e:
+        logger.warning(f"Assistant context build failed: {e}")
+        return "{}"
+
+
+@api_bp.route('/api/assistant/chat', methods=['POST'])
+def assistant_chat():
+    """OpenAI-compatible chat proxy with SSE streaming.
+
+    Request body: {messages: [{role, content}], stream?: bool, include_context?: bool}
+    """
+    cm = current_app.config_manager
+    if not assistant_module.is_assistant_enabled(cm):
+        return jsonify({"error": "Assistant is not configured"}), 404
+
+    ok, retry_in = _assistant_limiter.allow(_client_ip())
+    if not ok:
+        resp = jsonify({"error": "Rate limit exceeded", "retry_after_s": retry_in})
+        resp.status_code = 429
+        return resp
+
+    body = request.get_json(silent=True) or {}
+    messages = body.get("messages") or []
+    if not isinstance(messages, list) or not messages:
+        return jsonify({"error": "messages[] required"}), 400
+    for m in messages:
+        if not isinstance(m, dict) or m.get("role") not in ("user", "assistant", "system") or not isinstance(m.get("content"), str):
+            return jsonify({"error": "malformed message"}), 400
+    # Hard cap on total prompt size.
+    total_chars = sum(len(m["content"]) for m in messages)
+    if total_chars > 32000:
+        return jsonify({"error": "prompt too large (max 32000 chars)"}), 413
+
+    cfg = assistant_module.get_llm_config(cm)
+    include_context = body.get("include_context", True)
+    stream = bool(body.get("stream", True))
+    tool_calling_enabled = bool(cfg.get("tool_calling_enabled", True))
+    max_tool_iterations = int(cfg.get("max_tool_iterations", 6))
+    tool_deadline_s = float(cfg.get("tool_deadline_s", 90))
+
+    # Build the rich system prompt (role + action grammar + tool policy + few-shots).
+    from .prompt_builder import build_system_prompt
+    data_ctx: Optional[Dict[str, Any]] = None
+    if include_context:
+        try:
+            import json as _json
+            data_ctx = _json.loads(_build_assistant_context(get_service(), cm))
+        except Exception:
+            data_ctx = None
+
+    ui_ctx: Optional[Dict[str, Any]] = None
+    client_ctx = body.get("client_context") or {}
+    if isinstance(client_ctx, dict) and client_ctx:
+        ui_ctx = {
+            k: client_ctx.get(k)
+            for k in ("view", "route", "tables", "filters", "visualizations",
+                      "selection", "visible_genes", "selected_table_names")
+            if client_ctx.get(k) is not None
+        }
+
+    sys_prompt = build_system_prompt(
+        base_prompt=cfg.get("system_prompt") or "",
+        data_context=data_ctx,
+        ui_context=ui_ctx,
+        include_fewshot=True,
+    )
+
+    final_messages: List[Dict[str, Any]] = (
+        [{"role": "system", "content": sys_prompt}]
+        + [{"role": m["role"], "content": m["content"]} for m in messages]
+    )
+
+    # -- Agentic tool-calling path ------------------------------------------
+    if tool_calling_enabled:
+        from . import assistant_tools
+        service = get_service()
+
+        def _dispatch(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+            return assistant_tools.dispatch_tool_call(
+                name, args, service=service, config_manager=cm,
+            )
+
+        tools_schema = assistant_tools.openai_schema()
+
+        def _sse_event_generator():
+            try:
+                for ev in assistant_module.run_agentic_turn(
+                    cfg, final_messages,
+                    tools=tools_schema,
+                    dispatch=_dispatch,
+                    max_iterations=max_tool_iterations,
+                    tool_deadline_s=tool_deadline_s,
+                ):
+                    etype = ev.get("type")
+                    if etype == "tool_start":
+                        yield (
+                            f"event: tool\n"
+                            f"data: {json.dumps({'status': 'running', 'name': ev.get('name'), 'id': ev.get('id'), 'args': ev.get('args')}, ensure_ascii=False)}\n\n"
+                        )
+                    elif etype == "tool_result":
+                        # Keep result summary compact on the wire.
+                        result = ev.get("result") or {}
+                        summary: Dict[str, Any]
+                        if isinstance(result, dict) and "error" in result:
+                            summary = {"error": str(result.get("error"))[:200]}
+                        elif isinstance(result, dict):
+                            summary = {k: result[k] for k in list(result.keys())[:6]}
+                        else:
+                            summary = {"_": str(result)[:200]}
+                        yield (
+                            f"event: tool\n"
+                            f"data: {json.dumps({'status': 'done', 'name': ev.get('name'), 'id': ev.get('id'), 'summary': summary}, ensure_ascii=False)}\n\n"
+                        )
+                    elif etype == "delta":
+                        text = ev.get("delta") or ""
+                        # Chunk the final text so the UI can render progressively.
+                        step = 120
+                        for i in range(0, len(text), step):
+                            yield f"data: {json.dumps({'delta': text[i:i+step]})}\n\n"
+                    elif etype == "done":
+                        yield f"event: done\ndata: {json.dumps({'model': ev.get('model'), 'iterations': ev.get('iterations')})}\n\n"
+                    elif etype == "error":
+                        yield f"event: error\ndata: {json.dumps({'error': ev.get('error')})}\n\n"
+            except Exception as e:
+                logger.error("assistant tool-loop generator failed: %s", e, exc_info=True)
+                yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+
+        if stream:
+            from flask import Response, stream_with_context
+            return Response(
+                stream_with_context(_sse_event_generator()),
+                mimetype="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+        # Non-streaming: run the generator to completion and return the text.
+        text_parts: List[str] = []
+        last_err: Optional[str] = None
+        model_used: Optional[str] = None
+        for ev in assistant_module.run_agentic_turn(
+            cfg, final_messages, tools=tools_schema, dispatch=_dispatch,
+            max_iterations=max_tool_iterations,
+            tool_deadline_s=tool_deadline_s,
+        ):
+            if ev.get("type") == "delta":
+                text_parts.append(ev.get("delta") or "")
+                model_used = ev.get("model") or model_used
+            elif ev.get("type") == "error":
+                last_err = ev.get("error")
+        if last_err and not text_parts:
+            return jsonify({"error": last_err}), 502
+        return jsonify({"ok": True, "model": model_used, "content": "".join(text_parts)}), 200
+
+    # -- Legacy path (tool calling disabled) --------------------------------
+    if stream:
+        from flask import Response, stream_with_context
+        generator = assistant_module.stream_chat(cfg, final_messages)
+        return Response(stream_with_context(generator), mimetype="text/event-stream", headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        })
+
+    result = assistant_module.complete_chat(cfg, final_messages)
+    if not result.get("ok"):
+        return jsonify({"error": result.get("error", "upstream error")}), 502
+    return jsonify(result), 200
+
+
+@api_bp.route('/api/assistant/deeplink', methods=['POST'])
+def assistant_deeplink():
+    """Validate a proposed view state and persist via the share-ID store.
+
+    Body: {view, tables[], filters{}, visualizations{}}. Returns {id, url_path}.
+
+    Resilient against the LLM returning species codes, full names, or a mix.
+    """
+    body = request.get_json(silent=True) or {}
+    view = str(body.get("view") or "catalog").strip().lower()
+    raw_tables = body.get("tables") or []
+    filters = body.get("filters") or {}
+    visualizations = body.get("visualizations") or {}
+
+    if view not in ASSISTANT_DEEPLINK_VIEWS:
+        return jsonify({"error": f"Unknown view '{view}'", "allowed": sorted(ASSISTANT_DEEPLINK_VIEWS)}), 400
+    if not isinstance(raw_tables, list):
+        return jsonify({"error": "'tables' must be a list of strings"}), 400
+    raw_tables = [str(t).strip() for t in raw_tables if str(t or "").strip()]
+    if not isinstance(filters, dict) or not isinstance(visualizations, dict):
+        return jsonify({"error": "'filters' and 'visualizations' must be objects"}), 400
+
+    # Size guardrails so a runaway LLM can't fill disk.
+    import json as _json
+    try:
+        payload_size = len(_json.dumps({"filters": filters, "visualizations": visualizations}))
+    except Exception:
+        return jsonify({"error": "payload not JSON-serialisable"}), 400
+    if payload_size > 32000:
+        return jsonify({"error": f"payload too large ({payload_size} > 32000 bytes)"}), 413
+
+    service = get_service()
+
+    # Resolve codes / full names / table_names → canonical table_name for URL.
+    resolved: List[str] = []
+    unknown: List[str] = []
+    try:
+        lookup = {}
+        for entry in service.get_tables(include_disabled=False):
+            tn = entry.get("table_name")
+            fn = entry.get("full_name") or tn
+            code = entry.get("_species_code") or entry.get("code")
+            for key in (tn, fn, code):
+                if isinstance(key, str) and key:
+                    lookup[key.lower()] = tn
+        for t in raw_tables:
+            hit = lookup.get(t.lower())
+            if hit:
+                if hit not in resolved:
+                    resolved.append(hit)
+            else:
+                unknown.append(t)
+    except Exception as e:
+        logger.warning(f"deeplink table resolution failed: {e}", exc_info=True)
+
+    if unknown:
+        return jsonify({
+            "error": f"Unknown table(s): {', '.join(unknown)}",
+            "known": sorted({v for v in lookup.values()}) if 'lookup' in dir() else [],
+        }), 400
+
+    if view != "catalog" and not resolved:
+        return jsonify({"error": "'tables' must contain at least one known dataset for this view"}), 400
+
+    stored_payload = {
+        "filters": filters or {"__placeholder": True},
+        "visualizations": visualizations or {"__placeholder": True},
+    }
+    try:
+        hash_id = service.store_filter(stored_payload)
+    except Exception as e:
+        logger.error(f"store_filter failed: {e}", exc_info=True)
+        return jsonify({"error": "Failed to persist deep-link state"}), 500
+
+    prefix_by_view = {"heatmap": "h", "compare": "c", "phylo": "p", "ora": "o", "catalog": ""}
+    prefix = prefix_by_view[view]
+    if view == "catalog":
+        url_path = f"/catalog?id={hash_id}" if resolved else f"/catalog?id={hash_id}"
+    else:
+        joined = ",".join(resolved)
+        url_path = f"/{prefix}/{joined}?id={hash_id}"
+
+    return jsonify({
+        "id": hash_id,
+        "url_path": url_path,
+        "view": view,
+        "tables": resolved,
+    }), 200
+
+
+@api_bp.route('/api/assistant/compute', methods=['POST'])
+def assistant_compute():
+    """Compute a small, well-defined derived statistic on the user's current view.
+
+    Body: {op, tables[], filters?: {var?:{col:[values...]}, obs?:{col:[values...]}}, args?: {}}
+
+    Supported ops (all return at most 50 rows):
+      - top_orthogroups: count genes per ortho_id within filtered var rows
+      - top_tfs:         count TF family occurrences within filtered var rows
+      - summary_stats:   basic numeric summary for a column
+    """
+    ok, _ = _assistant_limiter.allow(_client_ip())
+    if not ok:
+        return jsonify({"error": "Rate limit exceeded"}), 429
+
+    body = request.get_json(silent=True) or {}
+    op = str(body.get("op") or "").strip().lower()
+    tables = body.get("tables") or []
+    filters = body.get("filters") or {}
+    args = body.get("args") or {}
+
+    if op not in {"top_orthogroups", "top_tfs", "summary_stats"}:
+        return jsonify({"error": f"Unsupported op '{op}'"}), 400
+    if not isinstance(tables, list) or not tables:
+        return jsonify({"error": "'tables' must be a non-empty list"}), 400
+
+    service = get_service()
+    # Resolve table names → species codes.
+    code_lookup = {}
+    for entry in service.get_tables(include_disabled=False):
+        code = entry.get("_species_code") or entry.get("code")
+        for key in (entry.get("table_name"), entry.get("full_name"), code):
+            if isinstance(key, str) and key and code:
+                code_lookup[key.lower()] = code
+    species_codes = []
+    for t in tables:
+        c = code_lookup.get(str(t).lower())
+        if c and c not in species_codes:
+            species_codes.append(c)
+    if not species_codes:
+        return jsonify({"error": "No known tables resolved", "tables": tables}), 400
+
+    import pandas as pd
+    from collections import Counter
+
+    def _apply_filters(adata):
+        var_df = adata.var
+        obs_df = adata.obs
+        var_mask = pd.Series([True] * len(var_df), index=var_df.index)
+        obs_mask = pd.Series([True] * len(obs_df), index=obs_df.index)
+        for ns, colmap in (filters or {}).items():
+            if ns not in ("var", "obs") or not isinstance(colmap, dict):
+                continue
+            target_df = var_df if ns == "var" else obs_df
+            target_mask = var_mask if ns == "var" else obs_mask
+            for col, spec in colmap.items():
+                if col not in target_df.columns:
+                    continue
+                col_series = target_df[col]
+                if isinstance(spec, list):
+                    target_mask &= col_series.isin(spec)
+                elif isinstance(spec, dict):
+                    if "min" in spec:
+                        target_mask &= col_series.astype(float) >= float(spec["min"])
+                    if "max" in spec:
+                        target_mask &= col_series.astype(float) <= float(spec["max"])
+                    if "contains" in spec:
+                        target_mask &= col_series.astype(str).str.contains(str(spec["contains"]), na=False)
+                else:
+                    target_mask &= col_series == spec
+            if ns == "var":
+                var_mask = target_mask
+            else:
+                obs_mask = target_mask
+        return var_df[var_mask], obs_df[obs_mask]
+
+    results = []
+    try:
+        for code in species_codes:
+            adata = service.registry.load(code)
+            if adata is None:
+                continue
+            var_f, obs_f = _apply_filters(adata)
+            per_species = {"code": code, "n_var": int(len(var_f)), "n_obs": int(len(obs_f))}
+
+            if op == "top_orthogroups":
+                if "ortho_id" not in var_f.columns:
+                    per_species["error"] = "ortho_id column not present"
+                else:
+                    vals = var_f["ortho_id"].dropna().astype(str)
+                    vals = vals[vals.str.len() > 0]
+                    top_k = int(args.get("top_k", 10))
+                    counts = Counter(vals.tolist()).most_common(top_k)
+                    per_species["top_orthogroups"] = [
+                        {"ortho_id": og, "gene_count": int(n)} for og, n in counts
+                    ]
+            elif op == "top_tfs":
+                if "tf_family" not in var_f.columns:
+                    per_species["error"] = "tf_family column not present"
+                else:
+                    mask = var_f.get("is_tf")
+                    src = var_f[mask.astype(bool)] if mask is not None else var_f
+                    vals = src["tf_family"].dropna().astype(str)
+                    vals = vals[vals.str.len() > 0]
+                    top_k = int(args.get("top_k", 10))
+                    per_species["top_tf_families"] = [
+                        {"family": fam, "gene_count": int(n)}
+                        for fam, n in Counter(vals.tolist()).most_common(top_k)
+                    ]
+            elif op == "summary_stats":
+                col = str(args.get("column") or "").strip()
+                ns = str(args.get("namespace") or "obs").strip()
+                src = obs_f if ns == "obs" else var_f
+                if col not in src.columns:
+                    per_species["error"] = f"column '{col}' not present"
+                else:
+                    s = pd.to_numeric(src[col], errors="coerce").dropna()
+                    if s.empty:
+                        per_species["error"] = f"column '{col}' has no numeric values"
+                    else:
+                        per_species["stats"] = {
+                            "min": float(s.min()), "max": float(s.max()),
+                            "mean": float(s.mean()), "median": float(s.median()),
+                            "std": float(s.std()), "count": int(s.size),
+                        }
+            results.append(per_species)
+    except Exception as e:
+        logger.error(f"/api/assistant/compute failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+    return jsonify({"op": op, "results": results}), 200
 
 
 # ============================================================================

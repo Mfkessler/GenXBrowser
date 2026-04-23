@@ -255,6 +255,130 @@
               <input v-model="config.data_paths.sequences_dir" type="text" class="form-control" />
             </div>
           </div>
+
+          <!-- AI Assistant -->
+          <div v-show="activeTab === 'assistant'" class="section">
+            <h2>AI Assistant</h2>
+            <p class="info">
+              Configure an OpenAI-compatible chat completion endpoint. When disabled or unconfigured,
+              the assistant UI is completely hidden from end users.
+            </p>
+
+            <template v-if="config.llm_config">
+              <div
+                v-if="config.llm_config.enabled && (!config.llm_config.api_base || !config.llm_config.model)"
+                class="banner banner-warning"
+              >
+                ⚠️ Assistant is enabled but <strong>API base</strong> and <strong>model</strong> must both be set for it to work.
+              </div>
+
+              <div class="form-group">
+                <label class="toggle-label">
+                  <input type="checkbox" v-model="config.llm_config.enabled" />
+                  <span>Enable assistant</span>
+                </label>
+              </div>
+
+              <div class="form-group">
+                <label>API base URL</label>
+                <input
+                  v-model="config.llm_config.api_base"
+                  type="text"
+                  class="form-control"
+                  placeholder="https://api.openai.com"
+                />
+                <small class="hint">Base URL for an OpenAI-compatible endpoint; <code>/v1/chat/completions</code> is appended automatically.</small>
+              </div>
+
+              <div class="form-group">
+                <label>API key</label>
+                <input
+                  v-model="config.llm_config.api_key"
+                  type="password"
+                  class="form-control"
+                  autocomplete="off"
+                  :placeholder="config.llm_config.api_key === REDACTED_PLACEHOLDER ? 'Already configured — leave blank to keep' : 'sk-…'"
+                />
+                <small class="hint">
+                  Stored server-side only. Shown as <code>__set__</code> when already configured; leave empty on save to keep the existing key.
+                </small>
+              </div>
+
+              <div class="form-row">
+                <div class="form-group">
+                  <label>Primary model</label>
+                  <input v-model="config.llm_config.model" type="text" class="form-control" placeholder="gpt-4o-mini" />
+                </div>
+                <div class="form-group">
+                  <label>Fallback model <span class="hint">(optional)</span></label>
+                  <input v-model="config.llm_config.fallback_model" type="text" class="form-control" />
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label>System prompt</label>
+                <textarea
+                  v-model="config.llm_config.system_prompt"
+                  class="form-control"
+                  rows="6"
+                ></textarea>
+                <small class="hint">Runtime context about the loaded datasets is appended automatically.</small>
+              </div>
+
+              <div class="form-row">
+                <div class="form-group">
+                  <label>Temperature</label>
+                  <input
+                    v-model.number="config.llm_config.temperature"
+                    type="number"
+                    class="form-control"
+                    min="0"
+                    max="2"
+                    step="0.05"
+                  />
+                </div>
+                <div class="form-group">
+                  <label>Max tokens</label>
+                  <input
+                    v-model.number="config.llm_config.max_tokens"
+                    type="number"
+                    class="form-control"
+                    min="16"
+                    max="16384"
+                  />
+                </div>
+                <div class="form-group">
+                  <label>Request timeout (s)</label>
+                  <input
+                    v-model.number="config.llm_config.request_timeout_s"
+                    type="number"
+                    class="form-control"
+                    min="5"
+                    max="600"
+                  />
+                </div>
+              </div>
+
+              <div class="form-group">
+                <button
+                  class="btn btn-outline"
+                  :disabled="llmTestRunning || !config.llm_config.api_base || !config.llm_config.model"
+                  @click="testLlmConnection"
+                >
+                  {{ llmTestRunning ? 'Testing…' : '🔌 Test connection' }}
+                </button>
+                <div v-if="llmTestResult" class="test-result" :class="llmTestResult.ok ? 'ok' : 'err'">
+                  <template v-if="llmTestResult.ok">
+                    ✅ Connected to <code>{{ llmTestResult.model }}</code> in {{ llmTestResult.latency_ms }} ms.
+                  </template>
+                  <template v-else>
+                    ❌ {{ llmTestResult.error }}
+                  </template>
+                </div>
+                <small class="hint">Uses the unsaved values above (falling back to the stored API key when the field is empty).</small>
+              </div>
+            </template>
+          </div>
         </div>
       </div>
 
@@ -344,6 +468,17 @@ interface Config {
     gene_trees_path: string;
     sequences_dir: string;
   };
+  llm_config?: {
+    enabled: boolean;
+    api_base: string;
+    api_key: string;
+    model: string;
+    fallback_model: string;
+    system_prompt: string;
+    request_timeout_s: number;
+    max_tokens: number;
+    temperature: number;
+  };
 }
 
 interface Profile {
@@ -397,7 +532,52 @@ export default defineComponent({
       { id: 'metadata', label: 'Metadata', icon: '📊' },
       { id: 'frontend', label: 'Frontend', icon: '🎨' },
       { id: 'paths', label: 'Data Paths', icon: '📁' },
+      { id: 'assistant', label: 'AI Assistant', icon: '🤖' },
     ];
+
+    // AI assistant test-connection state
+    const llmTestRunning = ref(false);
+    const llmTestResult = ref<{ ok: boolean; latency_ms?: number; model?: string; error?: string } | null>(null);
+
+    const REDACTED_PLACEHOLDER = '__set__';
+
+    function ensureLlmConfig(c: Config | null) {
+      if (!c) return;
+      if (!c.llm_config) {
+        c.llm_config = {
+          enabled: false,
+          api_base: '',
+          api_key: '',
+          model: '',
+          fallback_model: '',
+          system_prompt: '',
+          request_timeout_s: 60,
+          max_tokens: 1024,
+          temperature: 0.2,
+        };
+      }
+    }
+
+    async function testLlmConnection() {
+      if (!config.value?.llm_config) return;
+      llmTestRunning.value = true;
+      llmTestResult.value = null;
+      try {
+        const payload: Record<string, unknown> = { ...config.value.llm_config };
+        // If key is empty or placeholder, don't send → backend will use stored key
+        if (!payload.api_key || payload.api_key === REDACTED_PLACEHOLDER) {
+          delete payload.api_key;
+        }
+        const resp = await axios.post(`${adminBaseUrl}/llm/test`, payload, {
+          headers: getAuthHeaders(),
+        });
+        llmTestResult.value = { ok: true, latency_ms: resp.data.latency_ms, model: resp.data.model };
+      } catch (err: any) {
+        llmTestResult.value = { ok: false, error: err.response?.data?.error || err.message || 'Test failed' };
+      } finally {
+        llmTestRunning.value = false;
+      }
+    }
 
     const hasChanges = computed(() => {
       return JSON.stringify(config.value) !== originalConfig.value;
@@ -459,6 +639,7 @@ export default defineComponent({
           headers: getAuthHeaders(),
         });
         config.value = resp.data.config;
+        ensureLlmConfig(config.value);
         originalConfig.value = JSON.stringify(config.value);
         showStatus('Configuration loaded', 'success');
       } catch (err: any) {
@@ -499,6 +680,7 @@ export default defineComponent({
           headers: getAuthHeaders(),
         });
         config.value = resp.data.config;
+        ensureLlmConfig(config.value);
         originalConfig.value = JSON.stringify(config.value);
         await columnsStore.refreshColumns();
         showStatus('Configuration reloaded from disk', 'success');
@@ -576,6 +758,7 @@ export default defineComponent({
           { headers: getAuthHeaders() }
         );
         config.value = resp.data.config;
+        ensureLlmConfig(config.value);
         originalConfig.value = JSON.stringify(config.value);
         await columnsStore.refreshColumns();
         showStatus(`Profile '${name}' loaded`, 'success');
@@ -677,6 +860,7 @@ export default defineComponent({
       profiles, showProfileMenu, showSaveProfileModal,
       profileName, profileDescription, openSaveProfile, saveProfile, loadProfile,
       columnsStore, showReloadConfirm, _doReload, apiBaseUrl,
+      llmTestRunning, llmTestResult, testLlmConnection, REDACTED_PLACEHOLDER,
     };
   },
 });
@@ -902,6 +1086,16 @@ export default defineComponent({
 /* Forms */
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .form-group { margin-bottom: 16px; }
+
+.form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+.banner { padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; font-size: 14px; }
+.banner-warning { background: #fff7ed; color: #9a3412; border: 1px solid #fdba74; }
+.toggle-label { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 500; }
+.toggle-label input { width: 18px; height: 18px; }
+.test-result { margin-top: 10px; padding: 8px 12px; border-radius: 6px; font-size: 14px; display: inline-block; }
+.test-result.ok { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
+.test-result.err { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+.test-result code { background: rgba(0,0,0,0.06); padding: 1px 5px; border-radius: 3px; }
 
 .form-group label {
   display: block;

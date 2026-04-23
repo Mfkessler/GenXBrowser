@@ -1,7 +1,17 @@
 <template>
   <main class="px-2">
     <!-- Page title -->
-    <div class="mb-4 mt-1 text-center">
+    <div class="mb-4 mt-1 text-center relative">
+      <RouterLink
+        to="/"
+        class="absolute left-0 top-1/2 -translate-y-1/2 text-xs font-semibold text-primary-700 hover:text-primary-900 inline-flex items-center gap-1"
+        v-tooltip:bottom="'Back to project overview'"
+      >
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
+        </svg>
+        <span>Home</span>
+      </RouterLink>
       <h1 class="text-xl font-bold tracking-tight text-gray-800">Gen<span class="text-primary-500">X</span>Browser</h1>
     </div>
 
@@ -134,6 +144,7 @@
 <script setup lang="ts">
 import axios from "axios";
 import { computed, onMounted, ref, watch } from "vue";
+import { RouterLink } from "vue-router";
 
 import AnalysisCard from "@/components/AnalysisCard.vue";
 import CatalogEntry from "@/components/CatalogEntry.vue";

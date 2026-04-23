@@ -173,6 +173,24 @@
         "gene_trees_path": {"type": "string"},
         "sequences_dir": {"type": "string"}
       }
+    },
+    "llm_config": {
+      "type": "object",
+      "description": "AI assistant / LLM connection configuration. When 'enabled' is false or api_base/api_key missing, assistant features are hidden.",
+      "properties": {
+        "enabled": {"type": "boolean", "default": false},
+        "api_base": {"type": "string", "description": "OpenAI-compatible base URL (e.g. https://api.hrz.uni-giessen.de)"},
+        "api_key": {"type": "string", "description": "Bearer token for the LLM API. Always redacted on GET."},
+        "model": {"type": "string", "description": "Primary model identifier"},
+        "fallback_model": {"type": "string", "description": "Fallback model on primary failure"},
+        "system_prompt": {"type": "string", "description": "System prompt prepended to every chat session"},
+        "request_timeout_s": {"type": "integer", "minimum": 1, "maximum": 600, "default": 60},
+        "max_tokens": {"type": "integer", "minimum": 16, "maximum": 32768, "default": 1024},
+        "temperature": {"type": "number", "minimum": 0, "maximum": 2, "default": 0.2},
+        "tool_calling_enabled": {"type": "boolean", "default": true, "description": "Enable the server-side tool-calling agent loop. Requires a model that supports OpenAI-compatible tool_calls (Gemini 1.5+, GPT-4o, Claude)."},
+        "max_tool_iterations": {"type": "integer", "minimum": 1, "maximum": 20, "default": 6, "description": "Hard cap on tool-call rounds per user turn."},
+        "tool_deadline_s": {"type": "integer", "minimum": 10, "maximum": 600, "default": 90, "description": "Wall-clock deadline for the whole tool-calling loop (seconds)."}
+      }
     }
   }
 }

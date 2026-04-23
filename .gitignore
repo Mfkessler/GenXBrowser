@@ -64,3 +64,4 @@ frontend/.github/copilot-instructions.md
 # ---------- Test Artifacts ----------
 frontend/playwright-report/
 frontend/test-results/
+MDs/

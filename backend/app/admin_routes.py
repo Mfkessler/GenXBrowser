@@ -108,6 +108,27 @@ def check_auth():
     return jsonify({"success": True, "auth_required": True, "authenticated": False})
 
 
+@admin_bp.route('/llm/test', methods=['POST'])
+@require_admin_token
+def llm_test():
+    """Probe the configured LLM endpoint (or a candidate one from the body).
+
+    Body may contain partial overrides ``{api_base, api_key, model, fallback_model,
+    temperature, max_tokens, request_timeout_s}``. If ``api_key`` is omitted or
+    equals the redacted placeholder, the stored key is used. Never echoes the
+    key back to the caller.
+    """
+    from . import assistant as _assistant
+    config_mgr = get_config_manager()
+    stored = config_mgr.get_config().get('llm_config') or {}
+    body = request.get_json(silent=True) or {}
+    merged = _assistant.merge_llm_config_update(stored, body or {})
+
+    result = _assistant.test_connection(merged)
+    status = 200 if result.get("ok") else 502
+    return jsonify(result), status
+
+
 @admin_bp.route('/health', methods=['GET'])
 def admin_health():
     """
@@ -137,9 +158,14 @@ def get_config():
     Returns column_definitions sorted by their saved 'order' field, so the
     admin panel always reflects the last-saved user ordering.
 
+    The ``llm_config.api_key`` field is always redacted to a placeholder so
+    the secret never leaves the backend; empty/placeholder values submitted
+    in a subsequent PUT preserve the stored key.
+
     Returns:
         Complete configuration as JSON
     """
+    from . import assistant as _assistant
     config_mgr = get_config_manager()
     config = config_mgr.get_config()
 
@@ -152,6 +178,10 @@ def get_config():
             )
         )
         config['column_definitions'] = sorted_defs
+
+    # Always redact the LLM API key on read.
+    if 'llm_config' in config and config['llm_config']:
+        config['llm_config'] = _assistant.redact_llm_config(config['llm_config'])
 
     return jsonify({
         "success": True,
@@ -194,17 +224,38 @@ def update_config():
             current = config_mgr.get_config()
             current.update(new_config)
             new_config = current
-        
+
+        # Never let a redacted/empty api_key overwrite the stored secret.
+        if 'llm_config' in new_config:
+            from . import assistant as _assistant
+            stored = config_mgr.get_config().get('llm_config') or {}
+            new_config['llm_config'] = _assistant.merge_llm_config_update(
+                stored, new_config['llm_config'] or {}
+            )
+
         success = config_mgr.update_config(new_config)
         
         if success:
             # Reload service with new config
             get_service().reload_config()
-            
+
+            # Invalidate landing overview cache so next /api/overview reflects changes.
+            try:
+                from . import overview as _overview
+                _overview.invalidate_cache()
+            except Exception:
+                pass
+
+            # Redact api_key in the echo response.
+            response_config = dict(new_config)
+            if 'llm_config' in response_config and response_config['llm_config']:
+                from . import assistant as _assistant
+                response_config['llm_config'] = _assistant.redact_llm_config(response_config['llm_config'])
+
             return jsonify({
                 "success": True,
                 "message": "Configuration updated successfully",
-                "config": new_config
+                "config": response_config
             })
         else:
             return jsonify({
