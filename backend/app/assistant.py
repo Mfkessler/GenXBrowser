@@ -325,6 +325,83 @@ _ACTION_BLOCK_TAGS = {
     "select_tables", "set_expression_display", "action", "compute",
 }
 _FENCE_RE = re.compile(r"```([A-Za-z_][A-Za-z0-9_]*)\s*\n([\s\S]*?)\n```", re.MULTILINE)
+# Matches both tagged AND untagged fences. The untagged variant catches
+# bare ```{...}``` blocks that some models emit instead of using the
+# proper action-block tag.
+_FENCE_ANY_RE = re.compile(r"```([A-Za-z_][A-Za-z0-9_]*)?\s*\n([\s\S]*?)\n```", re.MULTILINE)
+
+# Action-block signatures used to recognise leaked / mis-tagged fences.
+_ACTION_KEY_SIGNATURES: List[Tuple[str, frozenset, frozenset]] = [
+    ("add_filter", frozenset({"column"}),
+        frozenset({"column", "value", "values", "strict", "empty"})),
+    ("remove_filter", frozenset({"column"}), frozenset({"column"})),
+    ("clear_filters", frozenset(), frozenset()),
+    ("select_tables", frozenset({"tables"}), frozenset({"tables"})),
+    ("set_expression_display", frozenset({"optionId"}),
+        frozenset({"optionId", "layer", "transform"})),
+    ("viz_update", frozenset({"patch"}), frozenset({"patch"})),
+    ("deeplink", frozenset({"view"}),
+        frozenset({"view", "tables", "filters", "visualizations"})),
+]
+
+
+def _match_action_signature(obj: Dict[str, Any]) -> Optional[str]:
+    keys = frozenset(obj.keys())
+    for name, required, allowed in _ACTION_KEY_SIGNATURES:
+        if not required.issubset(keys):
+            continue
+        if allowed and not keys.issubset(allowed):
+            continue
+        return name
+    return None
+
+
+def retag_action_fences(content: str) -> str:
+    """Re-tag fenced JSON blocks that match an action signature.
+
+    Some models emit action payloads as ```json``` or as a bare ``` ``` ```
+    fence. Without re-tagging, the frontend parser ignores them and the
+    user sees raw JSON in chat. We rewrite the fence's opening line to use
+    the matching action language tag (e.g. ``add_filter``) so the existing
+    extractor picks them up.
+    """
+    if not content or "```" not in content:
+        return content
+
+    out: List[str] = []
+    last = 0
+    for match in _FENCE_ANY_RE.finditer(content):
+        tag = (match.group(1) or "").lower()
+        body = match.group(2) or ""
+        out.append(content[last:match.start()])
+        last = match.end()
+
+        if tag in _ACTION_BLOCK_TAGS:
+            # Already a recognised action block \u2014 keep verbatim.
+            out.append(match.group(0))
+            continue
+
+        # Try to recognise the body as an action payload.
+        try:
+            obj = json.loads(body)
+        except Exception:
+            obj = None
+        if isinstance(obj, dict):
+            name = _match_action_signature(obj)
+            if name:
+                out.append(f"```{name}\n{body}\n```")
+                continue
+
+        # Unrecognised \u2014 if it is a bare/json/tool fence containing JSON,
+        # drop it (otherwise the user sees a raw JSON code block).
+        looks_like_json = body.lstrip().startswith(("{", "["))
+        if tag in ("", "json", "tool") and looks_like_json:
+            continue
+
+        out.append(match.group(0))
+
+    out.append(content[last:])
+    return "".join(out)
 
 
 def _extract_leaked_tool_calls(content: str) -> List[Tuple[str, Dict[str, Any], Tuple[int, int]]]:
@@ -493,9 +570,10 @@ def run_agentic_turn(
                 continue  # re-prompt with tool results included
 
             # Final assistant message — emit text and stop.
+            cleaned = retag_action_fences(content)
             yield {
                 "type": "delta",
-                "delta": content,
+                "delta": cleaned,
                 "model": used_model,
                 "iterations": iteration + 1,
             }
@@ -546,9 +624,10 @@ def run_agentic_turn(
     if final is None:
         yield {"type": "error", "error": err or "iteration cap hit and no fallback response"}
         return
+    final_text = retag_action_fences(final.get("content") or "")
     yield {
         "type": "delta",
-        "delta": (final.get("content") or "") + "\n\n_(Note: tool iteration cap reached.)_",
+        "delta": final_text + "\n\n_(Note: tool iteration cap reached.)_",
         "model": used_model or last_model,
         "iterations": int(max_iterations),
     }

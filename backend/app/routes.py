@@ -1634,6 +1634,16 @@ def assistant_deeplink():
     if not isinstance(filters, dict) or not isinstance(visualizations, dict):
         return jsonify({"error": "'filters' and 'visualizations' must be objects"}), 400
 
+    # Normalize multi-value filter entries so the persisted state matches
+    # what the frontend filter store / TextFilter pill component expect
+    # (pipe-separated values). Accepts arrays, comma- or newline-separated
+    # strings from the assistant and rewrites them to "v1|v2|v3".
+    try:
+        from . import assistant_tools as _at
+        filters = _at.normalize_filter_payload(filters)
+    except Exception as e:
+        logger.warning(f"filter normalization failed: {e}")
+
     # Size guardrails so a runaway LLM can't fill disk.
     import json as _json
     try:

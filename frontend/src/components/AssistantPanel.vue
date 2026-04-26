@@ -63,10 +63,23 @@
           >
             <div v-if="msg.error" class="text-red-600 text-xs">{{ msg.error }}</div>
             <div
-              v-else
+              v-else-if="stripActionBlocks(msg.content)"
               class="assistant-markdown text-sm"
-              v-html="renderMarkdown(stripActionBlocks(msg.content)) || (store.streaming && idx === store.messages.length - 1 ? '<em class=&quot;text-gray-400&quot;>…</em>' : '')"
+              v-html="renderMarkdown(stripActionBlocks(msg.content))"
             ></div>
+            <!-- Streaming placeholder: surface what the assistant is doing
+                 instead of just an opaque ellipsis so the user sees progress. -->
+            <div
+              v-else-if="store.streaming && idx === store.messages.length - 1"
+              class="text-xs text-gray-500 italic flex items-start gap-2"
+            >
+              <span class="inline-flex items-center gap-1.5 shrink-0">
+                <span class="inline-block w-1.5 h-1.5 rounded-full bg-accent1-500 animate-pulse"></span>
+                <span class="inline-block w-1.5 h-1.5 rounded-full bg-accent1-500 animate-pulse" style="animation-delay: 150ms"></span>
+                <span class="inline-block w-1.5 h-1.5 rounded-full bg-accent1-500 animate-pulse" style="animation-delay: 300ms"></span>
+              </span>
+              <span class="min-w-0 break-words">{{ thinkingLabel(msg) }}</span>
+            </div>
 
             <!-- Tool trace (collapsible) -->
             <details
@@ -311,6 +324,10 @@ function stripActionBlocks(content: string): string {
     )
     // Leaked tool-argument JSON that the backend salvaged.
     .replace(/```(?:json|tool)\s*\n[\s\S]*?\n```/gi, "")
+    // Any remaining bare ```...``` fence whose body is JSON-shaped —
+    // these are leaked tool calls or action payloads the backend didn't
+    // recognise; we never want raw JSON shown to the user.
+    .replace(/```\s*\n\s*[{[][\s\S]*?\n```/g, "")
     .trim();
 }
 
@@ -330,6 +347,38 @@ function escapeHtml(s: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+/** Human-readable description of what the assistant is doing right now.
+ *  Surfaces the most recent (or currently running) tool so the user
+ *  isn't left looking at an opaque "…". */
+function thinkingLabel(msg: ChatMessage): string {
+  const tools = msg.tools || [];
+  if (tools.length === 0) return "Thinking…";
+  const running = [...tools].reverse().find((t) => t.status === "running");
+  const focus = running || tools[tools.length - 1];
+  const verb = focus.status === "running" ? "Running" : "Finished";
+  const argHint = focus.args ? formatToolArgs(focus.args) : "";
+  if (tools.length > 1) {
+    return `${verb} ${focus.name}${argHint}  (step ${tools.length})`;
+  }
+  return `${verb} ${focus.name}${argHint}`;
+}
+
+function formatToolArgs(args: Record<string, unknown>): string {
+  // Show 1\u20132 most informative arg keys to give context without flooding.
+  const keys = ["query", "column", "group_column", "table", "view", "tables"];
+  const parts: string[] = [];
+  for (const k of keys) {
+    if (args[k] === undefined) continue;
+    let v = args[k];
+    if (Array.isArray(v)) v = v.join(",");
+    const s = String(v);
+    if (!s) continue;
+    parts.push(`${k}=${s.length > 40 ? s.slice(0, 40) + "\u2026" : s}`);
+    if (parts.length >= 2) break;
+  }
+  return parts.length ? ` (${parts.join(", ")})` : "";
 }
 
 function buildClientContext(): ClientContext {
@@ -449,7 +498,10 @@ function applyAddFilter(action: AssistantAction) {
       action.error = "missing column";
       return;
     }
-    const value = Array.isArray(spec.value) ? (spec.value as unknown[]).join(",") : String(spec.value ?? "");
+    // Normalize multi-value filters to the pipe-separated form the
+    // TextFilter chip component expects. The assistant may emit `value`
+    // as an array, a comma/newline-separated string, or a `values` field.
+    const value = normalizeFilterValue(spec.value ?? (spec as { values?: unknown }).values);
     const filter: FilterValue = {
       value,
       strict: Boolean(spec.strict ?? false),
@@ -461,6 +513,29 @@ function applyAddFilter(action: AssistantAction) {
     action.status = "error";
     action.error = (e as Error).message || "add_filter failed";
   }
+}
+
+/** Convert array / comma-separated / newline-separated input to the pipe-
+ *  separated form the filter store + TextFilter component require. Empty
+ *  inputs become "" so the `empty` flag still works. */
+function normalizeFilterValue(raw: unknown): string {
+  if (raw === null || raw === undefined) return "";
+  let parts: string[];
+  if (Array.isArray(raw)) {
+    parts = raw.map((v) => String(v).trim());
+  } else {
+    const s = String(raw);
+    if (!s.trim()) return s;
+    parts = s.split(/[,;\n\r|]+/).map((v) => v.trim());
+  }
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const v of parts) {
+    if (!v || seen.has(v)) continue;
+    seen.add(v);
+    deduped.push(v);
+  }
+  return deduped.join("|");
 }
 
 function applyRemoveFilter(action: AssistantAction) {
@@ -607,7 +682,7 @@ function computeResultRows(msg: ChatMessage): ResultTable[] {
 }
 
 watch(
-  () => store.messages.map((m) => (m.content || "").length).join("|"),
+  () => store.messages.map((m) => `${(m.content || "").length}:${(m.tools || []).length}:${(m.tools || []).map((t) => t.status).join(",")}`).join("|"),
   () => {
     nextTick(() => {
       if (scrollEl.value) scrollEl.value.scrollTop = scrollEl.value.scrollHeight;

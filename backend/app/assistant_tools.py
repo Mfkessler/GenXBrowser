@@ -77,6 +77,70 @@ def _split_array_values(series, separators: Tuple[str, ...] = (",", "|", ";")) -
     return out
 
 
+def normalize_filter_pipe_value(value: Any) -> Optional[str]:
+    """Normalize a filter ``value`` field to the pipe-separated form the
+    frontend filter store and TextFilter component expect.
+
+    The assistant frequently emits multi-value filters as either:
+      - a JSON array  ``["OG1","OG2"]``
+      - a comma-separated string  ``"OG1, OG2"``
+      - a newline-separated string
+    All three must end up as ``"OG1|OG2"`` so the TextFilter component
+    splits them into individual chips. ``None`` and the empty string are
+    passed through unchanged (used by the ``empty`` filter mode).
+    """
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple, set)):
+        items = [str(v).strip() for v in value]
+    else:
+        s = str(value)
+        if not s.strip():
+            return s
+        # Split on common separators users / LLMs emit. Pipe is the canonical
+        # separator the frontend expects, so we must collapse , ; \n into |.
+        items = re.split(r"[,;\n\r|]+", s)
+    items = [v.strip() for v in items if v and str(v).strip()]
+    if not items:
+        return ""
+    # De-duplicate while preserving order.
+    seen: Dict[str, bool] = {}
+    deduped: List[str] = []
+    for v in items:
+        if v not in seen:
+            seen[v] = True
+            deduped.append(v)
+    return "|".join(deduped)
+
+
+def normalize_filter_payload(filters: Any) -> Any:
+    """Recursively normalize ``filters`` so any ``{value: ...}`` entry that
+    carries multiple values uses the pipe-separated form.
+
+    Accepts both the top-level deeplink filter shape
+    (``{"filters": {col: {value, strict, empty}}}``) and a flat
+    ``{col: {value, strict, empty}}`` mapping. Unknown keys are passed
+    through untouched.
+    """
+    if not isinstance(filters, dict):
+        return filters
+    out: Dict[str, Any] = {}
+    for key, val in filters.items():
+        if isinstance(val, dict) and ("value" in val or "values" in val):
+            # Single filter spec.
+            spec = dict(val)
+            raw = spec.pop("values", None)
+            if raw is None:
+                raw = spec.get("value")
+            spec["value"] = normalize_filter_pipe_value(raw)
+            out[key] = spec
+        elif isinstance(val, dict):
+            out[key] = normalize_filter_payload(val)
+        else:
+            out[key] = val
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Tool implementations
 # ---------------------------------------------------------------------------
@@ -556,6 +620,12 @@ def tool_build_deeplink(
 
     filters = filters or {}
     visualizations = visualizations or {}
+    # Normalize multi-value filter entries so the persisted state matches
+    # what the frontend filter store expects (pipe-separated chips).
+    try:
+        filters = normalize_filter_payload(filters)
+    except Exception as e:
+        logger.warning("filter normalization failed: %s", e)
     try:
         size = len(json.dumps({"f": filters, "v": visualizations}))
     except Exception:
