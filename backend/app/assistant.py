@@ -547,6 +547,14 @@ def run_agentic_turn(
             yield {"type": "error", "error": f"tool-loop timeout after {int(tool_deadline_s)}s"}
             return
 
+        # Surface model-side latency so the UI can show "Asking the model"
+        # instead of an opaque "Thinking…" while we wait for the upstream.
+        yield {
+            "type": "status",
+            "phase": "model_call",
+            "iteration": iteration + 1,
+            "max_iterations": int(max_iterations),
+        }
         msg, used_model, err = _complete_with_fallback(cfg, messages, tools=tools)
         if msg is None:
             yield {"type": "error", "error": err or "upstream failure"}

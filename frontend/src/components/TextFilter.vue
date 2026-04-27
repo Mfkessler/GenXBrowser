@@ -183,21 +183,34 @@
         Clear all
       </button>
     </div>
-    <!-- Strict/Empty Checkboxes + Batch Button -->
+    <!-- Match-mode toggle (OR/AND) + Exact / Empty checkboxes + Bulk button -->
     <div class="flex items-center justify-between mt-1">
-      <div class="flex space-x-4">
+      <div class="flex items-center space-x-3">
+        <!-- OR/AND toggle: only visible when 2+ values are selected -->
+        <button
+          v-if="pillItems.length >= 2"
+          type="button"
+          @click="toggleMatchMode"
+          :aria-label="matchMode === 'or' ? 'Switch to AND (all values must match)' : 'Switch to OR (any value must match)'"
+          v-tooltip="matchMode === 'or'
+            ? 'OR: at least one of the selected values must match (click for AND)'
+            : 'AND: every selected value must match (click for OR)'"
+          :class="[
+            'cursor-pointer text-xs font-bold uppercase tracking-wide px-2 py-1 rounded-md border transition-colors',
+            matchMode === 'and'
+              ? 'bg-accent1-700 text-white border-accent1-700 hover:bg-accent1-900'
+              : 'bg-primary-100 text-primary-900 border-primary-300 hover:bg-primary-200',
+          ]"
+        >
+          {{ matchMode === 'and' ? 'AND' : 'OR' }}
+        </button>
         <label class="flex items-center">
           <input
             type="checkbox"
-            v-model="strict"
-            :disabled="pillItems.length <= 1"
+            v-model="exact"
             class="cursor-pointer form-checkbox h-4 w-4 accent-primary-700 mr-2"
           />
-          <span
-            class="text-sm text-gray-700"
-            :class="{ 'opacity-50': pillItems.length <= 1 }"
-            >Strict</span
-          >
+          <span class="text-sm text-gray-700">Exact</span>
         </label>
         <label class="flex items-center">
           <input
@@ -275,7 +288,12 @@ const columnsStore = useColumnsStore();
 
 const isDragging = ref(false);
 const empty = ref(false);
-const strict = ref(false);
+// Match mode for multiple selected values: "or" (default) or "and".
+// Replaces the legacy boolean `strict` flag (strict == match_mode === 'and').
+const matchMode = ref<'or' | 'and'>('or');
+// Whether to require exact value matches. Default true. When false,
+// substring matching is used in the backend.
+const exact = ref(true);
 const showDropdown = ref(false);
 const showBatchModal = ref(false);
 
@@ -567,7 +585,8 @@ function handleBatchModalClose() {
 
 function reset() {
   pillItems.value = [];
-  strict.value = false;
+  matchMode.value = 'or';
+  exact.value = true;
   empty.value = false;
 }
 
@@ -626,18 +645,30 @@ function onSearchBlur() {
   setTimeout(() => (showDropdown.value = false), 100);
 }
 
+function toggleMatchMode() {
+  matchMode.value = matchMode.value === 'or' ? 'and' : 'or';
+}
+
 watch(localInput, fetchSuggestions);
 
 watch(
-  [pillItems, strict, empty],
+  [pillItems, matchMode, exact, empty],
   () => {
+    // Auto-reset match mode when fewer than 2 pills (toggle is hidden)
+    if (pillItems.value.length < 2 && matchMode.value === 'and') {
+      matchMode.value = 'or';
+    }
     // If the filter is truly empty, emit null so parent can delete the key
     if (!empty.value && pillItems.value.length === 0) {
       emit("update:modelValue", null);
     } else {
       emit("update:modelValue", {
         value: empty.value ? null : pillItems.value.join("|"),
-        strict: strict.value,
+        // Legacy alias for backward compatibility (true == AND)
+        strict: matchMode.value === 'and',
+        match_mode: matchMode.value,
+        exact: exact.value,
+        empty: empty.value,
       });
     }
   },
@@ -652,12 +683,16 @@ watch(
         pillItems.value = newVal.value
           ? newVal.value.toString().split("|").filter(Boolean)
           : [];
-        strict.value = !!newVal.strict;
+        // Prefer match_mode if present, else fall back to legacy `strict`
+        const mv = newVal as unknown as { match_mode?: 'or' | 'and'; strict?: boolean; exact?: boolean };
+        matchMode.value = mv.match_mode ?? (mv.strict ? 'and' : 'or');
+        exact.value = mv.exact ?? true;
         empty.value = newVal.value === null;
       } else {
         // Clear pills if no modelValue
         pillItems.value = [];
-        strict.value = false;
+        matchMode.value = 'or';
+        exact.value = true;
         empty.value = false;
       }
     }
@@ -672,7 +707,7 @@ watch(
     if (val) {
       pillItems.value = [];
       localInput.value = "";
-      strict.value = false;
+      matchMode.value = 'or';
     }
   },
 );
@@ -685,7 +720,9 @@ onMounted(() => {
     pillItems.value = props.modelValue.value
       ? props.modelValue.value.toString().split("|").filter(Boolean)
       : [];
-    strict.value = !!props.modelValue.strict;
+    const mv = props.modelValue as unknown as { match_mode?: 'or' | 'and'; strict?: boolean; exact?: boolean };
+    matchMode.value = mv.match_mode ?? (mv.strict ? 'and' : 'or');
+    exact.value = mv.exact ?? true;
     empty.value = props.modelValue.value === null;
   }
 });

@@ -121,13 +121,26 @@ action. Supported languages:
 ```add_filter
 {"column": "<var or obs column>",
  "value": "<single value>" | ["v1", "v2", "v3"],
- "strict": false, "empty": false}
+ "match_mode": "or" | "and", "exact": true | false,
+ "empty": false}
 ```
 For multi-value filters (e.g. a list of orthogroups, gene IDs, tissues)
 ALWAYS pass `value` as a JSON ARRAY of strings. The frontend will turn
 each entry into its own filter chip. **Never** stuff multiple values
 into one comma-separated string — that shows up as a single (broken)
 chip in the UI.
+
+`match_mode` controls how multiple values combine:
+  - `"or"` (DEFAULT): a row matches if **at least one** value matches.
+  - `"and"`: a row matches only if **every** value matches (e.g. an
+    array column must contain all of the listed orthogroups).
+
+`exact` controls value matching:
+  - `true` (DEFAULT): only complete value matches are kept.
+  - `false`: substring matching — values may appear inside larger cells.
+
+The legacy `"strict": true` flag is still accepted and is equivalent to
+`"match_mode": "and", "exact": true`. Prefer the new fields.
 
 ```remove_filter
 {"column": "<column>"}
@@ -155,8 +168,8 @@ chip in the UI.
 {"view": "heatmap"|"compare"|"phylo"|"ora"|"catalog",
  "tables": ["CS", "PS"],
  "filters": {"tags": [], "table_names": [],
-             "filters": {"tf_family": {"value": "MIKC", "strict": false, "empty": false},
-                         "ortho_id":  {"value": ["OG0000001", "OG0000017"], "strict": false, "empty": false}},
+             "filters": {"tf_family": {"value": "MIKC", "match_mode": "or", "exact": true, "empty": false},
+                         "ortho_id":  {"value": ["OG0000001", "OG0000017"], "match_mode": "or", "exact": true, "empty": false}},
              "datasetIdFilters": {}},
  "visualizations": {}}
 ```
@@ -226,7 +239,7 @@ User: "Zeige alle MIKC Transkripte von CS in einer Heatmap"
 [calls count_rows(table="CS", var_filters={"tf_family":["MIKC"]})
   → n_var_match=<N>]
 [calls build_deeplink(view="heatmap", tables=["CS"],
-  filters={"filters":{"tf_family":{"value":"MIKC","strict":false,"empty":false}}})
+  filters={"filters":{"tf_family":{"value":"MIKC","match_mode":"or","exact":true,"empty":false}}})
   → url_path="/h/CS?id=<ID>"]
 Final assistant message:
 "I found <N> MIKC-family transcripts in CS (tf_family column). Opening the heatmap.
@@ -236,11 +249,11 @@ Final assistant message:
 ```
 
 ```add_filter
-{\"column\":\"tf_family\",\"value\":\"MIKC\",\"strict\":false,\"empty\":false}
+{\"column\":\"tf_family\",\"value\":\"MIKC\",\"match_mode\":\"or\",\"exact\":true,\"empty\":false}
 ```
 
 ```deeplink
-{\"view\":\"heatmap\",\"tables\":[\"CS\"],\"filters\":{\"filters\":{\"tf_family\":{\"value\":\"MIKC\",\"strict\":false,\"empty\":false}}}}
+{\"view\":\"heatmap\",\"tables\":[\"CS\"],\"filters\":{\"filters\":{\"tf_family\":{\"value\":\"MIKC\",\"match_mode\":\"or\",\"exact\":true,\"empty\":false}}}}
 ```"
 
 --- Example 2: follow-up "as heatmap" narrows to view switch ---
@@ -252,7 +265,7 @@ Final assistant message:
 "Opening the current selection in the heatmap view.
 
 ```deeplink
-{\"view\":\"heatmap\",\"tables\":[\"CS\"],\"filters\":{\"filters\":{\"tf_family\":{\"value\":\"MIKC\",\"strict\":false,\"empty\":false}}}}
+{\"view\":\"heatmap\",\"tables\":[\"CS\"],\"filters\":{\"filters\":{\"tf_family\":{\"value\":\"MIKC\",\"match_mode\":\"or\",\"exact\":true,\"empty\":false}}}}
 ```"
 
 --- Example 3: narrow to the top orthogroup in the current view ---
@@ -266,7 +279,7 @@ Final assistant message:
 <TOP_ID> (<N> genes). Narrowing the heatmap.
 
 ```add_filter
-{\"column\":\"ortho_id\",\"value\":\"<TOP_ID>\",\"strict\":false,\"empty\":false}
+{\"column\":\"ortho_id\",\"value\":\"<TOP_ID>\",\"match_mode\":\"or\",\"exact\":true,\"empty\":false}
 ```"
 
 --- Example 4: cross-species orthogroup intersection ---
@@ -275,7 +288,7 @@ User: "Welche Orthogroups kommen in allen Spezies vor? Zeige sie in einer Heatma
 [calls common_values(column="ortho_id", tables=["CS","PS"])
   → {n_common: <N>, values: ["<OG_A>", "<OG_B>", …], truncated: true}]
 [calls build_deeplink(view="heatmap", tables=["CS","PS"],
-  filters={"filters":{"ortho_id":{"value":["<OG_A>","<OG_B>", "…"],"strict":false,"empty":false}}})
+  filters={"filters":{"ortho_id":{"value":["<OG_A>","<OG_B>", "…"],"match_mode":"or","exact":true,"empty":false}}})
   → url_path="/h/CS,PS?id=<ID>"]
 Final assistant message:
 "<N> orthogroups are shared between CS and PS. Opening the heatmap for
@@ -286,11 +299,11 @@ the first 500 of them (filter on ortho_id).
 ```
 
 ```add_filter
-{\"column\":\"ortho_id\",\"value\":[\"<OG_A>\",\"<OG_B>\",\"<OG_C>\"],\"strict\":false,\"empty\":false}
+{\"column\":\"ortho_id\",\"value\":[\"<OG_A>\",\"<OG_B>\",\"<OG_C>\"],\"match_mode\":\"or\",\"exact\":true,\"empty\":false}
 ```
 
 ```deeplink
-{\"view\":\"heatmap\",\"tables\":[\"CS\",\"PS\"],\"filters\":{\"filters\":{\"ortho_id\":{\"value\":[\"<OG_A>\",\"<OG_B>\",\"<OG_C>\"],\"strict\":false,\"empty\":false}}}}
+{\"view\":\"heatmap\",\"tables\":[\"CS\",\"PS\"],\"filters\":{\"filters\":{\"ortho_id\":{\"value\":[\"<OG_A>\",\"<OG_B>\",\"<OG_C>\"],\"match_mode\":\"or\",\"exact\":true,\"empty\":false}}}}
 ```"
 
 --- Example 6: narrow within current heatmap selection ---
@@ -306,7 +319,7 @@ Final assistant message:
 filter. Narrowing the heatmap to those.
 
 ```add_filter
-{\"column\":\"ortho_id\",\"value\":[\"OG0000492\",\"OG0000604\",\"…\"],\"strict\":false,\"empty\":false}
+{\"column\":\"ortho_id\",\"value\":[\"OG0000492\",\"OG0000604\",\"…\"],\"match_mode\":\"or\",\"exact\":true,\"empty\":false}
 ```"
 
 --- Example 5: pure question, no UI change ---
@@ -332,7 +345,7 @@ User: "Zeige die Orthogroup OG0000000 als Heatmap"
 [calls count_rows(table="SL", var_filters={"ortho_id":["OG0000000"]}) → n_var_match=0]
 [calls count_rows(table="OS", var_filters={"ortho_id":["OG0000000"]}) → n_var_match=519]
 [calls build_deeplink(view="heatmap", tables=["OS"],
-  filters={"filters":{"ortho_id":{"value":"OG0000000","strict":false,"empty":false}}})]
+  filters={"filters":{"ortho_id":{"value":"OG0000000","match_mode":"or","exact":true,"empty":false}}})]
 Final assistant message:
 "OG0000000 (519 genes) only exists in OS — opening the heatmap for OS
 alone. AT and SL have no genes in this orthogroup, so I'm not including
@@ -343,11 +356,11 @@ them.
 ```
 
 ```add_filter
-{\"column\":\"ortho_id\",\"value\":\"OG0000000\",\"strict\":false,\"empty\":false}
+{\"column\":\"ortho_id\",\"value\":\"OG0000000\",\"match_mode\":\"or\",\"exact\":true,\"empty\":false}
 ```
 
 ```deeplink
-{\"view\":\"heatmap\",\"tables\":[\"OS\"],\"filters\":{\"filters\":{\"ortho_id\":{\"value\":\"OG0000000\",\"strict\":false,\"empty\":false}}}}
+{\"view\":\"heatmap\",\"tables\":[\"OS\"],\"filters\":{\"filters\":{\"ortho_id\":{\"value\":\"OG0000000\",\"match_mode\":\"or\",\"exact\":true,\"empty\":false}}}}
 ```"
 
 --- Example 9: ambiguous request — ask, don't dump JSON ---

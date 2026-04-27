@@ -47,6 +47,9 @@ export interface ChatMessage {
   deeplink?: { view: string; url_path: string } | null;
   error?: string;
   tools?: ToolTrace[];
+  /** Latest progress hint surfaced from the backend (e.g. "model_call").
+   *  Used by the panel to render a meaningful label while we wait. */
+  status?: { phase: string; iteration?: number; max_iterations?: number } | null;
   /** When set, the UI shows an Undo button that restores this snapshot. */
   undo?: UndoSnapshot | null;
   /** True after the user clicks Undo — snapshot is cleared. */
@@ -167,6 +170,12 @@ export const useAssistantStore = defineStore("assistant", () => {
               const idx = assistantMsg.tools.findIndex((t) => t.id === trace.id && t.id);
               if (idx >= 0) assistantMsg.tools[idx] = { ...assistantMsg.tools[idx], ...trace };
               else assistantMsg.tools.push(trace);
+            } else if (evType === "status") {
+              assistantMsg.status = {
+                phase: String(obj.phase || ""),
+                iteration: typeof obj.iteration === "number" ? obj.iteration : undefined,
+                max_iterations: typeof obj.max_iterations === "number" ? obj.max_iterations : undefined,
+              };
             } else if (typeof obj.delta === "string") {
               assistantMsg.content += obj.delta;
             } else if (obj.error) {

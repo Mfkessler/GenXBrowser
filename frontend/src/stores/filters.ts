@@ -1,9 +1,24 @@
 import { defineStore } from "pinia";
 
+/**
+ * How multiple selected values for the same metadata column are combined.
+ *  - "or"  : at least one of the values must match (default)
+ *  - "and" : every selected value must match
+ */
+export type FilterMatchMode = "or" | "and";
+
 export interface FilterValue {
   value: string;
+  /** Legacy AND/OR flag (true == AND). Kept in payload for backward compat. */
   strict: boolean;
   empty: boolean;
+  /** New: how multiple values combine. Default "or". */
+  match_mode?: FilterMatchMode;
+  /**
+   * New: whether values must match exactly (true) or as substrings (false).
+   * Default true.
+   */
+  exact?: boolean;
 }
 
 export interface FiltersState {

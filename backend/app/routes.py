@@ -245,6 +245,50 @@ def parse_filters(filters, get_columns_func, source="meta"):
         if isinstance(val, str):
             return [v.strip() for v in val.split("|") if v.strip()]
         return val
+
+    def _resolve_match_options(spec):
+        """Resolve (mode, exact) from a filter dict.
+
+        ``mode`` is "or" (default) or "and" controlling how multiple values
+        combine. ``exact`` is True (default) for exact matching, False for
+        substring matching. Falls back to the legacy ``strict`` boolean
+        (True == AND, exact match) when ``match_mode``/``exact`` are absent.
+        """
+        if not isinstance(spec, dict):
+            return "or", True
+        mode_raw = spec.get("match_mode")
+        if isinstance(mode_raw, str) and mode_raw.lower() in ("and", "or"):
+            mode = mode_raw.lower()
+        else:
+            mode = "and" if spec.get("strict") is True else "or"
+        exact_raw = spec.get("exact")
+        if isinstance(exact_raw, bool):
+            exact = exact_raw
+        else:
+            # Default: exact matching
+            exact = True
+        return mode, exact
+
+    def _text_op_for(values, mode, exact):
+        if not values:
+            return None
+        if exact:
+            # Exact match: AND on a single-valued text column collapses to
+            # impossible-multi-value; we still emit ``in`` so the row set
+            # matches at least one value (mathematically equivalent for
+            # 1-valued cells).
+            return ("in", values) if len(values) > 1 else ("eq", values[0])
+        # Substring matching
+        if len(values) == 1:
+            return ("text_substr_any", values)
+        return ("text_substr_all", values) if mode == "and" else ("text_substr_any", values)
+
+    def _array_op_for(values, mode, exact):
+        if not values:
+            return None
+        if exact:
+            return ("array_contains", values) if mode == "and" else ("array_overlap", values)
+        return ("array_substr_all", values) if mode == "and" else ("array_substr_any", values)
     
     filter_query = {}
     
@@ -298,15 +342,16 @@ def parse_filters(filters, get_columns_func, source="meta"):
             values = parse_value(value["value"])
             if values is None:
                 filter_query[key] = (None, None)
-            elif col_type == "text":
-                if not values:
-                    continue
-                filter_query[key] = ("in", values) if len(values) > 1 else ("eq", values[0])
+                continue
+            mode, exact = _resolve_match_options(value)
+            if col_type == "text":
+                op = _text_op_for(values, mode, exact)
+                if op is not None:
+                    filter_query[key] = op
             elif col_type == "array":
-                if value.get("strict") is True:
-                    filter_query[key] = ("array_contains", values)
-                else:
-                    filter_query[key] = ("array_overlap", values)
+                op = _array_op_for(values, mode, exact)
+                if op is not None:
+                    filter_query[key] = op
             elif col_type in ("bigint", "integer"):
                 if len(values) != 2:
                     continue
@@ -337,15 +382,15 @@ def parse_filters(filters, get_columns_func, source="meta"):
             if not isinstance(values, list):
                 values = [values]
             
+            mode, exact = _resolve_match_options(value)
             if col_type_from_filter == "array":
-                if value.get("strict") is True:
-                    filter_query[key] = ("array_contains", values)
-                else:
-                    filter_query[key] = ("array_overlap", values)
+                op = _array_op_for(values, mode, exact)
+                if op is not None:
+                    filter_query[key] = op
             elif col_type_from_filter == "text":
-                if not values:
-                    continue
-                filter_query[key] = ("in", values) if len(values) > 1 else ("eq", values[0])
+                op = _text_op_for(values, mode, exact)
+                if op is not None:
+                    filter_query[key] = op
             elif col_type_from_filter in ("bigint", "integer", "double precision"):
                 if len(values) == 2:
                     try:
@@ -362,12 +407,15 @@ def parse_filters(filters, get_columns_func, source="meta"):
         # Handle dict with other keys
         if isinstance(value, dict):
             values = parse_value(value.get("value", ""))
+            mode, exact = _resolve_match_options(value)
             if col_type == "text":
-                if not values:
-                    continue
-                filter_query[key] = ("in", values) if len(values) > 1 else ("eq", values[0])
+                op = _text_op_for(values, mode, exact)
+                if op is not None:
+                    filter_query[key] = op
             elif col_type == "array":
-                filter_query[key] = ("array_overlap", values)
+                op = _array_op_for(values, mode, exact)
+                if op is not None:
+                    filter_query[key] = op
             elif col_type == "boolean":
                 filter_query[key] = ("eq", values)
     
@@ -1564,6 +1612,11 @@ def assistant_chat():
                         step = 120
                         for i in range(0, len(text), step):
                             yield f"data: {json.dumps({'delta': text[i:i+step]})}\n\n"
+                    elif etype == "status":
+                        yield (
+                            f"event: status\n"
+                            f"data: {json.dumps({'phase': ev.get('phase'), 'iteration': ev.get('iteration'), 'max_iterations': ev.get('max_iterations')})}\n\n"
+                        )
                     elif etype == "done":
                         yield f"event: done\ndata: {json.dumps({'model': ev.get('model'), 'iterations': ev.get('iterations')})}\n\n"
                     elif etype == "error":

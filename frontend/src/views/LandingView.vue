@@ -42,7 +42,7 @@
         <section class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
           <KpiCard label="Species" :value="overview.global.n_species" />
           <KpiCard label="Samples" :value="overview.global.n_samples" />
-          <KpiCard label="Genes" :value="overview.global.n_genes" />
+          <KpiCard :label="getEntityLabelPlural()" :value="overview.global.n_genes" />
           <KpiCard
             v-if="overview.global.has_orthogroups"
             label="Orthogroups"
@@ -86,7 +86,7 @@
                   <dd class="font-semibold">{{ fmt(sp.n_samples) }}</dd>
                 </div>
                 <div>
-                  <dt class="text-gray-500 text-xs">Genes</dt>
+                  <dt class="text-gray-500 text-xs">{{ getEntityLabelPlural() }}</dt>
                   <dd class="font-semibold">{{ fmt(sp.n_genes) }}</dd>
                 </div>
               </dl>
@@ -218,6 +218,7 @@ import { RouterLink } from "vue-router";
 import { fetchOverview, fetchOverviewMtime, type OverviewPayload } from "@/shared/landingApi";
 import { useAssistantStore } from "@/stores/assistant";
 import AiSparkleIcon from "@/components/icons/AiSparkleIcon.vue";
+import { getEntityLabelPlural } from "@/shared/dataTypeLabels";
 
 const assistantStore = useAssistantStore();
 

@@ -1370,10 +1370,28 @@ class GenXBrowserService:
                     # Strip whitespace from stored values before comparing
                     target_set = {str(v).strip() for v in value}
                     result = result[result[actual_col].astype(str).str.strip().isin(target_set)]
+            elif op in ('text_substr_any', 'text_substr_all'):
+                # Substring matching on text columns. ``_any`` matches if at
+                # least one of the configured values is a substring of the
+                # cell (OR), ``_all`` requires every value to be a substring
+                # of the cell (AND). Case-insensitive for usability.
+                if not isinstance(value, list):
+                    value = [value]
+                if not value:
+                    continue
+                lowered = result[actual_col].astype(str).str.lower()
+                masks = [lowered.str.contains(re.escape(str(v).lower()), regex=True, na=False)
+                         for v in value]
+                if not masks:
+                    continue
+                combined = masks[0].copy()
+                for m in masks[1:]:
+                    combined = (combined & m) if op == 'text_substr_all' else (combined | m)
+                result = result[combined]
             elif op == 'range':
                 min_val, max_val = value
                 result = result[(result[actual_col] >= min_val) & (result[actual_col] <= max_val)]
-            elif op in ('array_overlap', 'array_contains'):
+            elif op in ('array_overlap', 'array_contains', 'array_substr_any', 'array_substr_all'):
                 # Determine the intra-cell separator for this column from config,
                 # falling back to the name-based heuristic used by get_unique_values.
                 _col_defs = self.config_manager.get_column_definitions()
@@ -1395,8 +1413,21 @@ class GenXBrowserService:
 
                     if _op == 'array_overlap':
                         return any(v in items for v in _value)
-                    else:
+                    if _op == 'array_contains':
                         return all(v in items for v in _value)
+                    # Substring variants: case-insensitive substring of any
+                    # array element matches the configured value.
+                    items_lc = [str(it).lower() for it in items]
+                    if _op == 'array_substr_any':
+                        return any(
+                            any(str(v).lower() in it for it in items_lc)
+                            for v in _value
+                        )
+                    # array_substr_all
+                    return all(
+                        any(str(v).lower() in it for it in items_lc)
+                        for v in _value
+                    )
 
                 result = result[result[actual_col].apply(check_array)]
         

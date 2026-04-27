@@ -61,6 +61,10 @@ export interface ModelValue {
   value: string | boolean | [number, number] | null;
   strict: boolean;
   empty: boolean;
+  /** New: how multiple values combine ("or" default, "and" for AND). */
+  match_mode?: "or" | "and";
+  /** New: exact match (true, default) vs substring match (false). */
+  exact?: boolean;
 }
 
 const props = defineProps<{

@@ -6,9 +6,9 @@
       role="dialog"
       aria-label="AI Assistant"
     >
-      <header class="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-gradient-to-r from-primary-50 to-accent1-50">
+      <header class="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-gradient-to-r from-blue-50 to-blue-100/40">
         <div class="flex items-center gap-2 min-w-0">
-          <AiSparkleIcon class="w-6 h-6 text-accent1-500 shrink-0" />
+          <AiSparkleIcon class="w-6 h-6 text-blue-600 shrink-0" />
           <div class="min-w-0">
             <div class="text-xs text-gray-500">GenXBrowser</div>
             <h2 class="font-semibold text-gray-800 truncate">{{ store.displayName }}</h2>
@@ -109,7 +109,7 @@
               <template v-for="(action, ai) in msg.actions" :key="ai">
                 <button
                   v-if="action.kind === 'deeplink' && action.status === 'applied' && action.url_path"
-                  class="inline-flex items-center gap-1 bg-accent1-500 hover:bg-accent1-600 text-white text-xs font-semibold px-3 py-1.5 rounded-full cursor-pointer"
+                  class="inline-flex items-center gap-1 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-3 py-1.5 rounded-full cursor-pointer"
                   @click="openDeeplink(action.url_path!)"
                 >
                   <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -120,7 +120,7 @@
 
                 <button
                   v-else-if="action.kind === 'viz_update' && action.status !== 'applied'"
-                  class="inline-flex items-center gap-1 bg-accent2-500 hover:bg-accent2-600 text-white text-xs font-semibold px-3 py-1.5 rounded-full cursor-pointer"
+                  class="inline-flex items-center gap-1 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-3 py-1.5 rounded-full cursor-pointer"
                   @click="applyVizUpdate(action)"
                 >
                   <AiSparkleIcon class="w-3.5 h-3.5" />
@@ -381,19 +381,43 @@ const TOOL_LABELS: Record<string, { running: string; finished: string }> = {
  *  isn't left looking at an opaque "…". */
 function thinkingLabel(msg: ChatMessage): string {
   const tools = msg.tools || [];
-  if (tools.length === 0) return "Thinking…";
+  // If a tool is currently running, that takes priority over status hints.
   const running = [...tools].reverse().find((t) => t.status === "running");
-  const focus = running || tools[tools.length - 1];
-  const labels = TOOL_LABELS[focus.name] || {
-    running: `Running ${focus.name}`,
-    finished: `Finished ${focus.name}`,
-  };
-  const verb = focus.status === "running" ? labels.running : labels.finished;
-  const argHint = focus.args ? formatToolArgs(focus.args) : "";
-  if (tools.length > 1) {
-    return `${verb}${argHint} · step ${tools.length}`;
+  if (running) {
+    const labels = TOOL_LABELS[running.name] || {
+      running: `Running ${running.name}`,
+      finished: `Finished ${running.name}`,
+    };
+    const argHint = running.args ? formatToolArgs(running.args) : "";
+    const stepHint = tools.length > 1 ? ` · step ${tools.length}` : "";
+    return `${labels.running}${argHint}${stepHint}`;
   }
-  return `${verb}${argHint}`;
+  // No tool active — surface the latest status phase from the backend.
+  if (msg.status) {
+    const it = msg.status.iteration;
+    const maxIt = msg.status.max_iterations;
+    const stepLabel = it && maxIt && maxIt > 1 ? ` · step ${it}/${maxIt}` : "";
+    if (msg.status.phase === "model_call") {
+      const last = tools[tools.length - 1];
+      if (last && last.status === "done") {
+        const labels = TOOL_LABELS[last.name];
+        if (labels) return `${labels.finished} · interpreting…${stepLabel}`;
+      }
+      return `Asking the model…${stepLabel}`;
+    }
+  }
+  // Fallback: show last finished tool, otherwise the generic "Thinking".
+  const last = tools[tools.length - 1];
+  if (last) {
+    const labels = TOOL_LABELS[last.name] || {
+      running: `Running ${last.name}`,
+      finished: `Finished ${last.name}`,
+    };
+    const argHint = last.args ? formatToolArgs(last.args) : "";
+    const stepHint = tools.length > 1 ? ` · step ${tools.length}` : "";
+    return `${labels.finished}${argHint}${stepHint}`;
+  }
+  return "Asking the model…";
 }
 
 function formatToolArgs(args: Record<string, unknown>): string {
@@ -533,10 +557,25 @@ function applyAddFilter(action: AssistantAction) {
     // TextFilter chip component expects. The assistant may emit `value`
     // as an array, a comma/newline-separated string, or a `values` field.
     const value = normalizeFilterValue(spec.value ?? (spec as { values?: unknown }).values);
+    const rawSpec = spec as {
+      strict?: unknown;
+      empty?: unknown;
+      match_mode?: unknown;
+      exact?: unknown;
+    };
+    const matchMode: "or" | "and" =
+      rawSpec.match_mode === "and" || rawSpec.match_mode === "or"
+        ? rawSpec.match_mode
+        : Boolean(rawSpec.strict)
+          ? "and"
+          : "or";
+    const exact = rawSpec.exact === undefined ? true : Boolean(rawSpec.exact);
     const filter: FilterValue = {
       value,
-      strict: Boolean(spec.strict ?? false),
-      empty: Boolean(spec.empty ?? false),
+      strict: matchMode === "and",
+      match_mode: matchMode,
+      exact,
+      empty: Boolean(rawSpec.empty ?? false),
     };
     filtersStore.setFilter(column, filter);
     action.status = "applied";
@@ -713,7 +752,7 @@ function computeResultRows(msg: ChatMessage): ResultTable[] {
 }
 
 watch(
-  () => store.messages.map((m) => `${(m.content || "").length}:${(m.tools || []).length}:${(m.tools || []).map((t) => t.status).join(",")}`).join("|"),
+  () => store.messages.map((m) => `${(m.content || "").length}:${(m.tools || []).length}:${(m.tools || []).map((t) => t.status).join(",")}:${m.status?.phase || ""}:${m.status?.iteration || 0}`).join("|"),
   () => {
     nextTick(() => {
       if (scrollEl.value) scrollEl.value.scrollTop = scrollEl.value.scrollHeight;

@@ -2,16 +2,17 @@
   <div class="w-full min-h-full bg-white border-r-1 border-gray-300">
     <!-- Action Buttons Row -->
     <div class="relative flex items-center justify-center px-4 py-3 border-b-1 border-gray-300">
-      <!-- Close Sidebar Button (Left side, absolute positioned) -->
+      <!-- Close Sidebar Button (Left side, absolute positioned).
+           Classic "X" close icon. -->
       <button
         aria-label="Close sidebar"
         :disabled="disableControls"
-        class="absolute left-4 cursor-pointer font-semibold border-1 border-gray-300 bg-white text-gray-700 py-1 px-1.5 rounded-full hover:bg-gray-100 disabled:opacity-50 flex justify-center items-center"
+        class="absolute left-4 cursor-pointer font-semibold bg-transparent text-gray-700 hover:text-primary-900 disabled:opacity-50 inline-flex justify-center items-center px-2 py-1"
         @click="$emit('toggle-sidebar')"
         v-tooltip:right="'Close sidebar'"
       >
         <svg
-          class="h-3.5 w-3.5"
+          class="h-5 w-5"
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
@@ -20,21 +21,22 @@
             stroke-linecap="round"
             stroke-linejoin="round"
             stroke-width="2"
-            d="M4 6h16M4 12h16M4 18h16"
+            d="M6 6l12 12M18 6L6 18"
           />
         </svg>
       </button>
 
-      <!-- Catalog Button (Centered) -->
+      <!-- Catalog Button (Centered) — same flat style as the "Home" link
+           on the catalog page, but keeping its larger label size. -->
       <button
         aria-label="Navigate to Catalog"
         :disabled="disableControls"
-        class="cursor-pointer font-semibold border-1 border-primary-900 bg-primary-100 text-primary-900 py-2 px-6 rounded-full hover:bg-primary-900 hover:text-primary-100 disabled:opacity-50 flex justify-center items-center gap-2 text-sm"
+        class="cursor-pointer font-semibold text-primary-700 hover:text-primary-900 disabled:opacity-50 inline-flex justify-center items-center gap-1 px-2 py-1 min-w-[6.5rem] text-sm"
         @click="$emit('navigate-home')"
         v-tooltip:right="'Navigate to Catalog'"
       >
         <svg
-          class="h-5 w-5"
+          class="h-4 w-4"
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
