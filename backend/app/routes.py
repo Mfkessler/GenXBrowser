@@ -1589,7 +1589,8 @@ def assistant_chat():
         ui_ctx = {
             k: client_ctx.get(k)
             for k in ("view", "route", "tables", "filters", "visualizations",
-                      "selection", "visible_genes", "selected_table_names")
+                      "selection", "visible_genes", "selected_table_names",
+                      "analysis_results")
             if client_ctx.get(k) is not None
         }
 
@@ -1656,6 +1657,11 @@ def assistant_chat():
                         yield (
                             f"event: status\n"
                             f"data: {json.dumps({'phase': ev.get('phase'), 'iteration': ev.get('iteration'), 'max_iterations': ev.get('max_iterations')})}\n\n"
+                        )
+                    elif etype == "thought":
+                        yield (
+                            f"event: thought\n"
+                            f"data: {json.dumps({'content': ev.get('content') or ''}, ensure_ascii=False)}\n\n"
                         )
                     elif etype == "done":
                         yield f"event: done\ndata: {json.dumps({'model': ev.get('model'), 'iterations': ev.get('iterations')})}\n\n"

@@ -62,6 +62,22 @@
             class="max-w-[95%] mr-auto bg-white border border-gray-200 text-gray-800 rounded-2xl rounded-bl-sm px-3 py-2 text-sm shadow-sm"
           >
             <div v-if="msg.error" class="text-red-600 text-xs">{{ msg.error }}</div>
+            <!-- Thinking trail: streamed reasoning between tool calls.
+                 Always rendered above the response so the user sees what the
+                 model is reasoning about (collapsible after the answer arrives). -->
+            <details
+              v-if="msg.thoughts && msg.thoughts.length"
+              class="mb-2 text-[11px] text-gray-500 border-l-2 border-blue-200 bg-blue-50/40 pl-2 py-1 rounded-r"
+              :open="store.streaming && idx === store.messages.length - 1"
+            >
+              <summary class="cursor-pointer select-none text-gray-600 italic">
+                <span class="font-semibold">Thinking</span>
+                <span class="text-gray-400"> ({{ msg.thoughts.length }} step{{ msg.thoughts.length === 1 ? '' : 's' }})</span>
+              </summary>
+              <div class="mt-1 space-y-1 whitespace-pre-wrap break-words">
+                <div v-for="(t, ti) in msg.thoughts" :key="ti" class="text-gray-600">{{ t }}</div>
+              </div>
+            </details>
             <div
               v-else-if="stripActionBlocks(msg.content)"
               class="assistant-markdown text-sm"
@@ -460,6 +476,9 @@ function buildClientContext(): ClientContext {
     selected_table_names: Array.from(catalogStore.selectedTableNames || []),
     filters,
     visualizations,
+    analysis_results: store.analysisContext && Object.keys(store.analysisContext).length
+      ? store.analysisContext
+      : undefined,
   };
 }
 

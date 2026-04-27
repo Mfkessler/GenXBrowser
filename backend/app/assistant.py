@@ -22,6 +22,7 @@ import time
 import urllib.error
 import urllib.request
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
@@ -621,6 +622,21 @@ def run_agentic_turn(
             "tool_calls": tool_calls,
         })
 
+        # Surface the interim "thought" prose (if any) so the UI can show
+        # what the model is reasoning about between tool calls. The raw
+        # text is hidden by default in the UI but visible on demand.
+        thought_text = (msg.get("content") or "").strip()
+        if thought_text:
+            # Strip any stray fenced action/JSON blocks — the user only sees
+            # plain reasoning, not leaked machine payloads.
+            cleaned_thought = re.sub(r"```[\s\S]*?```", "", thought_text).strip()
+            if cleaned_thought:
+                yield {"type": "thought", "content": cleaned_thought[:1000]}
+
+        # Dispatch all tool calls in this turn IN PARALLEL. Each tool is a
+        # read-only DuckDB / metadata lookup so they're safe to overlap and
+        # this is the main latency win on multi-tool turns.
+        prepared: List[Tuple[str, str, Dict[str, Any]]] = []
         for call in tool_calls:
             call_id = call.get("id") or ""
             fn = (call.get("function") or {})
@@ -630,13 +646,37 @@ def run_agentic_turn(
                 args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
             except Exception:
                 args = {}
+            prepared.append((call_id, name, args))
 
+        # Surface "running" markers up front so the UI shows every tool
+        # call concurrently rather than serially.
+        for call_id, name, args in prepared:
             yield {"type": "tool_start", "id": call_id, "name": name, "args": args}
+
+        results: Dict[str, Dict[str, Any]] = {}
+        if len(prepared) == 1:
+            call_id, name, args = prepared[0]
             try:
-                result = dispatch(name, args) or {}
+                results[call_id] = dispatch(name, args) or {}
             except Exception as e:  # noqa: BLE001
                 logger.warning("dispatch(%s) failed: %s", name, e, exc_info=True)
-                result = {"error": f"{type(e).__name__}: {e}"}
+                results[call_id] = {"error": f"{type(e).__name__}: {e}"}
+        else:
+            with ThreadPoolExecutor(max_workers=min(4, len(prepared))) as pool:
+                future_map = {
+                    pool.submit(dispatch, name, args): (call_id, name)
+                    for call_id, name, args in prepared
+                }
+                for future in future_map:
+                    call_id, name = future_map[future]
+                    try:
+                        results[call_id] = future.result() or {}
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("dispatch(%s) failed: %s", name, e, exc_info=True)
+                        results[call_id] = {"error": f"{type(e).__name__}: {e}"}
+
+        for call_id, name, _args in prepared:
+            result = results.get(call_id, {})
             yield {"type": "tool_result", "id": call_id, "name": name, "result": result}
 
             # Feed the result back to the LLM.

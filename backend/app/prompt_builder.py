@@ -81,6 +81,14 @@ Rules:
   annotations, call `common_values` ONCE with the right `namespace`
   (`var` or `obs`) instead of running per-species `list_distinct_values`
   and intersecting in your head.
+- The `USER_UI_CONTEXT.analysis_results` block (when present) holds the
+  current analysis output the user is looking at — e.g. ORA top-N terms
+  with q-values, fold enrichment and observed counts per loaded species.
+  Use it directly when the user asks "do you see a pattern?", "what
+  stands out?", "compare the species", "which terms drive the result?"
+  or any similar question about the *visible* results. Do NOT re-run the
+  ORA via tools when the digest already contains the answer; cite the
+  concrete IDs/names from it.
 """
 
 
@@ -406,8 +414,8 @@ def build_system_prompt(
     if ui_context:
         try:
             ctx = json.dumps(ui_context, ensure_ascii=False)
-            if len(ctx) > 4000:
-                ctx = ctx[:4000] + "…(truncated)"
+            if len(ctx) > 12000:
+                ctx = ctx[:12000] + "…(truncated)"
             parts.append("USER_UI_CONTEXT (JSON, where the user is right now):\n" + ctx)
         except Exception as e:
             logger.warning("ui_context serialisation failed: %s", e)

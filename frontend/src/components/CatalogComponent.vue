@@ -4,7 +4,7 @@
     <div class="mb-4 mt-1 text-center relative">
       <RouterLink
         to="/"
-        class="absolute left-0 top-1/2 -translate-y-1/2 text-xs font-semibold bg-blue-600/70 hover:bg-blue-600 text-white inline-flex items-center gap-1 px-3 py-1.5 rounded-md shadow-sm transition-colors"
+        class="absolute left-0 top-1/2 -translate-y-1/2 text-xs font-semibold bg-transparent text-blue-600 hover:text-blue-800 inline-flex items-center gap-1 px-2 py-1 transition-colors"
         v-tooltip:bottom="'Back to project overview'"
       >
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

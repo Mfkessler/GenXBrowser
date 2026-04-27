@@ -1,7 +1,7 @@
 <template>
   <div class="h-[calc(100vh-7rem)] flex flex-col overflow-hidden">
     <div
-      class="flex gap-4 flex-grow p-2 overflow-x-hidden overflow-y-auto"
+      class="flex gap-4 flex-grow p-2 overflow-x-auto overflow-y-auto"
     >
       <div
         v-for="tableName in tableNames"

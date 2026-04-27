@@ -26,11 +26,11 @@
         </svg>
       </button>
 
-      <!-- Catalog Button (Centered) — blue styling matching the AI Assistant button. -->
+      <!-- Catalog Button (Centered) — text-only pseudo-button (icon + label, no border). -->
       <button
         aria-label="Navigate to Catalog"
         :disabled="disableControls"
-        class="cursor-pointer font-semibold bg-blue-600/70 hover:bg-blue-600 text-white disabled:opacity-50 inline-flex justify-center items-center gap-1 px-3 py-1.5 rounded-md shadow-sm transition-colors text-sm"
+        class="cursor-pointer font-semibold bg-transparent text-blue-600 hover:text-blue-800 disabled:opacity-50 inline-flex justify-center items-center gap-1 px-2 py-1 text-sm"
         @click="$emit('navigate-home')"
         v-tooltip:right="'Navigate to Catalog'"
       >

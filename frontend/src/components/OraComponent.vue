@@ -97,7 +97,16 @@
     </div>
 
     <!-- Main dot plot container -->
-    <div v-if="rowCount <= 5000 && rowCount > 0">
+    <!-- Fixed-size shell while loading: prevents the surrounding divs from
+         resizing and ensures the loading bar is always visible during fetch. -->
+    <div
+      v-if="loading"
+      class="border border-gray-300 rounded-md bg-white relative h-[60vh] min-h-[400px]"
+    >
+      <LoadingOverlay />
+    </div>
+
+    <div v-else-if="rowCount <= 5000 && rowCount > 0">
       <!-- ORA Info Banner (collapsible, default collapsed) -->
       <div v-if="oraMetadata" class="mb-3 p-3 bg-blue-50 border border-blue-200 rounded-md text-sm">
         <div
@@ -165,11 +174,9 @@
       <div
         ref="visualizationRoot"
         class="border border-gray-300 rounded-md bg-white flex flex-row overflow-hidden"
-        :class="{ 'min-h-[400px]': loading }"
       >
         <div class="flex-grow relative w-full overflow-hidden">
-          <LoadingOverlay v-if="loading" />
-          <div v-show="!loading" ref="dotplotContainer" class="w-full h-full"></div>
+          <div ref="dotplotContainer" class="w-full h-full"></div>
         </div>
       </div>
     </div>
@@ -182,11 +189,6 @@
           Please refine your filters to reduce the {{ getEntityLabelPluralLower() }} set to ≤5000 {{ getEntityLabelPluralLower() }}.
         </p>
       </div>
-    </div>
-
-    <!-- Show loading spinner when loading, otherwise show NoData -->
-    <div v-else-if="loading" class="h-[60vh] relative border border-gray-300 rounded-md bg-white">
-      <LoadingOverlay size="md" />
     </div>
 
     <div v-else>
@@ -239,6 +241,7 @@ import OraTooltipModal from "./OraTooltipModal.vue";
 import { beautifyLabel, compareValues, exact_nc } from "@/shared/utils";
 import { useVisualizationStore } from "@/stores/visualization";
 import { useColumnsStore } from "@/stores/columns";
+import { useAssistantStore } from "@/stores/assistant";
 import { getEntityCountLabel, getEntitySetLabel, getEntityLabelPluralLower, getEntityLabelPlural } from "@/shared/dataTypeLabels";
 import { createVisibleColorMapping, type ColorMapping, type SharedColorRegistry } from "@/shared/colorMapping";
 
@@ -247,6 +250,7 @@ import { createVisibleColorMapping, type ColorMapping, type SharedColorRegistry 
 const filtersStore = useFiltersStore();
 const visualizationStore = useVisualizationStore();
 const columnsStore = useColumnsStore();
+const assistantStore = useAssistantStore();
 const { filters } = storeToRefs(filtersStore);
 
 // Per-dataset merged filters (includes per-dataset ID filter)
@@ -501,11 +505,51 @@ async function fetchAndPrepareData() {
 
       await nextTick();
       drawDotPlot();
+      publishAnalysisContext();
   } catch (e) {
     console.error("Error fetching ORA data:", e);
     error.value = "Failed to load ORA data.";
   } finally {
     loading.value = false;
+  }
+}
+
+/**
+ * Publish a compact digest of the current ORA result to the assistant store
+ * so the AI can answer questions like "do you see a pattern?" about the
+ * results the user is currently looking at. Stays small (top-N rows + meta)
+ * to keep the prompt size bounded.
+ */
+function publishAnalysisContext() {
+  try {
+    const top = pValueEntries.value.slice(0, 25).map((e) => ({
+      attribute: e.attr,
+      name: e.go_name || undefined,
+      namespace: e.go_namespace || undefined,
+      depth: e.go_depth,
+      subset_count: e.subset_count,
+      background_count: e.background_count,
+      expected_count: Number(e.expected_count?.toFixed?.(2) ?? e.expected_count),
+      fold_enrichment: Number(e.fold_enrichment?.toFixed?.(2) ?? e.fold_enrichment),
+      gene_ratio: Number(e.gene_ratio?.toFixed?.(4) ?? e.gene_ratio),
+      p_value: e.p_value,
+      q_value: e.q_value,
+      combined_score: Number(e.combined_score?.toFixed?.(2) ?? e.combined_score),
+    }));
+    assistantStore.setAnalysisContext(`ora:${props.tableName}`, {
+      kind: "ora",
+      table: props.tableName,
+      column: visualizationStore.oraColumnName,
+      is_go_term: isGoTermEnrichment.value,
+      significance: visualizationStore.significance,
+      top_n_displayed: visualizationStore.oraTopN,
+      min_count: visualizationStore.oraMinCount,
+      metadata: oraMetadata.value || null,
+      n_results: pValueEntries.value.length,
+      top_terms: top,
+    });
+  } catch (e) {
+    console.warn("Failed to publish ORA analysis context:", e);
   }
 }
 
@@ -1609,5 +1653,8 @@ onUnmounted(() => {
     clearTimeout(resizeTimeout);
     resizeTimeout = null;
   }
+  // Drop our digest from the assistant context so stale results don't
+  // leak into other views.
+  assistantStore.setAnalysisContext(`ora:${props.tableName}`, null);
 });
 </script>

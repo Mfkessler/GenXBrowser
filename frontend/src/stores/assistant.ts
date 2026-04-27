@@ -54,6 +54,9 @@ export interface ChatMessage {
   undo?: UndoSnapshot | null;
   /** True after the user clicks Undo — snapshot is cleared. */
   undone?: boolean;
+  /** Streamed intermediate "thoughts" the model emits between tool calls,
+   *  surfaced live so the user sees the reasoning trail. */
+  thoughts?: string[];
 }
 
 export interface ClientContext {
@@ -65,6 +68,10 @@ export interface ClientContext {
   visualizations?: Record<string, unknown>;
   selection?: unknown;
   visible_genes?: string[];
+  /** Lightweight digest of the visible analysis results (ORA, etc.) so
+   *  the assistant can answer questions like "do you see a pattern?"
+   *  about what the user is currently looking at. */
+  analysis_results?: Record<string, unknown>;
 }
 
 export const useAssistantStore = defineStore("assistant", () => {
@@ -73,6 +80,9 @@ export const useAssistantStore = defineStore("assistant", () => {
   const streaming = ref(false);
   const messages = ref<ChatMessage[]>([]);
   const abortController = ref<AbortController | null>(null);
+  // Per-view analysis result digests (e.g. ORA results per table). Components
+  // call setAnalysisContext() after their data refreshes.
+  const analysisContext = ref<Record<string, unknown>>({});
 
   const enabled = computed(() => features.value?.assistant_enabled === true);
   const displayName = computed(() => features.value?.assistant?.display_name || "AI Assistant");
@@ -176,6 +186,12 @@ export const useAssistantStore = defineStore("assistant", () => {
                 iteration: typeof obj.iteration === "number" ? obj.iteration : undefined,
                 max_iterations: typeof obj.max_iterations === "number" ? obj.max_iterations : undefined,
               };
+            } else if (evType === "thought") {
+              const t = String(obj.content || "").trim();
+              if (t) {
+                assistantMsg.thoughts = assistantMsg.thoughts || [];
+                assistantMsg.thoughts.push(t);
+              }
             } else if (typeof obj.delta === "string") {
               assistantMsg.content += obj.delta;
             } else if (obj.error) {
@@ -254,16 +270,37 @@ export const useAssistantStore = defineStore("assistant", () => {
     }
   }
 
+  function setAnalysisContext(key: string, payload: unknown | null) {
+    if (payload === null || payload === undefined) {
+      delete analysisContext.value[key];
+    } else {
+      analysisContext.value[key] = payload;
+    }
+  }
+
+  function clearAnalysisContext(prefix?: string) {
+    if (!prefix) {
+      analysisContext.value = {};
+      return;
+    }
+    for (const k of Object.keys(analysisContext.value)) {
+      if (k.startsWith(prefix)) delete analysisContext.value[k];
+    }
+  }
+
   return {
     features,
     open,
     streaming,
     messages,
+    analysisContext,
     enabled,
     displayName,
     loadFeatures,
     sendMessage,
     cancel,
     reset,
+    setAnalysisContext,
+    clearAnalysisContext,
   };
 });
