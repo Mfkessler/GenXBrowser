@@ -16,7 +16,7 @@
         <div class="flex gap-2 flex-wrap">
           <button
             v-if="assistantStore.enabled"
-            class="bg-gradient-to-r from-accent1-500 to-accent2-500 hover:from-accent1-700 hover:to-accent2-700 text-white font-semibold px-4 py-2 rounded-lg text-sm cursor-pointer inline-flex items-center gap-2 shadow-sm"
+            class="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-4 py-2 rounded-lg text-sm cursor-pointer inline-flex items-center gap-2 shadow-sm transition-colors"
             @click="assistantStore.open = true"
           >
             <AiSparkleIcon class="w-4 h-4" />

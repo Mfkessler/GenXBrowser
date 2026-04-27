@@ -59,7 +59,7 @@
       <AssistantPanel />
       <button
         v-show="!assistantStore.open"
-        class="fixed bottom-6 right-6 z-40 cursor-pointer rounded-full bg-gradient-to-br from-accent1-500 to-accent2-500 hover:from-accent1-600 hover:to-accent2-600 text-white shadow-xl p-4 flex items-center justify-center"
+        class="fixed bottom-6 right-6 z-40 cursor-pointer rounded-full bg-blue-600/70 hover:bg-blue-600 text-white shadow-xl p-4 flex items-center justify-center transition-colors"
         :aria-label="`Open ${assistantStore.displayName}`"
         v-tooltip:left="`Ask ${assistantStore.displayName}`"
         @click="assistantStore.open = true"

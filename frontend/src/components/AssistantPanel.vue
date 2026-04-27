@@ -71,12 +71,12 @@
                  instead of just an opaque ellipsis so the user sees progress. -->
             <div
               v-else-if="store.streaming && idx === store.messages.length - 1"
-              class="text-xs text-gray-500 italic flex items-start gap-2"
+              class="text-xs text-gray-500 italic flex items-center gap-2 min-h-[1.5rem]"
             >
               <span class="inline-flex items-center gap-1.5 shrink-0">
-                <span class="inline-block w-1.5 h-1.5 rounded-full bg-accent1-500 animate-pulse"></span>
-                <span class="inline-block w-1.5 h-1.5 rounded-full bg-accent1-500 animate-pulse" style="animation-delay: 150ms"></span>
-                <span class="inline-block w-1.5 h-1.5 rounded-full bg-accent1-500 animate-pulse" style="animation-delay: 300ms"></span>
+                <span class="inline-block w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse"></span>
+                <span class="inline-block w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" style="animation-delay: 150ms"></span>
+                <span class="inline-block w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" style="animation-delay: 300ms"></span>
               </span>
               <span class="min-w-0 break-words">{{ thinkingLabel(msg) }}</span>
             </div>
@@ -316,7 +316,7 @@ const suggestedPrompts = [
 ];
 
 function stripActionBlocks(content: string): string {
-  return content
+  let out = content
     // Known action blocks (the frontend applies them via chips).
     .replace(
       /```(?:action|deeplink|viz_update|add_filter|remove_filter|clear_filters|select_tables|set_expression_display|compute)\s*\n[\s\S]*?\n```/gi,
@@ -327,8 +327,19 @@ function stripActionBlocks(content: string): string {
     // Any remaining bare ```...``` fence whose body is JSON-shaped —
     // these are leaked tool calls or action payloads the backend didn't
     // recognise; we never want raw JSON shown to the user.
-    .replace(/```\s*\n\s*[{[][\s\S]*?\n```/g, "")
-    .trim();
+    .replace(/```\s*\n\s*[{[][\s\S]*?\n```/g, "");
+  // Trailing unclosed fence (truncated streams) — drop everything from
+  // the dangling ``` to the end so partial JSON never reaches the user.
+  const fenceCount = (out.match(/```/g) || []).length;
+  if (fenceCount % 2 === 1) {
+    const last = out.lastIndexOf("```");
+    if (last >= 0) out = out.slice(0, last);
+  }
+  // Inline raw JSON object/array that wasn't fenced — happens when the
+  // model dumps a tool result mid-prose. Drop runs starting with `{"`
+  // or `[{` that are obviously machine-shaped.
+  out = out.replace(/(^|\n)\s*[{[][\s\S]{40,}$/m, (_m, p1) => p1 || "");
+  return out.trim();
 }
 
 function renderMarkdown(src: string): string {
@@ -349,6 +360,22 @@ function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
+/** Map an internal tool name to a short user-facing description of what
+ *  the assistant is doing right now. Intentionally sparse — we just want
+ *  the user to know it's not stuck on a black box.
+ *  Running form is shown while a tool is in flight; finished form once
+ *  the result has come back. */
+const TOOL_LABELS: Record<string, { running: string; finished: string }> = {
+  list_schema:          { running: "Inspecting datasets",      finished: "Inspected datasets" },
+  resolve_value:        { running: "Locating term",            finished: "Located term" },
+  list_distinct_values: { running: "Listing values",           finished: "Listed values" },
+  count_rows:           { running: "Checking dataset sizes",   finished: "Checked dataset sizes" },
+  top_groups:           { running: "Ranking values",           finished: "Ranked values" },
+  common_values:        { running: "Comparing across datasets", finished: "Compared datasets" },
+  summary_stats:        { running: "Computing statistics",     finished: "Computed statistics" },
+  build_deeplink:       { running: "Preparing analysis link",  finished: "Prepared analysis link" },
+};
+
 /** Human-readable description of what the assistant is doing right now.
  *  Surfaces the most recent (or currently running) tool so the user
  *  isn't left looking at an opaque "…". */
@@ -357,12 +384,16 @@ function thinkingLabel(msg: ChatMessage): string {
   if (tools.length === 0) return "Thinking…";
   const running = [...tools].reverse().find((t) => t.status === "running");
   const focus = running || tools[tools.length - 1];
-  const verb = focus.status === "running" ? "Running" : "Finished";
+  const labels = TOOL_LABELS[focus.name] || {
+    running: `Running ${focus.name}`,
+    finished: `Finished ${focus.name}`,
+  };
+  const verb = focus.status === "running" ? labels.running : labels.finished;
   const argHint = focus.args ? formatToolArgs(focus.args) : "";
   if (tools.length > 1) {
-    return `${verb} ${focus.name}${argHint}  (step ${tools.length})`;
+    return `${verb}${argHint} · step ${tools.length}`;
   }
-  return `${verb} ${focus.name}${argHint}`;
+  return `${verb}${argHint}`;
 }
 
 function formatToolArgs(args: Record<string, unknown>): string {

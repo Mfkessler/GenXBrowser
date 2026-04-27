@@ -463,16 +463,24 @@ def tool_common_values(
     tables: Optional[List[str]] = None,
     min_tables: Optional[int] = None,
     limit: int = 500,
+    namespace: str = "auto",
     var_filters_per_table: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Return the set of values shared across the given tables for a column.
 
     Use this for cross-species intersection questions like "which orthogroups
-    are present in ALL species". Pass ``min_tables=len(tables)`` for a strict
-    intersection; lower values find values present in at least N tables.
+    are present in ALL species" or "which tissues appear in every dataset".
+    Pass ``min_tables=len(tables)`` for a strict intersection; lower values
+    find values present in at least N tables.
+
+    ``namespace`` selects which axis of the AnnData to scan:
+      - ``"var"`` — gene-level annotations (orthogroups, TF families, ...)
+      - ``"obs"`` — sample-level annotations (tissue, condition, ...)
+      - ``"auto"`` — try ``var`` first, then ``obs`` (per-table).
 
     ``var_filters_per_table`` optionally narrows each table first (same shape
-    as :func:`tool_count_rows`'s ``var_filters``).
+    as :func:`tool_count_rows`'s ``var_filters``). Only applied when the
+    column lives in ``.var``.
     """
     codes = _resolve_species_codes(service, tables)
     if not codes:
@@ -480,20 +488,37 @@ def tool_common_values(
     if min_tables is None:
         min_tables = len(codes)
     min_tables = max(1, min(int(min_tables), len(codes)))
+    ns_pref = (namespace or "auto").lower()
 
     vf_map = var_filters_per_table or {}
     per_table: Dict[str, set] = {}
+    per_table_namespace: Dict[str, str] = {}
     for code in codes:
         try:
             adata = service.registry.load(code)
         except Exception:
             continue
-        if adata is None or column not in adata.var.columns:
+        if adata is None:
             continue
-        series = adata.var[column]
-        # Optional per-table filter pre-narrow.
+        # Resolve which namespace contains the column for this table.
+        if ns_pref == "var" and column in adata.var.columns:
+            ns = "var"
+        elif ns_pref == "obs" and column in adata.obs.columns:
+            ns = "obs"
+        elif ns_pref == "auto":
+            if column in adata.var.columns:
+                ns = "var"
+            elif column in adata.obs.columns:
+                ns = "obs"
+            else:
+                continue
+        else:
+            continue
+        series = adata.var[column] if ns == "var" else adata.obs[column]
+        per_table_namespace[code] = ns
+        # Optional per-table filter pre-narrow (only for var-namespaced columns).
         vf = vf_map.get(code) or {}
-        if vf:
+        if vf and ns == "var":
             import pandas as pd
             mask = pd.Series([True] * len(adata.var), index=adata.var.index)
             for col, spec in vf.items():
@@ -534,6 +559,8 @@ def tool_common_values(
     return {
         "column": column,
         "tables": list(per_table.keys()),
+        "namespaces": per_table_namespace,
+        "per_table_distinct": {k: sorted(v)[:50] for k, v in per_table.items()},
         "min_tables": min_tables,
         "n_common": int(sum(1 for _, c in counter.items() if c >= min_tables)),
         "values": common,
@@ -626,6 +653,51 @@ def tool_build_deeplink(
         filters = normalize_filter_payload(filters)
     except Exception as e:
         logger.warning("filter normalization failed: %s", e)
+
+    # GUARD: Never let the assistant open an empty plot (heatmap / compare /
+    # ora / phylo). For data-bearing views, drop any selected table that has
+    # zero rows matching the requested filters. If every table is empty,
+    # refuse to build the deeplink so the LLM has to apologise + suggest
+    # something else instead of producing dead links.
+    dropped_tables: List[Dict[str, Any]] = []
+    if v in {"heatmap", "compare", "phylo", "ora"} and codes:
+        nested_var = (filters.get("filters") or {}) if isinstance(filters, dict) else {}
+        # Convert to count_rows shape: {col: [v1, v2, ...]} from the nested
+        # {col: {value: "v1|v2", strict, empty}} the deeplink uses.
+        var_filters_for_check: Dict[str, Any] = {}
+        for col, spec in nested_var.items():
+            if not isinstance(spec, dict):
+                continue
+            raw = spec.get("value")
+            if isinstance(raw, list):
+                vals = [str(x) for x in raw if str(x).strip()]
+            elif isinstance(raw, str) and raw:
+                vals = [x for x in raw.split("|") if x]
+            else:
+                vals = []
+            if vals:
+                var_filters_for_check[col] = vals
+        kept: List[str] = []
+        for code in codes:
+            if not var_filters_for_check:
+                kept.append(code)
+                continue
+            try:
+                cr = tool_count_rows(service, table=code, var_filters=var_filters_for_check)
+            except Exception:
+                cr = {}
+            n_match = int(cr.get("n_var_match", 0)) if isinstance(cr, dict) else 0
+            if n_match > 0:
+                kept.append(code)
+            else:
+                dropped_tables.append({"table": code, "reason": "no rows match filters"})
+        if not kept:
+            return {
+                "error": "all selected tables have zero rows matching the filters; refuse to open empty plot",
+                "dropped_tables": dropped_tables,
+                "view": v,
+            }
+        codes = kept
     try:
         size = len(json.dumps({"f": filters, "v": visualizations}))
     except Exception:
@@ -646,7 +718,10 @@ def tool_build_deeplink(
         url_path = f"/catalog?id={hash_id}"
     else:
         url_path = f"/{prefix}/{','.join(codes)}?id={hash_id}"
-    return {"id": hash_id, "url_path": url_path, "view": v, "tables": codes}
+    out = {"id": hash_id, "url_path": url_path, "view": v, "tables": codes}
+    if dropped_tables:
+        out["dropped_tables"] = dropped_tables
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -757,16 +832,26 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
         "function": {
             "name": "common_values",
             "description": (
-                "Return values shared by multiple tables for a .var column. "
-                "Use for cross-species questions like 'which orthogroups are "
-                "present in ALL species'. Capped at 500 values; use the "
-                "`n_common` field for the total count."
+                "Return values shared by multiple tables for a column. "
+                "Use for cross-species questions like 'which orthogroups "
+                "are present in ALL species' OR sample-level ones like "
+                "'which tissues appear in every dataset'. The column may "
+                "live in `.var` (gene annotations) or `.obs` (sample "
+                "annotations); set `namespace` accordingly or leave on "
+                "'auto'. Result includes `per_table_distinct` showing the "
+                "first 50 values per table — use it to compare coverage. "
+                "Capped at 500 returned shared values; use `n_common` for "
+                "the total count."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "column": {"type": "string"},
                     "tables": {"type": "array", "items": {"type": "string"}},
+                    "namespace": {
+                        "type": "string", "enum": ["auto", "var", "obs"],
+                        "default": "auto",
+                    },
                     "min_tables": {
                         "type": "integer",
                         "description": "min number of tables a value must appear in; default = all given tables (strict intersection).",

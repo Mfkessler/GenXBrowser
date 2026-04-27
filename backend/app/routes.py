@@ -1686,6 +1686,46 @@ def assistant_deeplink():
     if view != "catalog" and not resolved:
         return jsonify({"error": "'tables' must contain at least one known dataset for this view"}), 400
 
+    # GUARD: don't open empty plots. For data-bearing views, drop tables
+    # that have zero .var rows matching the requested filters. If every
+    # table is empty, return an error so the assistant can react.
+    dropped: List[Dict[str, Any]] = []
+    if view in {"heatmap", "compare", "phylo", "ora"} and resolved:
+        nested = filters.get("filters") if isinstance(filters, dict) else None
+        var_filters_for_check: Dict[str, Any] = {}
+        if isinstance(nested, dict):
+            for col, spec in nested.items():
+                if not isinstance(spec, dict):
+                    continue
+                raw = spec.get("value")
+                if isinstance(raw, list):
+                    vals = [str(x) for x in raw if str(x).strip()]
+                elif isinstance(raw, str) and raw:
+                    vals = [x for x in raw.split("|") if x]
+                else:
+                    vals = []
+                if vals:
+                    var_filters_for_check[col] = vals
+        if var_filters_for_check:
+            try:
+                from . import assistant_tools as _at
+                kept: List[str] = []
+                for tn in resolved:
+                    cr = _at.tool_count_rows(service, table=tn, var_filters=var_filters_for_check)
+                    n_match = int(cr.get("n_var_match", 0)) if isinstance(cr, dict) else 0
+                    if n_match > 0:
+                        kept.append(tn)
+                    else:
+                        dropped.append({"table": tn, "reason": "no rows match filters"})
+                if not kept:
+                    return jsonify({
+                        "error": "all selected tables have zero rows matching the filters",
+                        "dropped_tables": dropped,
+                    }), 422
+                resolved = kept
+            except Exception as e:
+                logger.warning(f"deeplink empty-table check failed: {e}", exc_info=True)
+
     stored_payload = {
         "filters": filters or {"__placeholder": True},
         "visualizations": visualizations or {"__placeholder": True},
@@ -1709,6 +1749,7 @@ def assistant_deeplink():
         "url_path": url_path,
         "view": view,
         "tables": resolved,
+        "dropped_tables": dropped,
     }), 200
 
 

@@ -364,8 +364,34 @@ def retag_action_fences(content: str) -> str:
     user sees raw JSON in chat. We rewrite the fence's opening line to use
     the matching action language tag (e.g. ``add_filter``) so the existing
     extractor picks them up.
+
+    Also strips any TRAILING unclosed fence whose body looks like JSON —
+    those happen when ``max_tokens`` truncates the response mid-block and
+    would otherwise show up as raw JSON in the chat bubble.
     """
-    if not content or "```" not in content:
+    if not content:
+        return content
+
+    # Drop a trailing unclosed fence (no closing ```) whose body looks
+    # like JSON. Any unclosed fence at the end of the message is at best
+    # an incomplete action payload — safer to discard than to render.
+    if "```" in content:
+        last_open = content.rfind("```")
+        # If the fence we found has no matching closer, last_open is unclosed.
+        # We test by counting fence markers: an even number means all closed.
+        fence_count = content.count("```")
+        if fence_count % 2 == 1:
+            head = content[:last_open].rstrip()
+            tail = content[last_open + 3:]
+            tail_body = tail.split("\n", 1)[1] if "\n" in tail else tail
+            looks_json = tail_body.lstrip().startswith(("{", "["))
+            # Always drop unclosed fences whose body looks like JSON or whose
+            # tag is one of our action / json / tool tags.
+            tag = (tail.split("\n", 1)[0] or "").strip().lower()
+            if looks_json or tag in _ACTION_BLOCK_TAGS or tag in ("", "json", "tool"):
+                content = head
+
+    if "```" not in content:
         return content
 
     out: List[str] = []
