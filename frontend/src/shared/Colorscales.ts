@@ -79,6 +79,27 @@ const DISTINCT_COLORS = [
   "#00bfff",  // Deep Sky Blue
   "#8b008b",  // Dark Magenta
   "#b8860b",  // Dark Goldenrod
+  // Additional distinct hues to delay rainbow fallback
+  "#4682b4",  // Steel Blue
+  "#daa520",  // Goldenrod
+  "#5f9ea0",  // Cadet Blue
+  "#9acd32",  // Yellow Green
+  "#cd5c5c",  // Indian Red
+  "#20b2aa",  // Light Sea Green
+  "#ff69b4",  // Hot Pink
+  "#bdb76b",  // Dark Khaki
+  "#483d8b",  // Dark Slate Blue
+  "#008080",  // Classic Teal
+  "#b22222",  // Firebrick
+  "#7cfc00",  // Lawn Green
+  "#ba55d3",  // Medium Orchid
+  "#ff8c00",  // Dark Orange
+  "#4169e1",  // Royal Blue
+  "#3cb371",  // Medium Sea Green
+  "#c71585",  // Medium Violet Red
+  "#48d1cc",  // Medium Turquoise
+  "#cd853f",  // Peru
+  "#556b2f",  // Dark Olive Green
 ];
 
 /**

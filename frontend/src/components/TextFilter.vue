@@ -183,12 +183,12 @@
         Clear all
       </button>
     </div>
-    <!-- Match-mode toggle (OR/AND) + Exact / Empty checkboxes + Bulk button -->
+    <!-- Match-mode toggle (OR/AND) + Exact checkbox + Bulk button -->
     <div class="flex items-center justify-between mt-1">
       <div class="flex items-center space-x-3">
-        <!-- OR/AND toggle: only visible when 2+ values are selected -->
+        <!-- OR/AND toggle: only for array-type metadata with 2+ selected values -->
         <button
-          v-if="pillItems.length >= 2"
+          v-if="isArrayType && pillItems.length >= 2"
           type="button"
           @click="toggleMatchMode"
           :aria-label="matchMode === 'or' ? 'Switch to AND (all values must match)' : 'Switch to OR (any value must match)'"
@@ -211,19 +211,6 @@
             class="cursor-pointer form-checkbox h-4 w-4 accent-primary-700 mr-2"
           />
           <span class="text-sm text-gray-700">Exact</span>
-        </label>
-        <label class="flex items-center">
-          <input
-            type="checkbox"
-            v-model="empty"
-            :disabled="!!uploadedFile"
-            class="cursor-pointer form-checkbox h-4 w-4 accent-primary-700 mr-2"
-          />
-          <span
-            class="text-sm text-gray-700"
-            :class="{ 'opacity-50': uploadedFile }"
-            >Empty</span
-          >
         </label>
       </div>
       <!-- Batch Input Button -->
@@ -282,14 +269,18 @@ const props = defineProps<{
   modelValue?: ModelValue | null;
   label: string;
   id?: string;
+  /** Column type from backend (e.g. "text", "array"). Drives whether the
+   *  AND/OR toggle is shown — single-valued text columns always behave as OR
+   *  (a row matches if at least one value matches). */
+  type?: string;
 }>();
 
 const columnsStore = useColumnsStore();
 
+const isArrayType = computed(() => (props.type || '').toLowerCase() === 'array');
+
 const isDragging = ref(false);
-const empty = ref(false);
 // Match mode for multiple selected values: "or" (default) or "and".
-// Replaces the legacy boolean `strict` flag (strict == match_mode === 'and').
 const matchMode = ref<'or' | 'and'>('or');
 // Whether to require exact value matches. Default true. When false,
 // substring matching is used in the backend.
@@ -458,7 +449,6 @@ function addPills() {
   if (!localInput.value) return;
   const term = localInput.value.trim();
   if (!term) return;
-  empty.value = false;
   pillItems.value = [...new Set([...pillItems.value, term])].sort();
   localInput.value = "";
   errorMessage.value = "";
@@ -518,8 +508,6 @@ function handleTouchCancel() {
 function onBatchFiltersApplied(values: string[]) {
   // Replace pills entirely with the new selection
   pillItems.value = values.sort();
-  // Set empty flag if no values selected
-  empty.value = values.length === 0;
 }
 
 /**
@@ -587,7 +575,6 @@ function reset() {
   pillItems.value = [];
   matchMode.value = 'or';
   exact.value = true;
-  empty.value = false;
 }
 
 //Handle file dragging
@@ -652,23 +639,19 @@ function toggleMatchMode() {
 watch(localInput, fetchSuggestions);
 
 watch(
-  [pillItems, matchMode, exact, empty],
+  [pillItems, matchMode, exact],
   () => {
     // Auto-reset match mode when fewer than 2 pills (toggle is hidden)
     if (pillItems.value.length < 2 && matchMode.value === 'and') {
       matchMode.value = 'or';
     }
-    // If the filter is truly empty, emit null so parent can delete the key
-    if (!empty.value && pillItems.value.length === 0) {
+    if (pillItems.value.length === 0) {
       emit("update:modelValue", null);
     } else {
       emit("update:modelValue", {
-        value: empty.value ? null : pillItems.value.join("|"),
-        // Legacy alias for backward compatibility (true == AND)
-        strict: matchMode.value === 'and',
+        value: pillItems.value.join("|"),
         match_mode: matchMode.value,
         exact: exact.value,
-        empty: empty.value,
       });
     }
   },
@@ -683,33 +666,18 @@ watch(
         pillItems.value = newVal.value
           ? newVal.value.toString().split("|").filter(Boolean)
           : [];
-        // Prefer match_mode if present, else fall back to legacy `strict`
-        const mv = newVal as unknown as { match_mode?: 'or' | 'and'; strict?: boolean; exact?: boolean };
-        matchMode.value = mv.match_mode ?? (mv.strict ? 'and' : 'or');
+        const mv = newVal as unknown as { match_mode?: 'or' | 'and'; exact?: boolean };
+        matchMode.value = mv.match_mode ?? 'or';
         exact.value = mv.exact ?? true;
-        empty.value = newVal.value === null;
       } else {
         // Clear pills if no modelValue
         pillItems.value = [];
         matchMode.value = 'or';
         exact.value = true;
-        empty.value = false;
       }
     }
   },
   { immediate: true, deep: true },
-);
-
-// Watcher: reset filter when parent signals empty state
-watch(
-  () => empty.value,
-  (val) => {
-    if (val) {
-      pillItems.value = [];
-      localInput.value = "";
-      matchMode.value = 'or';
-    }
-  },
 );
 
 const emit = defineEmits(["update:modelValue"]);
@@ -720,10 +688,9 @@ onMounted(() => {
     pillItems.value = props.modelValue.value
       ? props.modelValue.value.toString().split("|").filter(Boolean)
       : [];
-    const mv = props.modelValue as unknown as { match_mode?: 'or' | 'and'; strict?: boolean; exact?: boolean };
-    matchMode.value = mv.match_mode ?? (mv.strict ? 'and' : 'or');
+    const mv = props.modelValue as unknown as { match_mode?: 'or' | 'and'; exact?: boolean };
+    matchMode.value = mv.match_mode ?? 'or';
     exact.value = mv.exact ?? true;
-    empty.value = props.modelValue.value === null;
   }
 });
 </script>

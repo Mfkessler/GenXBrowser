@@ -205,7 +205,7 @@ def parse_filters(filters, get_columns_func, source="meta"):
     """
     Parse filter input from frontend format to internal format.
     
-    Frontend sends: {"column": value} or {"column": {"value": v, "strict": bool}}
+    Frontend sends: {"column": value} or {"column": {"value": v, "match_mode": "or"|"and", "exact": bool}}
     Internal format: {"column": (operator, value)}
     
     Args:
@@ -251,8 +251,7 @@ def parse_filters(filters, get_columns_func, source="meta"):
 
         ``mode`` is "or" (default) or "and" controlling how multiple values
         combine. ``exact`` is True (default) for exact matching, False for
-        substring matching. Falls back to the legacy ``strict`` boolean
-        (True == AND, exact match) when ``match_mode``/``exact`` are absent.
+        substring matching.
         """
         if not isinstance(spec, dict):
             return "or", True
@@ -260,14 +259,54 @@ def parse_filters(filters, get_columns_func, source="meta"):
         if isinstance(mode_raw, str) and mode_raw.lower() in ("and", "or"):
             mode = mode_raw.lower()
         else:
-            mode = "and" if spec.get("strict") is True else "or"
+            mode = "or"
         exact_raw = spec.get("exact")
         if isinstance(exact_raw, bool):
             exact = exact_raw
         else:
-            # Default: exact matching
             exact = True
         return mode, exact
+
+    _GO_TERM_KEYS = {"go_terms", "go_term", "goterm", "goterms"}
+
+    def _maybe_expand_go_terms(col_key, values, exact):
+        """For array columns named like ``go_terms``: when ``exact`` is False
+        and the user typed a term name (not a ``GO:NNNNNNN`` ID), expand it
+        to all matching GO IDs via the GO service. Returns (values, exact).
+        After expansion, exact matching is forced to True so the IDs match
+        the cell contents directly.
+        """
+        if exact:
+            return values, exact
+        if not isinstance(col_key, str) or col_key.lower() not in _GO_TERM_KEYS:
+            return values, exact
+        go_service = getattr(current_app, 'go_service', None)
+        if not go_service or not go_service.is_available():
+            return values, exact
+        expanded = []
+        any_expanded = False
+        for v in values:
+            sv = str(v).strip()
+            if not sv:
+                continue
+            if sv.upper().startswith('GO:'):
+                expanded.append(sv)
+                continue
+            try:
+                hits = go_service.search_terms(sv, limit=200)
+            except Exception:
+                expanded.append(sv)
+                continue
+            ids = [h.get('id') for h in hits if isinstance(h, dict) and h.get('id')]
+            if ids:
+                expanded.extend(ids)
+                any_expanded = True
+            else:
+                expanded.append(sv)
+        if not expanded:
+            return values, exact
+        # Force exact matching when we substituted IDs (they match cell tokens directly)
+        return (expanded, True) if any_expanded else (expanded, exact)
 
     def _text_op_for(values, mode, exact):
         if not values:
@@ -297,9 +336,8 @@ def parse_filters(filters, get_columns_func, source="meta"):
         if not col_type:
             continue
         
-        # Handle None
+        # Handle None / explicit empty: skip the column (no filter applied).
         if value is None:
-            filter_query[key] = (None, None)
             continue
         
         # Handle direct boolean
@@ -340,8 +378,7 @@ def parse_filters(filters, get_columns_func, source="meta"):
         # Handle dict with "value" key
         if isinstance(value, dict) and "value" in value:
             values = parse_value(value["value"])
-            if values is None:
-                filter_query[key] = (None, None)
+            if values is None or values == [] or values == "":
                 continue
             mode, exact = _resolve_match_options(value)
             if col_type == "text":
@@ -349,6 +386,7 @@ def parse_filters(filters, get_columns_func, source="meta"):
                 if op is not None:
                     filter_query[key] = op
             elif col_type == "array":
+                values, exact = _maybe_expand_go_terms(key, values, exact)
                 op = _array_op_for(values, mode, exact)
                 if op is not None:
                     filter_query[key] = op
@@ -384,6 +422,7 @@ def parse_filters(filters, get_columns_func, source="meta"):
             
             mode, exact = _resolve_match_options(value)
             if col_type_from_filter == "array":
+                values, exact = _maybe_expand_go_terms(key, values, exact)
                 op = _array_op_for(values, mode, exact)
                 if op is not None:
                     filter_query[key] = op
@@ -413,6 +452,7 @@ def parse_filters(filters, get_columns_func, source="meta"):
                 if op is not None:
                     filter_query[key] = op
             elif col_type == "array":
+                values, exact = _maybe_expand_go_terms(key, values, exact)
                 op = _array_op_for(values, mode, exact)
                 if op is not None:
                     filter_query[key] = op
@@ -1362,7 +1402,7 @@ def cluster_data():
             return jsonify({'error': f'Invalid distance: {distance}. Use correlation or euclidean'}), 400
         
         # Parse filters using the same logic as /api/data so frontend FilterValue
-        # objects ({value, strict, empty}) are converted to internal (op, val) tuples.
+        # objects ({value, match_mode, exact}) are converted to internal (op, val) tuples.
         get_cols = lambda **kw: service.get_all_columns(table_name=table_name, **kw)
         parsed_filters = parse_filters(filters, get_cols) if filters else {}
         parsed_sample_filters = parse_filters(sample_filters, get_cols, source="column_meta") if sample_filters else {}

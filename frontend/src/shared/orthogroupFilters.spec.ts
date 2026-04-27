@@ -12,8 +12,6 @@ describe('orthogroup filter helper', () => {
     const baseFilters = {
       gene_id: {
         value: 'AT1G01010',
-        strict: false,
-        empty: false,
       },
     };
 
@@ -22,13 +20,9 @@ describe('orthogroup filter helper', () => {
     expect(scopedFilters).toEqual({
       gene_id: {
         value: 'AT1G01010',
-        strict: false,
-        empty: false,
       },
       ortho_id: {
         value: 'og0001',
-        strict: false,
-        empty: false,
       },
     });
     expect(baseFilters).not.toHaveProperty('ortho_id');
@@ -38,8 +32,6 @@ describe('orthogroup filter helper', () => {
     expect(buildOrthogroupOnlyFilters('OG0000078')).toEqual({
       ortho_id: {
         value: 'OG0000078',
-        strict: false,
-        empty: false,
       },
     });
   });
@@ -48,19 +40,13 @@ describe('orthogroup filter helper', () => {
     expect(omitFilterKey({
       ortho_id: {
         value: 'OG0000078',
-        strict: false,
-        empty: false,
       },
       module_colors: {
         value: 'black',
-        strict: false,
-        empty: false,
       },
     })).toEqual({
       module_colors: {
         value: 'black',
-        strict: false,
-        empty: false,
       },
     });
   });
@@ -69,21 +55,15 @@ describe('orthogroup filter helper', () => {
     expect(hasNonOrthogroupFilters({
       ortho_id: {
         value: 'OG0000078',
-        strict: false,
-        empty: false,
       },
     })).toBe(false);
 
     expect(hasNonOrthogroupFilters({
       ortho_id: {
         value: 'OG0000078',
-        strict: false,
-        empty: false,
       },
       module_colors: {
         value: 'black',
-        strict: false,
-        empty: false,
       },
     })).toBe(true);
   });

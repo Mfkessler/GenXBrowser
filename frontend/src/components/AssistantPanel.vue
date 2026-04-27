@@ -558,24 +558,18 @@ function applyAddFilter(action: AssistantAction) {
     // as an array, a comma/newline-separated string, or a `values` field.
     const value = normalizeFilterValue(spec.value ?? (spec as { values?: unknown }).values);
     const rawSpec = spec as {
-      strict?: unknown;
-      empty?: unknown;
       match_mode?: unknown;
       exact?: unknown;
     };
     const matchMode: "or" | "and" =
       rawSpec.match_mode === "and" || rawSpec.match_mode === "or"
         ? rawSpec.match_mode
-        : Boolean(rawSpec.strict)
-          ? "and"
-          : "or";
+        : "or";
     const exact = rawSpec.exact === undefined ? true : Boolean(rawSpec.exact);
     const filter: FilterValue = {
       value,
-      strict: matchMode === "and",
       match_mode: matchMode,
       exact,
-      empty: Boolean(rawSpec.empty ?? false),
     };
     filtersStore.setFilter(column, filter);
     action.status = "applied";

@@ -9,15 +9,9 @@ export type FilterMatchMode = "or" | "and";
 
 export interface FilterValue {
   value: string;
-  /** Legacy AND/OR flag (true == AND). Kept in payload for backward compat. */
-  strict: boolean;
-  empty: boolean;
-  /** New: how multiple values combine. Default "or". */
+  /** How multiple values combine. Default "or". */
   match_mode?: FilterMatchMode;
-  /**
-   * New: whether values must match exactly (true) or as substrings (false).
-   * Default true.
-   */
+  /** Whether values must match exactly (true, default) or as substrings. */
   exact?: boolean;
 }
 

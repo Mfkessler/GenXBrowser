@@ -21,6 +21,7 @@
           v-model="modVal"
           :label="label"
           :id="id"
+          :type="props.type"
           ref="instanceRef"
         />
         <BooleanFilter
@@ -59,11 +60,9 @@ import { beautifyLabel } from "@/shared/utils";
 
 export interface ModelValue {
   value: string | boolean | [number, number] | null;
-  strict: boolean;
-  empty: boolean;
-  /** New: how multiple values combine ("or" default, "and" for AND). */
+  /** How multiple values combine ("or" default, "and" for AND). */
   match_mode?: "or" | "and";
-  /** New: exact match (true, default) vs substring match (false). */
+  /** Exact match (true, default) vs substring match (false). */
   exact?: boolean;
 }
 

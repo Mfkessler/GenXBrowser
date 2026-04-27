@@ -476,8 +476,6 @@ function onBatchIdFiltersApplied(values: string[]) {
   } else {
     filtersStore.setDatasetIdFilter(props.tableName, {
       value: values.join(","),
-      strict: false,
-      empty: false,
     });
   }
 }
@@ -489,8 +487,6 @@ function removeIdPill(pill: string) {
   } else {
     filtersStore.setDatasetIdFilter(props.tableName, {
       value: remaining.join(","),
-      strict: false,
-      empty: false,
     });
   }
 }

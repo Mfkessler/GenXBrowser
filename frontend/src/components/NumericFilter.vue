@@ -277,7 +277,7 @@ function stopDrag() {
       "update:modelValue",
       isFullRange
         ? null
-        : { value: [localLower.value!, localUpper.value!], strict: false },
+        : { value: [localLower.value!, localUpper.value!] },
     );
   }
 
@@ -325,7 +325,7 @@ function onManualInput() {
     "update:modelValue",
     isFullRange
       ? null
-      : { value: [localLower.value, localUpper.value], strict: false },
+      : { value: [localLower.value, localUpper.value] },
   );
 }
 
@@ -368,7 +368,6 @@ watch(
 
       emit("update:modelValue", {
         value: null,
-        strict: false,
       });
     } else {
       const isFullRange =
@@ -379,7 +378,7 @@ watch(
         "update:modelValue",
         isFullRange
           ? null
-          : { value: [localLower.value!, localUpper.value!], strict: false },
+          : { value: [localLower.value!, localUpper.value!] },
       );
     }
   },

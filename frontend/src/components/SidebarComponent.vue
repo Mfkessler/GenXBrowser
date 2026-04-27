@@ -26,12 +26,11 @@
         </svg>
       </button>
 
-      <!-- Catalog Button (Centered) — same flat style as the "Home" link
-           on the catalog page, but keeping its larger label size. -->
+      <!-- Catalog Button (Centered) — blue styling matching the AI Assistant button. -->
       <button
         aria-label="Navigate to Catalog"
         :disabled="disableControls"
-        class="cursor-pointer font-semibold text-primary-700 hover:text-primary-900 disabled:opacity-50 inline-flex justify-center items-center gap-1 px-2 py-1 min-w-[6.5rem] text-sm"
+        class="cursor-pointer font-semibold bg-blue-600/70 hover:bg-blue-600 text-white disabled:opacity-50 inline-flex justify-center items-center gap-1 px-3 py-1.5 rounded-md shadow-sm transition-colors text-sm"
         @click="$emit('navigate-home')"
         v-tooltip:right="'Navigate to Catalog'"
       >

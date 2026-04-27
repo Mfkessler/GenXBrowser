@@ -73,12 +73,6 @@
     >
       True
     </span>
-    <input
-      type="checkbox"
-      v-model="empty"
-      class="cursor-pointer form-checkbox h-4 w-4 accent-primary-700 mr-2"
-    />
-    <span class="text-sm text-gray-700">Empty</span>
   </div>
 </template>
 
@@ -95,12 +89,10 @@ const props = defineProps<{
 const localValue = ref<boolean | null>(
   parseBoolean(props.modelValue?.value) ?? null,
 );
-const empty = ref(false);
 
 function setValue(val: boolean | null) {
   if (localValue.value !== val) {
     localValue.value = val;
-    empty.value = false; // uncheck empty when toggled
   }
 }
 
@@ -112,7 +104,6 @@ const ariaChecked = computed(() => {
 
 function reset() {
   localValue.value = null;
-  empty.value = false;
 }
 
 const emit = defineEmits(["update:modelValue"]);
@@ -128,25 +119,15 @@ watch(
 );
 
 watch(
-  [localValue, empty],
+  localValue,
   () => {
-    if (!empty.value && localValue.value === null) {
+    if (localValue.value === null) {
       emit("update:modelValue", null);
     } else {
       emit("update:modelValue", {
         value: localValue.value,
-        strict: false,
       });
     }
-  },
-  { deep: true },
-);
-
-// Watcher: reset filter when parent signals empty state
-watch(
-  () => empty.value,
-  () => {
-    localValue.value = null;
   },
 );
 </script>

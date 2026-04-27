@@ -38,8 +38,6 @@ export function buildOrthogroupScopedFilters(
     ...baseFilters,
     [filterKey]: {
       value: trimmedOrthogroup,
-      strict: false,
-      empty: false,
     },
   };
 }

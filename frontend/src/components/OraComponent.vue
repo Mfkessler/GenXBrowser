@@ -779,14 +779,13 @@ async function renderDotplotRowSideColors({
         if (bin) {
           filtersStore.setFilter(column_name, {
             value: [bin.bucket_lower, bin.bucket_upper],
-            strict: false,
           });
         } else {
-          filtersStore.setFilter(column_name, { value: d, strict: false });
+          filtersStore.setFilter(column_name, { value: d });
         }
       } else {
         // For categorical or boolean, set exact filter
-        filtersStore.setFilter(column_name, { value: d, strict: false });
+        filtersStore.setFilter(column_name, { value: d });
       }
     });
 }
@@ -1457,7 +1456,6 @@ function onTableChange(value: string) {
 function handleFilterByTerm(term: string) {
   filtersStore.setFilter(visualizationStore.oraColumnName, {
     value: term,
-    strict: false,
   });
 }
 

@@ -31,8 +31,6 @@ async function setGlobalFilter(page: Page, key: string, value: string) {
       filtersStore.setFilters({
         [key]: {
           value,
-          strict: false,
-          empty: false,
         },
       })
     },

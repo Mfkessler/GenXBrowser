@@ -164,6 +164,7 @@ import {
   inject,
   nextTick,
   onBeforeUnmount,
+  onMounted,
   ref,
   type Ref,
   watch,
@@ -255,6 +256,7 @@ let renderPending = false;
 let renderFrame: number | null = null;
 let renderTimer: ReturnType<typeof setTimeout> | null = null;
 let isUnmounting = false;
+let unsubscribeColorClick: (() => void) | null = null;
 
 const LEGEND_WIDTH = 30;
 const SIDE_COLOR_WIDTH = 18;
@@ -795,6 +797,8 @@ async function renderSideColors({
         .attr("y", (d, i) => scale(labels[i]))
         .attr("width", colorSize)
         .attr("height", scale.bandwidth())
+        .attr("data-color-col", column_name)
+        .attr("data-color-val", (d) => (d === null || d === undefined ? "" : String(d)))
         .attr("fill", (d) => {
           if (
             (colType === "double precision" || colType === "bigint") &&
@@ -811,6 +815,8 @@ async function renderSideColors({
         .attr("y", 0)
         .attr("width", scale.bandwidth())
         .attr("height", colorSize)
+        .attr("data-color-col", column_name)
+        .attr("data-color-val", (d) => (d === null || d === undefined ? "" : String(d)))
         .attr("fill", (d) => {
           if (
             (colType === "double precision" || colType === "bigint") &&
@@ -913,6 +919,11 @@ async function renderSideColors({
         tooltip.style("visibility", "hidden");
       })
       .on("click", function (event, d) {
+        // Notify other heatmap instances so they can briefly highlight all
+        // row-color cells that share the same metadata value.
+        if (sharedColorRegistry) {
+          sharedColorRegistry.broadcastClick(column_name, d);
+        }
         if (
           (colType === "double precision" || colType === "bigint") &&
           d !== null &&
@@ -926,15 +937,14 @@ async function renderSideColors({
           if (bin) {
             filtersStore.setFilter(column_name, {
               value: [bin.bucket_lower, bin.bucket_upper],
-              strict: false,
             });
           } else {
             // Fallback if no bin found, set raw value
-            filtersStore.setFilter(column_name, {value: d, strict: false});
+            filtersStore.setFilter(column_name, {value: d});
           }
         } else {
           // For non-numeric or other types, keep existing behavior
-          filtersStore.setFilter(column_name, {value: d, strict: false});
+          filtersStore.setFilter(column_name, {value: d});
         }
       });
 
@@ -1721,6 +1731,60 @@ watch(heatmapContainer, (newContainer) => {
   }
 }, { flush: 'post' });
 
+onMounted(() => {
+  // Listen for row-color clicks broadcast by any heatmap sharing this
+  // SharedColorRegistry. When the same metadata column+value is clicked,
+  // every rect in the document carrying matching data attributes briefly
+  // pulses so the user can spot related rows across multiple heatmaps.
+  if (!sharedColorRegistry) return;
+  unsubscribeColorClick = sharedColorRegistry.subscribeClick(({ column, value }) => {
+    try {
+      const valStr = value === null || value === undefined ? "" : String(value);
+      const cssEscape = (window as { CSS?: { escape?: (s: string) => string } }).CSS?.escape
+        ?? ((s: string) => s.replace(/(["\\])/g, "\\$1"));
+      const selector =
+        `rect[data-color-col="${cssEscape(column)}"]` +
+        `[data-color-val="${cssEscape(valStr)}"]`;
+      const nodes = document.querySelectorAll<SVGRectElement>(selector);
+      if (nodes.length === 0) return;
+      // Trigger a brief, repeating pulse via inline CSS (3 cycles, ~1.6s).
+      nodes.forEach((node) => {
+        const sel = d3.select(node);
+        const origStroke = node.getAttribute("stroke") ?? "none";
+        const origStrokeWidth = node.getAttribute("stroke-width") ?? "0";
+        sel.interrupt("rowcolor-pulse");
+        sel
+          .transition("rowcolor-pulse")
+          .duration(180)
+          .attr("stroke", "#000")
+          .attr("stroke-width", 2)
+          .transition()
+          .duration(180)
+          .attr("stroke", origStroke === "none" ? null : origStroke)
+          .attr("stroke-width", origStrokeWidth)
+          .transition()
+          .duration(180)
+          .attr("stroke", "#000")
+          .attr("stroke-width", 2)
+          .transition()
+          .duration(180)
+          .attr("stroke", origStroke === "none" ? null : origStroke)
+          .attr("stroke-width", origStrokeWidth)
+          .transition()
+          .duration(180)
+          .attr("stroke", "#000")
+          .attr("stroke-width", 2)
+          .transition()
+          .duration(220)
+          .attr("stroke", origStroke === "none" ? null : origStroke)
+          .attr("stroke-width", origStrokeWidth);
+      });
+    } catch (err) {
+      console.warn("[HeatmapComponent] row-color pulse failed", err);
+    }
+  });
+});
+
 onBeforeUnmount(() => {
   isUnmounting = true;
   clearScheduledRender();
@@ -1731,6 +1795,10 @@ onBeforeUnmount(() => {
   if (resizeDebounceTimer) {
     clearTimeout(resizeDebounceTimer);
     resizeDebounceTimer = null;
+  }
+  if (unsubscribeColorClick) {
+    unsubscribeColorClick();
+    unsubscribeColorClick = null;
   }
 });
 </script>

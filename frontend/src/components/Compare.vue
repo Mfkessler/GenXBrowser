@@ -710,11 +710,10 @@ async function fetchUnfilteredData(tableName: string, ogIds: string[]) {
 
     // Fetch data with orthogroup filter only (no gene filters)
     // IMPORTANT: Match the filter structure from the active filters
-    // Filters are objects with { value, strict } properties, not plain strings
+    // Filters are objects with a `value` property, not plain strings
     const ogOnlyFilter = {
       [ogFilterKey]: {
         value: ogValue,
-        strict: false
       }
     };
 
