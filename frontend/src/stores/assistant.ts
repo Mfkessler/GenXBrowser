@@ -139,10 +139,41 @@ export const useAssistantStore = defineStore("assistant", () => {
     abortController.value = controller;
 
     try {
+      // Build the request history. We must drop FAILED turns entirely so the
+      // model never sees an orphaned user message (which it would interpret
+      // as continuing the previous, errored task — that was the bug where a
+      // new prompt re-ran the old MADS reasoning after a tool-loop timeout).
+      // A turn is "failed" when its assistant entry has an `error` and no
+      // usable content. We pair-drop the matching user message before it.
+      const historyForServer: { role: string; content: string }[] = [];
+      const list = messages.value;
+      for (let i = 0; i < list.length; i++) {
+        const m = list[i];
+        if (m.role === "user") {
+          const next = list[i + 1];
+          const failed =
+            next &&
+            next.role === "assistant" &&
+            !!next.error &&
+            !(next.content && next.content.trim());
+          if (failed) {
+            // Skip both the user prompt and the failed assistant placeholder.
+            i += 1;
+            continue;
+          }
+          historyForServer.push({ role: m.role, content: m.content });
+        } else if (m.role === "assistant") {
+          // Only forward assistant turns that produced visible text.
+          if (m.content && m.content.trim()) {
+            historyForServer.push({ role: m.role, content: m.content });
+          }
+        } else {
+          historyForServer.push({ role: m.role, content: m.content });
+        }
+      }
+
       const body: Record<string, unknown> = {
-        messages: messages.value
-          .filter((m) => m.role !== "assistant" || m.content !== "")
-          .map((m) => ({ role: m.role, content: m.content })),
+        messages: historyForServer,
         stream: true,
         include_context: true,
       };

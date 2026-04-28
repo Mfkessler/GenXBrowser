@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from collections import Counter
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -142,14 +143,90 @@ def normalize_filter_payload(filters: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Filter application — shared semantics with the HTTP API
+# ---------------------------------------------------------------------------
+
+def _infer_anndata_column_types(df) -> Dict[str, str]:
+    """Map AnnData ``.var`` / ``.obs`` columns to ``parse_filters`` types."""
+    from . import filter_parser  # noqa: WPS433
+    return filter_parser.infer_dataframe_column_types(df)
+
+
+def apply_assistant_filters(
+    service,
+    adata,
+    *,
+    var_filters: Optional[Dict[str, Any]] = None,
+    obs_filters: Optional[Dict[str, Any]] = None,
+):
+    """Apply rich filter specs to an AnnData's ``.var`` / ``.obs`` frames.
+
+    Returns ``(filtered_var, filtered_obs)``. Each filter dict accepts the
+    same shape as the HTTP API: a plain value, a list, or
+    ``{"value": ..., "match_mode": "or"|"and", "exact": bool}``. Numeric
+    range filters use ``[min, max]`` on the value list. Delegates to
+    :func:`app.filter_parser.parse_filter_query` and
+    :meth:`DataService._apply_filters` so tool counts always agree with what
+    the UI would compute for the same filter.
+    """
+    # filter_parser is Flask-free and safe to import in any load context
+    # (production package, importlib spec loader, etc.).
+    try:
+        from . import filter_parser  # noqa: WPS433 — avoid circulars at import
+    except ImportError:  # pragma: no cover — tests use spec loader
+        import importlib.util as _ilu
+        from pathlib import Path as _Path
+        _spec = _ilu.spec_from_file_location(
+            "_gx_filter_parser_fallback",
+            _Path(__file__).resolve().parent / "filter_parser.py",
+        )
+        if not (_spec and _spec.loader):
+            logger.warning("apply_assistant_filters: filter_parser unavailable")
+            return adata.var, adata.obs
+        filter_parser = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(filter_parser)  # type: ignore[union-attr]
+
+    var_df = adata.var
+    obs_df = adata.obs
+
+    if var_filters:
+        try:
+            allowed = filter_parser.infer_dataframe_column_types(var_df)
+            var_query = filter_parser.parse_filter_query(var_filters, allowed)
+            if var_query:
+                var_df = filter_parser.apply_filter_query(var_df.copy(), var_query)
+        except Exception as e:
+            logger.warning("apply_assistant_filters(var) failed: %s", e, exc_info=True)
+    if obs_filters:
+        try:
+            allowed = filter_parser.infer_dataframe_column_types(obs_df)
+            obs_query = filter_parser.parse_filter_query(obs_filters, allowed)
+            if obs_query:
+                obs_df = filter_parser.apply_filter_query(obs_df.copy(), obs_query)
+        except Exception as e:
+            logger.warning("apply_assistant_filters(obs) failed: %s", e, exc_info=True)
+    return var_df, obs_df
+
+
+# ---------------------------------------------------------------------------
 # Tool implementations
 # ---------------------------------------------------------------------------
+
+# (species_code, h5ad_mtime) → cached per-table summary block. Insertion-
+# ordered so we can evict the oldest entry when the cache grows beyond a
+# small bound.
+_SCHEMA_CACHE: Dict[Tuple[str, float], Dict[str, Any]] = {}
+
 
 def tool_list_schema(service, cm, *, max_values_per_col: int = 0) -> Dict[str, Any]:
     """High-level schema the LLM needs to pick tables/columns/filters.
 
     Returns a compact dict. Uses ``build_overview`` via the caller to stay in
     sync with the landing page; falls back to direct registry inspection.
+
+    Per-table summaries are cached by (species code, h5ad mtime); rebuilding
+    only happens when the underlying file changes. Across an unchanged
+    deployment this turns the call into a constant-time dict lookup.
     """
     tables: List[Dict[str, Any]] = []
     try:
@@ -157,10 +234,30 @@ def tool_list_schema(service, cm, *, max_values_per_col: int = 0) -> Dict[str, A
     except Exception as e:
         return {"error": f"get_tables failed: {e}", "tables": []}
 
+    species_map = getattr(getattr(service, "registry", None), "_species", None) or {}
+
     for entry in entries:
         code = entry.get("_species_code") or entry.get("code")
         if not code:
             continue
+
+        # mtime-keyed cache lookup — falls back to a direct rebuild if the
+        # registry doesn't expose a file path.
+        cache_key: Optional[Tuple[str, float]] = None
+        try:
+            info = species_map.get(code) if isinstance(species_map, dict) else None
+            path = info.get("file_path") if isinstance(info, dict) else None
+            if path and os.path.exists(path):
+                cache_key = (code, round(os.path.getmtime(path), 3))
+        except Exception:
+            cache_key = None
+
+        if cache_key is not None and cache_key in _SCHEMA_CACHE:
+            cached = _SCHEMA_CACHE[cache_key]
+            tables.append({**cached, "table_name": entry.get("table_name"),
+                           "full_name": entry.get("table_name")})
+            continue
+
         try:
             adata = service.registry.load(code)
         except Exception:
@@ -190,7 +287,7 @@ def tool_list_schema(service, cm, *, max_values_per_col: int = 0) -> Dict[str, A
             except Exception:
                 return {"name": col, "dtype": "unknown"}
 
-        tables.append({
+        summary_entry = {
             "table_name": entry.get("table_name"),
             "code": code,
             "full_name": entry.get("table_name"),
@@ -199,7 +296,23 @@ def tool_list_schema(service, cm, *, max_values_per_col: int = 0) -> Dict[str, A
             "layers": ["X"] + list(adata.layers.keys()),
             "var_columns": [_summary(adata.var, c) for c in var_cols],
             "obs_columns": [_summary(adata.obs, c) for c in obs_cols],
-        })
+        }
+
+        if cache_key is not None:
+            # Strip the volatile display name before caching so renames don't
+            # require an mtime bump to take effect.
+            _SCHEMA_CACHE[cache_key] = {
+                k: v for k, v in summary_entry.items() if k not in ("table_name", "full_name")
+            }
+            # Keep cache from growing unbounded across config reloads.
+            if len(_SCHEMA_CACHE) > 64:
+                # Drop oldest insertion-order entry.
+                try:
+                    _SCHEMA_CACHE.pop(next(iter(_SCHEMA_CACHE)))
+                except StopIteration:
+                    pass
+
+        tables.append(summary_entry)
 
     # Common action-block vocabulary so the LLM remembers what to emit.
     return {
@@ -531,73 +644,97 @@ def tool_resolve_value(
 def tool_count_rows(
     service,
     *,
-    table: str,
+    table=None,
+    tables=None,
     var_filters: Optional[Dict[str, Any]] = None,
     obs_filters: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Count ``.var`` and ``.obs`` rows after applying the given filters.
 
-    Filter shape per column: a string, a list of allowed strings, or
-    ``{"min":x,"max":y}`` / ``{"contains":"substr"}``. Array-valued columns
-    (comma/pipe-separated) are matched by substring containment per value.
+    Accepts EITHER ``table`` (single species code) OR ``tables`` (list).
+    With a list the result aggregates per-table counts under
+    ``per_table`` and totals under ``totals`` so the LLM only needs ONE
+    call instead of N.
+
+    Filter shape per column accepts the same grammar as the HTTP filter
+    API: a plain value, a list, or ``{"value":..., "match_mode":"or"|"and",
+    "exact":bool}``. Numeric range filters use ``[min, max]`` on the value
+    list. This delegates to the same parser and applier used by the
+    interactive UI, so counts always match what a real filter would yield.
     """
-    codes = _resolve_species_codes(service, [table])
+    raw = _coerce_tables_arg(table, tables)
+    if not raw:
+        return {"error": "Provide 'table' or 'tables'"}
+    multi = isinstance(raw, list) and len(raw) > 1
+    codes = _resolve_species_codes(service, raw if isinstance(raw, list) else [raw])
     if not codes:
-        return {"error": f"Unknown table '{table}'"}
-    code = codes[0]
-    try:
-        adata = service.registry.load(code)
-    except Exception as e:
-        return {"error": f"load failed: {e}"}
-    if adata is None:
-        return {"error": "table not loaded"}
+        return {"error": f"Unknown table(s) '{raw}'"}
 
-    import pandas as pd
+    per_table: List[Dict[str, Any]] = []
+    tot_var = tot_obs = tot_var_total = tot_obs_total = 0
+    for code in codes:
+        try:
+            adata = service.registry.load(code)
+        except Exception as e:
+            per_table.append({"table": code, "error": f"load failed: {e}"})
+            continue
+        if adata is None:
+            per_table.append({"table": code, "error": "table not loaded"})
+            continue
+        var_f, obs_f = apply_assistant_filters(
+            service, adata,
+            var_filters=var_filters or {},
+            obs_filters=obs_filters or {},
+        )
+        n_var = int(len(var_f))
+        n_obs = int(len(obs_f))
+        per_table.append({
+            "table": code,
+            "n_var_total": int(adata.n_vars),
+            "n_obs_total": int(adata.n_obs),
+            "n_var_match": n_var,
+            "n_obs_match": n_obs,
+        })
+        tot_var += n_var
+        tot_obs += n_obs
+        tot_var_total += int(adata.n_vars)
+        tot_obs_total += int(adata.n_obs)
 
-    def _apply(df, filt):
-        mask = pd.Series([True] * len(df), index=df.index)
-        for col, spec in (filt or {}).items():
-            if col not in df.columns:
-                return mask & False
-            s = df[col]
-            if isinstance(spec, list):
-                # Array columns: any configured separator in any cell matches?
-                text = s.astype(str)
-                m = pd.Series([False] * len(df), index=df.index)
-                for v in spec:
-                    m |= text.str.contains(
-                        rf"(?:^|[,|;\s]){re.escape(str(v))}(?:[,|;\s]|$)",
-                        regex=True, na=False,
-                    ) | (text == str(v))
-                mask &= m
-            elif isinstance(spec, dict):
-                if "min" in spec:
-                    mask &= pd.to_numeric(s, errors="coerce") >= float(spec["min"])
-                if "max" in spec:
-                    mask &= pd.to_numeric(s, errors="coerce") <= float(spec["max"])
-                if "contains" in spec:
-                    mask &= s.astype(str).str.contains(str(spec["contains"]), na=False, regex=False)
-                if "equals" in spec:
-                    mask &= s.astype(str) == str(spec["equals"])
-            else:
-                mask &= s.astype(str) == str(spec)
-        return mask
-
-    var_mask = _apply(adata.var, var_filters or {})
-    obs_mask = _apply(adata.obs, obs_filters or {})
+    if not multi:
+        # Single-table backward-compatible payload.
+        return per_table[0] if per_table else {"error": "no result"}
     return {
-        "table": code,
-        "n_var_total": int(adata.n_vars),
-        "n_obs_total": int(adata.n_obs),
-        "n_var_match": int(var_mask.sum()),
-        "n_obs_match": int(obs_mask.sum()),
+        "per_table": per_table,
+        "totals": {
+            "n_var_total": tot_var_total, "n_obs_total": tot_obs_total,
+            "n_var_match": tot_var, "n_obs_match": tot_obs,
+        },
     }
+
+
+def _coerce_tables_arg(table, tables) -> Optional[Any]:
+    """Normalise the (table, tables) input pair into either a string or list.
+
+    LLMs sometimes pass `table=["AT","SL"]` or `tables="AT"` — accept both.
+    """
+    if tables is not None:
+        if isinstance(tables, str):
+            return [tables] if tables else None
+        if isinstance(tables, list):
+            return [str(t) for t in tables if t] or None
+    if table is not None:
+        if isinstance(table, list):
+            return [str(t) for t in table if t] or None
+        if isinstance(table, str):
+            return table if table else None
+    return None
 
 
 def tool_top_groups(
     service,
     *,
-    table: str,
+    table=None,
+    tables=None,
     group_column: str,
     var_filters: Optional[Dict[str, Any]] = None,
     top_n: int = 10,
@@ -605,63 +742,90 @@ def tool_top_groups(
 ) -> Dict[str, Any]:
     """Count occurrences per value in a ``.var`` column after filtering.
 
+    Accepts EITHER ``table`` (single species code) OR ``tables`` (list).
+    With a list, counts are summed across all tables and a combined
+    ranking is returned under ``top`` plus per-table breakdowns under
+    ``per_table``. This lets the LLM answer cross-species questions
+    ("which orthogroup has the most MADS genes overall?") in ONE tool
+    call instead of one per species.
+
     Handles comma/pipe-separated multi-value cells (e.g. ``ortho_id``,
-    ``pfam_id``). Used to answer "which orthogroup is most represented?".
+    ``pfam_id``).
     """
-    # Hard cap — otherwise a naive LLM can blow up context with 47k+ rows.
     top_n = max(1, min(int(top_n or 10), 1000))
-    codes = _resolve_species_codes(service, [table])
+    raw = _coerce_tables_arg(table, tables)
+    if not raw:
+        return {"error": "Provide 'table' or 'tables'"}
+    multi = isinstance(raw, list) and len(raw) > 1
+    codes = _resolve_species_codes(service, raw if isinstance(raw, list) else [raw])
     if not codes:
-        return {"error": f"Unknown table '{table}'"}
-    code = codes[0]
-    try:
-        adata = service.registry.load(code)
-    except Exception as e:
-        return {"error": f"load failed: {e}"}
-    if adata is None:
-        return {"error": "table not loaded"}
-    if group_column not in adata.var.columns:
-        return {"error": f"column '{group_column}' not in .var of {code}"}
+        return {"error": f"Unknown table(s) '{raw}'"}
 
-    # Re-use count_rows' filter logic by applying it to var only.
-    filt_result = tool_count_rows(service, table=code, var_filters=var_filters or {})
-    if "error" in filt_result:
-        return filt_result
-
-    # Compute mask again (cheap) for indexing.
-    import pandas as pd
-    var = adata.var
-    mask = pd.Series([True] * len(var), index=var.index)
-    for col, spec in (var_filters or {}).items():
-        if col not in var.columns:
-            return {"error": f"var column '{col}' does not exist"}
-        s = var[col]
-        if isinstance(spec, list):
-            text = s.astype(str)
-            m = pd.Series([False] * len(var), index=var.index)
-            for v in spec:
-                m |= text.str.contains(
-                    rf"(?:^|[,|;\s]){re.escape(str(v))}(?:[,|;\s]|$)", regex=True, na=False,
-                ) | (text == str(v))
-            mask &= m
+    combined: Counter = Counter()
+    per_table: List[Dict[str, Any]] = []
+    total_considered = 0
+    for code in codes:
+        try:
+            adata = service.registry.load(code)
+        except Exception as e:
+            per_table.append({"table": code, "error": f"load failed: {e}"})
+            continue
+        if adata is None:
+            per_table.append({"table": code, "error": "table not loaded"})
+            continue
+        if group_column not in adata.var.columns:
+            per_table.append({"table": code, "error": f"column '{group_column}' not in .var"})
+            continue
+        # Validate filter columns up front so the LLM sees a clear error.
+        bad = [c for c in (var_filters or {}) if c not in adata.var.columns]
+        if bad:
+            per_table.append({
+                "table": code,
+                "error": f"var column(s) not in .var: {bad}",
+            })
+            continue
+        var_f, _ = apply_assistant_filters(
+            service, adata, var_filters=var_filters or {},
+        )
+        filtered = var_f[group_column]
+        n_rows = int(len(var_f))
+        total_considered += n_rows
+        if split_arrays:
+            values = _split_array_values(filtered)
         else:
-            mask &= s.astype(str) == str(spec)
+            values = [str(v) for v in filtered.dropna() if str(v)]
+        local = Counter(values)
+        combined.update(local)
+        per_table.append({
+            "table": code,
+            "n_rows_considered": n_rows,
+            "top": [
+                {"value": v, "count": int(n)}
+                for v, n in local.most_common(int(top_n))
+            ],
+        })
 
-    filtered = var[mask][group_column]
-    if split_arrays:
-        values = _split_array_values(filtered)
-    else:
-        values = [str(v) for v in filtered.dropna() if str(v)]
-    counter = Counter(values)
-    top = [
-        {"value": v, "count": int(n)}
-        for v, n in counter.most_common(int(top_n))
-    ]
+    if not multi:
+        # Single-table backward-compatible payload.
+        first = per_table[0] if per_table else {}
+        if "error" in first:
+            return first
+        return {
+            "table": codes[0],
+            "group_column": group_column,
+            "n_rows_considered": first.get("n_rows_considered", 0),
+            "top": first.get("top", []),
+        }
+
     return {
-        "table": code,
+        "tables": codes,
         "group_column": group_column,
-        "n_rows_considered": int(mask.sum()),
-        "top": top,
+        "n_rows_considered": total_considered,
+        "top": [
+            {"value": v, "count": int(n)}
+            for v, n in combined.most_common(int(top_n))
+        ],
+        "per_table": per_table,
     }
 
 
@@ -728,25 +892,12 @@ def tool_common_values(
         # Optional per-table filter pre-narrow (only for var-namespaced columns).
         vf = vf_map.get(code) or {}
         if vf and ns == "var":
-            import pandas as pd
-            mask = pd.Series([True] * len(adata.var), index=adata.var.index)
-            for col, spec in vf.items():
-                if col not in adata.var.columns:
-                    mask &= False
-                    continue
-                s = adata.var[col]
-                if isinstance(spec, list):
-                    text = s.astype(str)
-                    m = pd.Series([False] * len(adata.var), index=adata.var.index)
-                    for v in spec:
-                        m |= text.str.contains(
-                            rf"(?:^|[,|;\s]){re.escape(str(v))}(?:[,|;\s]|$)",
-                            regex=True, na=False,
-                        ) | (text == str(v))
-                    mask &= m
-                else:
-                    mask &= s.astype(str) == str(spec)
-            series = series[mask]
+            try:
+                var_f, _ = apply_assistant_filters(service, adata, var_filters=vf)
+                series = var_f[column] if column in var_f.columns else series.iloc[0:0]
+            except Exception as e:  # noqa: BLE001
+                logger.warning("common_values pre-narrow failed for %s: %s", code, e)
+                series = series.iloc[0:0]
         per_table[code] = set(_split_array_values(series))
 
     if not per_table:
@@ -780,55 +931,85 @@ def tool_common_values(
 def tool_summary_stats(
     service,
     *,
-    table: str,
+    table=None,
+    tables=None,
     column: str,
     namespace: str = "obs",
     var_filters: Optional[Dict[str, Any]] = None,
     obs_filters: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Min/max/mean/median/std for a numeric column after filtering."""
-    codes = _resolve_species_codes(service, [table])
+    """Min/max/mean/median/std for a numeric column after filtering.
+
+    Accepts EITHER ``table`` (single species code) OR ``tables`` (list).
+    With a list each table is reported under ``per_table`` plus a
+    pooled summary under ``pooled``.
+    """
+    raw = _coerce_tables_arg(table, tables)
+    if not raw:
+        return {"error": "Provide 'table' or 'tables'"}
+    multi = isinstance(raw, list) and len(raw) > 1
+    codes = _resolve_species_codes(service, raw if isinstance(raw, list) else [raw])
     if not codes:
-        return {"error": f"Unknown table '{table}'"}
-    code = codes[0]
-    try:
-        adata = service.registry.load(code)
-    except Exception as e:
-        return {"error": f"load failed: {e}"}
-    if adata is None:
-        return {"error": "table not loaded"}
+        return {"error": f"Unknown table(s) '{raw}'"}
 
     import pandas as pd
 
-    df = adata.obs if namespace == "obs" else adata.var
-    if column not in df.columns:
-        return {"error": f"column '{column}' not in .{namespace} of {code}"}
+    if namespace not in ("obs", "var"):
+        return {"error": f"unknown namespace '{namespace}' (expected 'obs' or 'var')"}
 
-    # Build per-namespace mask.
-    filt = obs_filters if namespace == "obs" else var_filters
-    mask = pd.Series([True] * len(df), index=df.index)
-    for col, spec in (filt or {}).items():
-        if col not in df.columns:
+    per_table: List[Dict[str, Any]] = []
+    pooled: List[float] = []
+    for code in codes:
+        try:
+            adata = service.registry.load(code)
+        except Exception as e:
+            per_table.append({"table": code, "error": f"load failed: {e}"})
             continue
-        s = df[col]
-        if isinstance(spec, list):
-            mask &= s.astype(str).isin([str(v) for v in spec])
-        else:
-            mask &= s.astype(str) == str(spec)
+        if adata is None:
+            per_table.append({"table": code, "error": "table not loaded"})
+            continue
+        df_full = adata.obs if namespace == "obs" else adata.var
+        if column not in df_full.columns:
+            per_table.append({"table": code, "error": f"column '{column}' not in .{namespace}"})
+            continue
+        var_f, obs_f = apply_assistant_filters(
+            service, adata,
+            var_filters=var_filters or {},
+            obs_filters=obs_filters or {},
+        )
+        df = obs_f if namespace == "obs" else var_f
+        s = pd.to_numeric(df[column], errors="coerce").dropna()
+        if s.empty:
+            per_table.append({"table": code, "column": column, "namespace": namespace, "count": 0})
+            continue
+        per_table.append({
+            "table": code, "column": column, "namespace": namespace,
+            "count": int(s.size),
+            "min": float(s.min()), "max": float(s.max()),
+            "mean": float(s.mean()), "median": float(s.median()),
+            "std": float(s.std()),
+        })
+        pooled.extend(s.tolist())
 
-    s = pd.to_numeric(df.loc[mask, column], errors="coerce").dropna()
-    if s.empty:
-        return {"table": code, "column": column, "namespace": namespace, "count": 0}
+    if not multi:
+        return per_table[0] if per_table else {"error": "no result"}
+
+    if not pooled:
+        return {
+            "tables": codes, "column": column, "namespace": namespace,
+            "per_table": per_table, "pooled": {"count": 0},
+        }
+    import pandas as _pd
+    sp = _pd.Series(pooled)
     return {
-        "table": code,
-        "column": column,
-        "namespace": namespace,
-        "count": int(s.size),
-        "min": float(s.min()),
-        "max": float(s.max()),
-        "mean": float(s.mean()),
-        "median": float(s.median()),
-        "std": float(s.std()),
+        "tables": codes, "column": column, "namespace": namespace,
+        "per_table": per_table,
+        "pooled": {
+            "count": int(sp.size),
+            "min": float(sp.min()), "max": float(sp.max()),
+            "mean": float(sp.mean()), "median": float(sp.median()),
+            "std": float(sp.std()),
+        },
     }
 
 
@@ -896,6 +1077,34 @@ def tool_build_deeplink(
     # Compare view: a species with zero flower samples gets dropped here
     # instead of failing the whole deeplink.
     dropped_tables: List[Dict[str, Any]] = []
+    warnings: List[str] = []
+    # SCHEMA VALIDATION: drop filter columns that don't exist in any of the
+    # selected tables and record a warning so the LLM can mention it instead
+    # of silently emitting a deep-link with no-op filters.
+    if codes and isinstance(filters, dict):
+        nested_pre = filters.get("filters") if isinstance(filters.get("filters"), dict) else None
+        if isinstance(nested_pre, dict) and nested_pre:
+            known_cols: set = set()
+            for code in codes:
+                try:
+                    adata = service.registry.load(code)
+                except Exception:
+                    adata = None
+                if adata is None:
+                    continue
+                known_cols.update(adata.var.columns)
+                known_cols.update(adata.obs.columns)
+            if known_cols:
+                unknown_cols = [c for c in nested_pre.keys() if c not in known_cols]
+                if unknown_cols:
+                    cleaned = {c: vs for c, vs in nested_pre.items() if c not in unknown_cols}
+                    filters = dict(filters)
+                    filters["filters"] = cleaned
+                    warnings.append(
+                        "Dropped unknown filter column(s): "
+                        + ", ".join(sorted(unknown_cols))
+                    )
+
     if v in {"heatmap", "compare", "phylo", "ora"} and codes:
         nested = (filters.get("filters") or {}) if isinstance(filters, dict) else {}
         # Normalize {col: {value: "v1|v2", ...}} → {col: [v1, v2]}.
@@ -981,6 +1190,8 @@ def tool_build_deeplink(
     out = {"id": hash_id, "url_path": url_path, "view": v, "tables": codes}
     if dropped_tables:
         out["dropped_tables"] = dropped_tables
+    if warnings:
+        out["warnings"] = warnings
     return out
 
 
@@ -1055,7 +1266,7 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
                         "type": "array", "items": {"type": "string"},
                         "description": "Optional: limit to these tables/species codes.",
                     },
-                    "max_hits": {"type": "integer", "default": 10},
+                    "max_hits": {"type": "integer", "default": 10, "minimum": 1, "maximum": 100},
                 },
                 "required": ["query"],
             },
@@ -1075,7 +1286,7 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
                     "column": {"type": "string"},
                     "table": {"type": "string"},
                     "prefix": {"type": "string"},
-                    "limit": {"type": "integer", "default": 50},
+                    "limit": {"type": "integer", "default": 50, "minimum": 1, "maximum": 500},
                 },
                 "required": ["column"],
             },
@@ -1087,17 +1298,19 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
             "name": "count_rows",
             "description": (
                 "Count .var (genes) and .obs (samples) rows matching the "
-                "filters. Filter values can be a string, a list of allowed "
-                "strings (array-aware), or {min,max,contains,equals}."
+                "filters. Pass `tables` as an ARRAY to count across "
+                "multiple species in ONE call (returns per_table + totals). "
+                "Filter values can be a string, a list of allowed strings "
+                "(array-aware), or {min,max,contains,equals}."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "table": {"type": "string"},
+                    "table": {"type": "string", "description": "single species code (or use `tables` for multiple)"},
+                    "tables": {"type": "array", "items": {"type": "string"}, "description": "multiple species codes — preferred over repeated single-table calls"},
                     "var_filters": {"type": "object", "additionalProperties": True},
                     "obs_filters": {"type": "object", "additionalProperties": True},
                 },
-                "required": ["table"],
             },
         },
     },
@@ -1108,19 +1321,22 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
             "description": (
                 "Rank values in a .var column by how many genes carry them, "
                 "after applying var_filters. Handles comma/pipe-separated "
-                "cells (ortho_id, pfam_id). Use to answer 'which orthogroup "
-                "is most represented in the current heatmap?'."
+                "cells (ortho_id, pfam_id). Pass `tables` as an ARRAY to "
+                "aggregate across species in ONE call — strongly preferred "
+                "over calling this once per species. Use to answer 'which "
+                "orthogroup is most represented overall?'."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "table": {"type": "string"},
+                    "table": {"type": "string", "description": "single species code (or use `tables` for multiple)"},
+                    "tables": {"type": "array", "items": {"type": "string"}, "description": "multiple species codes — combined ranking returned in `top`, plus `per_table` breakdown"},
                     "group_column": {"type": "string"},
                     "var_filters": {"type": "object", "additionalProperties": True},
-                    "top_n": {"type": "integer", "default": 10},
+                    "top_n": {"type": "integer", "default": 10, "minimum": 1, "maximum": 50},
                     "split_arrays": {"type": "boolean", "default": True},
                 },
-                "required": ["table", "group_column"],
+                "required": ["group_column"],
             },
         },
     },
@@ -1153,7 +1369,7 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
                         "type": "integer",
                         "description": "min number of tables a value must appear in; default = all given tables (strict intersection).",
                     },
-                    "limit": {"type": "integer", "default": 500},
+                    "limit": {"type": "integer", "default": 500, "minimum": 1, "maximum": 1000},
                     "var_filters_per_table": {
                         "type": "object",
                         "description": "optional per-table var_filters; keys are species codes.",
@@ -1168,17 +1384,18 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "summary_stats",
-            "description": "min/max/mean/median/std of a numeric column after filtering.",
+            "description": "min/max/mean/median/std of a numeric column after filtering. Pass `tables` as an ARRAY to compute across multiple species in ONE call (per_table + pooled).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "table": {"type": "string"},
+                    "table": {"type": "string", "description": "single species code (or use `tables` for multiple)"},
+                    "tables": {"type": "array", "items": {"type": "string"}},
                     "column": {"type": "string"},
                     "namespace": {"type": "string", "enum": ["var", "obs"], "default": "obs"},
                     "var_filters": {"type": "object", "additionalProperties": True},
                     "obs_filters": {"type": "object", "additionalProperties": True},
                 },
-                "required": ["table", "column"],
+                "required": ["column"],
             },
         },
     },

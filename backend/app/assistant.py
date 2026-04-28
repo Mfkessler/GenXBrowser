@@ -17,12 +17,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 import urllib.error
 import urllib.request
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from threading import Lock
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
@@ -83,25 +84,62 @@ def merge_llm_config_update(current: Dict[str, Any], incoming: Dict[str, Any]) -
 # ----------------------------------------------------------------------------
 
 class RateLimiter:
-    """Simple per-key sliding-window limiter (requests per window_seconds)."""
+    """Sliding-window limiter where each call can carry a weight.
+
+    Used both as a plain "max N requests / window" guard (the chat endpoint
+    treats one request as weight=1) and as an iteration-weighted guard for
+    the agentic loop, where one chat turn that fires N tool calls counts
+    as N requests instead of 1. This keeps a single very-chatty session
+    from monopolising the upstream LLM budget without hurting short turns.
+
+    The window is implemented as a deque of (timestamp, weight) tuples
+    plus a running sum so the hot path stays O(1) amortised.
+    """
 
     def __init__(self, max_requests: int = 30, window_seconds: int = 60):
         self.max = max_requests
         self.window = window_seconds
         self._hits: Dict[str, deque] = {}
+        self._sum: Dict[str, int] = {}
         self._lock = Lock()
 
-    def allow(self, key: str) -> Tuple[bool, int]:
+    def allow(self, key: str, weight: int = 1) -> Tuple[bool, int]:
+        try:
+            w = max(1, int(weight))
+        except (TypeError, ValueError):
+            w = 1
         now = time.monotonic()
         with self._lock:
             q = self._hits.setdefault(key, deque())
-            while q and now - q[0] > self.window:
-                q.popleft()
-            if len(q) >= self.max:
-                retry_in = int(self.window - (now - q[0])) + 1
+            cur_sum = self._sum.get(key, 0)
+            while q and now - q[0][0] > self.window:
+                _, old_w = q.popleft()
+                cur_sum -= old_w
+            if cur_sum + w > self.max:
+                retry_in = int(self.window - (now - q[0][0])) + 1 if q else 1
+                self._sum[key] = cur_sum
                 return False, retry_in
-            q.append(now)
+            q.append((now, w))
+            self._sum[key] = cur_sum + w
             return True, 0
+
+    def charge(self, key: str, weight: int) -> None:
+        """Retroactively add `weight - 1` more units after a request finished.
+
+        The chat endpoint pre-charges weight=1 in `allow()`, then calls this
+        once the agentic loop knows how many tool iterations actually ran.
+        """
+        try:
+            extra = max(0, int(weight) - 1)
+        except (TypeError, ValueError):
+            extra = 0
+        if extra == 0:
+            return
+        now = time.monotonic()
+        with self._lock:
+            q = self._hits.setdefault(key, deque())
+            q.append((now, extra))
+            self._sum[key] = self._sum.get(key, 0) + extra
 
 
 # ----------------------------------------------------------------------------
@@ -654,13 +692,25 @@ def run_agentic_turn(
             yield {"type": "tool_start", "id": call_id, "name": name, "args": args}
 
         results: Dict[str, Dict[str, Any]] = {}
+        # Per-tool wall-clock timeout: ensures one slow tool (e.g. an
+        # H5AD load) cannot stall the whole agentic turn. Tunable via
+        # GENX_TOOL_TIMEOUT (seconds, default 20).
+        try:
+            tool_timeout = float(os.environ.get("GENX_TOOL_TIMEOUT", "20"))
+        except (TypeError, ValueError):
+            tool_timeout = 20.0
         if len(prepared) == 1:
             call_id, name, args = prepared[0]
-            try:
-                results[call_id] = dispatch(name, args) or {}
-            except Exception as e:  # noqa: BLE001
-                logger.warning("dispatch(%s) failed: %s", name, e, exc_info=True)
-                results[call_id] = {"error": f"{type(e).__name__}: {e}"}
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                fut = pool.submit(dispatch, name, args)
+                try:
+                    results[call_id] = fut.result(timeout=tool_timeout) or {}
+                except FuturesTimeout:
+                    logger.warning("dispatch(%s) timed out after %.1fs", name, tool_timeout)
+                    results[call_id] = {"error": f"tool '{name}' timed out after {tool_timeout:.0f}s"}
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("dispatch(%s) failed: %s", name, e, exc_info=True)
+                    results[call_id] = {"error": f"{type(e).__name__}: {e}"}
         else:
             with ThreadPoolExecutor(max_workers=min(4, len(prepared))) as pool:
                 future_map = {
@@ -670,7 +720,10 @@ def run_agentic_turn(
                 for future in future_map:
                     call_id, name = future_map[future]
                     try:
-                        results[call_id] = future.result() or {}
+                        results[call_id] = future.result(timeout=tool_timeout) or {}
+                    except FuturesTimeout:
+                        logger.warning("dispatch(%s) timed out after %.1fs", name, tool_timeout)
+                        results[call_id] = {"error": f"tool '{name}' timed out after {tool_timeout:.0f}s"}
                     except Exception as e:  # noqa: BLE001
                         logger.warning("dispatch(%s) failed: %s", name, e, exc_info=True)
                         results[call_id] = {"error": f"{type(e).__name__}: {e}"}

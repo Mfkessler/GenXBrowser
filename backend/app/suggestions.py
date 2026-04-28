@@ -124,6 +124,47 @@ def build_suggestion_pool(service, cm) -> Dict[str, List[str]]:
     seen_tissue: set = set()
     seen_tf: set = set()
     seen_ortho: set = set()
+    # Generic slot harvested from any low-cardinality categorical column.
+    # Each entry: {"namespace": "var"|"obs", "column": str, "value": str,
+    # "table": species_code}. The generator turns these into generic
+    # "filter by X" templates so deployments without tf_family/tissue/
+    # ortho_id still produce meaningful suggestions.
+    discovered: List[Dict[str, str]] = []
+    seen_disc: set = set()
+    # Skip columns with these prefixes/exact names — they're never useful as
+    # filter slot fillers (free text, ids, scores, paths, ...).
+    _BLOCKED_COL_SUBSTR = (
+        "id", "name", "path", "score", "pvalue", "p_value", "padj",
+        "ensembl", "uniprot", "gene_symbol", "transcript",
+    )
+
+    def _harvest(adata, code: str, df, namespace: str):
+        for col in df.columns:
+            lc = col.lower()
+            if any(b in lc for b in _BLOCKED_COL_SUBSTR):
+                continue
+            try:
+                s = df[col].dropna()
+                if s.empty:
+                    continue
+                dtype = str(s.dtype)
+                if dtype.startswith("float") or dtype.startswith("int") or dtype.startswith("bool"):
+                    continue
+                vc = s.astype(str).value_counts()
+                if 1 < len(vc) <= 30:
+                    for val in vc.head(5).index.tolist():
+                        if not val or len(val) > 60:
+                            continue
+                        key = (namespace, col, val)
+                        if key in seen_disc:
+                            continue
+                        seen_disc.add(key)
+                        discovered.append({
+                            "namespace": namespace, "column": col,
+                            "value": val, "table": code,
+                        })
+            except Exception:
+                continue
 
     for entry in entries:
         code = entry.get("_species_code") or entry.get("code")
@@ -175,12 +216,19 @@ def build_suggestion_pool(service, cm) -> Dict[str, List[str]]:
                         ortho_ids.append(v)
             except Exception:
                 pass
+        # Generic schema-driven harvest for any other low-cardinality column.
+        try:
+            _harvest(adata, str(code), adata.obs, "obs")
+            _harvest(adata, str(code), adata.var, "var")
+        except Exception:
+            pass
 
     pool = {
         "species": species,
         "tissue": tissues,
         "tf_family": tf_families,
         "ortho_id": ortho_ids,
+        "discovered": discovered,
     }
     _POOL_CACHE["pool"] = pool
     _POOL_CACHE["mtime"] = mtime
@@ -188,12 +236,33 @@ def build_suggestion_pool(service, cm) -> Dict[str, List[str]]:
     return pool
 
 
-def _eligible_templates(pool: Dict[str, List[str]]) -> List[Dict[str, Any]]:
+def _eligible_templates(pool: Dict[str, Any]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for tpl in _TEMPLATES:
         if all(pool.get(slot) for slot in tpl["slots"]):
             out.append(tpl)
     return out
+
+
+# Generic templates rendered against any (column, value) pair harvested from
+# the live schema. They keep suggestions useful on deployments whose H5AD
+# files don't carry the well-known `tf_family`/`tissue`/`ortho_id` columns.
+_GENERIC_TEMPLATE_TEXTS: List[str] = [
+    "Show {table}: how many {namespace_label} have {column} = {value}?",
+    "Filter {table} to {namespace_label} where {column} is {value} and summarize.",
+    "List the most common values of {column} in {table}.",
+]
+
+
+def _render_generic(tpl_text: str, slot: Dict[str, str]) -> Dict[str, str]:
+    namespace_label = "samples" if slot.get("namespace") == "obs" else "genes"
+    text = tpl_text.format(
+        table=slot.get("table", ""),
+        namespace_label=namespace_label,
+        column=slot.get("column", ""),
+        value=slot.get("value", ""),
+    )
+    return {"id": f"generic_{slot.get('namespace')}_{slot.get('column')}", "text": text}
 
 
 def generate_suggestions(
@@ -212,7 +281,9 @@ def generate_suggestions(
     n = max(1, min(int(n), 10))
     pool = build_suggestion_pool(service, cm)
     templates = _eligible_templates(pool)
-    if not templates:
+    discovered = pool.get("discovered") or []
+
+    if not templates and not discovered:
         return []
 
     rng = random.Random(seed) if seed is not None else random.Random()
@@ -220,11 +291,10 @@ def generate_suggestions(
 
     suggestions: List[Dict[str, str]] = []
     seen_text: set = set()
-    # Iterate templates; for slot-bearing ones, draw fresh fillers each time.
-    # Allow re-using a template with different fillers when we run out of
-    # distinct templates but still need more suggestions.
+
+    # Pass 1: well-known slot templates (tf_family/tissue/ortho_id…).
     rounds = 0
-    while len(suggestions) < n and rounds < n * 4:
+    while len(suggestions) < n and rounds < n * 4 and templates:
         rounds += 1
         for tpl in templates:
             if len(suggestions) >= n:
@@ -238,4 +308,20 @@ def generate_suggestions(
                 continue
             seen_text.add(text)
             suggestions.append({"id": tpl["id"], "text": text})
+
+    # Pass 2: schema-driven generic templates so under-annotated deployments
+    # still get a couple of useful prompts.
+    if len(suggestions) < n and discovered:
+        shuffled = list(discovered)
+        rng.shuffle(shuffled)
+        for slot in shuffled:
+            if len(suggestions) >= n:
+                break
+            tpl_text = rng.choice(_GENERIC_TEMPLATE_TEXTS)
+            item = _render_generic(tpl_text, slot)
+            if item["text"] in seen_text:
+                continue
+            seen_text.add(item["text"])
+            suggestions.append(item)
+
     return suggestions

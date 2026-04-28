@@ -13,6 +13,8 @@ import os
 import json
 from typing import Any, Dict, List, Optional
 
+from . import filter_parser
+
 logger = logging.getLogger(__name__)
 
 
@@ -201,81 +203,43 @@ def get_service():
     return current_app.h5ad_service
 
 
-def parse_filters(filters, get_columns_func, source="meta"):
+def parse_filters(filters, get_columns_func=None, source="meta", *, allowed_columns=None):
     """
-    Parse filter input from frontend format to internal format.
-    
-    Frontend sends: {"column": value} or {"column": {"value": v, "match_mode": "or"|"and", "exact": bool}}
-    Internal format: {"column": (operator, value)}
-    
+    Parse filter input from frontend format to internal ``(operator, value)`` tuples.
+
+    Frontend sends: ``{"column": value}`` or
+    ``{"column": {"value": v, "match_mode": "or"|"and", "exact": bool}}``.
+
     Args:
-        filters: Filter dict from frontend
-        get_columns_func: Function to get column metadata
-        source: "meta" for gene metadata filters, "column_meta" for sample metadata filters
+        filters: Filter dict from frontend.
+        get_columns_func: Function returning column metadata (used when
+            ``allowed_columns`` is not provided).
+        source: ``"meta"`` for gene metadata filters, ``"column_meta"`` for
+            sample metadata filters.
+        allowed_columns: Optional pre-built ``{col_name: col_type}`` mapping
+            from caller-known schema (e.g. AnnData ``.var`` / ``.obs``).
+            Bypasses ``get_columns_func`` when supplied so the same grammar
+            (including ``match_mode`` and ``exact``) is reused outside the
+            DuckDB catalog path.
     """
     if not filters:
         return {}
-    
-    # Get allowed columns and their types
-    allowed_types = {"text", "array", "bigint", "double precision", "boolean"}
-    all_columns = get_columns_func(source=source)
-    allowed_columns = {
-        col["column_name"]: col.get("type", "text").lower()
-        for col in all_columns
-        if col.get("type", "text").lower() in allowed_types
-    }
-    
+
+    if allowed_columns is None:
+        if get_columns_func is None:
+            return {}
+        all_columns = get_columns_func(source=source)
+        allowed_columns = {
+            col["column_name"]: col.get("type", "text").lower()
+            for col in all_columns
+            if col.get("type", "text").lower() in filter_parser.ALLOWED_TYPES
+        }
+
     logger.debug(f"[parse_filters] source={source}, incoming filters keys: {list(filters.keys())}")
-    
-    def parse_bool(value):
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            val = value.strip().lower()
-            if val in {'true', 't'}:
-                return True
-            if val in {'false', 'f'}:
-                return False
-        return None
-    
-    def parse_value(val):
-        bval = parse_bool(val)
-        if isinstance(bval, bool):
-            return bval
-        if isinstance(val, str):
-            return [v.strip() for v in val.split("|") if v.strip()]
-        return val
-
-    def _resolve_match_options(spec):
-        """Resolve (mode, exact) from a filter dict.
-
-        ``mode`` is "or" (default) or "and" controlling how multiple values
-        combine. ``exact`` is True (default) for exact matching, False for
-        substring matching.
-        """
-        if not isinstance(spec, dict):
-            return "or", True
-        mode_raw = spec.get("match_mode")
-        if isinstance(mode_raw, str) and mode_raw.lower() in ("and", "or"):
-            mode = mode_raw.lower()
-        else:
-            mode = "or"
-        exact_raw = spec.get("exact")
-        if isinstance(exact_raw, bool):
-            exact = exact_raw
-        else:
-            exact = True
-        return mode, exact
 
     _GO_TERM_KEYS = {"go_terms", "go_term", "goterm", "goterms"}
 
-    def _maybe_expand_go_terms(col_key, values, exact):
-        """For array columns named like ``go_terms``: when ``exact`` is False
-        and the user typed a term name (not a ``GO:NNNNNNN`` ID), expand it
-        to all matching GO IDs via the GO service. Returns (values, exact).
-        After expansion, exact matching is forced to True so the IDs match
-        the cell contents directly.
-        """
+    def _expand_go(col_key, values, exact):
         if exact:
             return values, exact
         if not isinstance(col_key, str) or col_key.lower() not in _GO_TERM_KEYS:
@@ -283,7 +247,7 @@ def parse_filters(filters, get_columns_func, source="meta"):
         go_service = getattr(current_app, 'go_service', None)
         if not go_service or not go_service.is_available():
             return values, exact
-        expanded = []
+        expanded: List[Any] = []
         any_expanded = False
         for v in values:
             sv = str(v).strip()
@@ -305,161 +269,11 @@ def parse_filters(filters, get_columns_func, source="meta"):
                 expanded.append(sv)
         if not expanded:
             return values, exact
-        # Force exact matching when we substituted IDs (they match cell tokens directly)
         return (expanded, True) if any_expanded else (expanded, exact)
 
-    def _text_op_for(values, mode, exact):
-        if not values:
-            return None
-        if exact:
-            # Exact match: AND on a single-valued text column collapses to
-            # impossible-multi-value; we still emit ``in`` so the row set
-            # matches at least one value (mathematically equivalent for
-            # 1-valued cells).
-            return ("in", values) if len(values) > 1 else ("eq", values[0])
-        # Substring matching
-        if len(values) == 1:
-            return ("text_substr_any", values)
-        return ("text_substr_all", values) if mode == "and" else ("text_substr_any", values)
-
-    def _array_op_for(values, mode, exact):
-        if not values:
-            return None
-        if exact:
-            return ("array_contains", values) if mode == "and" else ("array_overlap", values)
-        return ("array_substr_all", values) if mode == "and" else ("array_substr_any", values)
-    
-    filter_query = {}
-    
-    for key, value in filters.items():
-        col_type = allowed_columns.get(key)
-        if not col_type:
-            continue
-        
-        # Handle None / explicit empty: skip the column (no filter applied).
-        if value is None:
-            continue
-        
-        # Handle direct boolean
-        if isinstance(value, bool) and col_type == "boolean":
-            filter_query[key] = ("eq", value)
-            continue
-        
-        # Handle direct list/array
-        if isinstance(value, list):
-            values = value
-            if col_type == "array":
-                filter_query[key] = ("array_overlap", values)
-            elif col_type == "text":
-                filter_query[key] = ("in", values) if len(values) > 1 else ("eq", values[0])
-            elif col_type in ("bigint", "integer", "double precision") and len(values) == 2:
-                try:
-                    num1 = float(values[0]) if col_type == "double precision" else int(values[0])
-                    num2 = float(values[1]) if col_type == "double precision" else int(values[1])
-                    if num2 > num1:
-                        filter_query[key] = ("range", (num1, num2))
-                except (ValueError, TypeError):
-                    pass
-            continue
-        
-        # Handle direct string
-        if isinstance(value, str):
-            values = parse_value(value)
-            if col_type == "text":
-                if not values:
-                    continue
-                filter_query[key] = ("in", values) if len(values) > 1 else ("eq", values[0])
-            elif col_type == "boolean":
-                filter_query[key] = ("eq", values)
-            elif col_type == "array":
-                filter_query[key] = ("array_overlap", values)
-            continue
-        
-        # Handle dict with "value" key
-        if isinstance(value, dict) and "value" in value:
-            values = parse_value(value["value"])
-            if values is None or values == [] or values == "":
-                continue
-            mode, exact = _resolve_match_options(value)
-            if col_type == "text":
-                op = _text_op_for(values, mode, exact)
-                if op is not None:
-                    filter_query[key] = op
-            elif col_type == "array":
-                values, exact = _maybe_expand_go_terms(key, values, exact)
-                op = _array_op_for(values, mode, exact)
-                if op is not None:
-                    filter_query[key] = op
-            elif col_type in ("bigint", "integer"):
-                if len(values) != 2:
-                    continue
-                try:
-                    num1, num2 = int(values[0]), int(values[1])
-                    if num2 > num1:
-                        filter_query[key] = ("range", (num1, num2))
-                except ValueError:
-                    continue
-            elif col_type == "double precision":
-                if len(values) != 2:
-                    continue
-                try:
-                    num1, num2 = float(values[0]), float(values[1])
-                    if num2 > num1:
-                        filter_query[key] = ("range", (num1, num2))
-                except ValueError:
-                    continue
-            elif col_type == "boolean":
-                filter_query[key] = ("eq", values)
-            continue
-        
-        # Handle dict with "type" and "values" keys (new format)
-        if isinstance(value, dict) and "type" in value and "values" in value:
-            col_type_from_filter = value["type"]
-            values = value["values"]
-            
-            if not isinstance(values, list):
-                values = [values]
-            
-            mode, exact = _resolve_match_options(value)
-            if col_type_from_filter == "array":
-                values, exact = _maybe_expand_go_terms(key, values, exact)
-                op = _array_op_for(values, mode, exact)
-                if op is not None:
-                    filter_query[key] = op
-            elif col_type_from_filter == "text":
-                op = _text_op_for(values, mode, exact)
-                if op is not None:
-                    filter_query[key] = op
-            elif col_type_from_filter in ("bigint", "integer", "double precision"):
-                if len(values) == 2:
-                    try:
-                        num1 = float(values[0]) if col_type_from_filter == "double precision" else int(values[0])
-                        num2 = float(values[1]) if col_type_from_filter == "double precision" else int(values[1])
-                        if num2 > num1:
-                            filter_query[key] = ("range", (num1, num2))
-                    except (ValueError, TypeError):
-                        continue
-            elif col_type_from_filter == "boolean":
-                filter_query[key] = ("eq", values[0] if values else False)
-            continue
-        
-        # Handle dict with other keys
-        if isinstance(value, dict):
-            values = parse_value(value.get("value", ""))
-            mode, exact = _resolve_match_options(value)
-            if col_type == "text":
-                op = _text_op_for(values, mode, exact)
-                if op is not None:
-                    filter_query[key] = op
-            elif col_type == "array":
-                values, exact = _maybe_expand_go_terms(key, values, exact)
-                op = _array_op_for(values, mode, exact)
-                if op is not None:
-                    filter_query[key] = op
-            elif col_type == "boolean":
-                filter_query[key] = ("eq", values)
-    
-    return filter_query
+    return filter_parser.parse_filter_query(
+        filters, allowed_columns, go_term_expander=_expand_go,
+    )
 
 
 def validate_table_name(table_names, get_tables_func):
@@ -1538,11 +1352,36 @@ def overview_mtime():
         return jsonify({"error": str(e)}), 500
 
 
-def _build_assistant_context(service, cm) -> str:
-    """Compact JSON description of loaded datasets injected into the system prompt."""
+def _build_assistant_context(service, cm, selected_tables: Optional[List[str]] = None) -> str:
+    """Compact JSON description of loaded datasets injected into the system prompt.
+
+    When `selected_tables` is non-empty, the species list is restricted to
+    those entries (matching `code`, `full_name`, or `table_name`,
+    case-insensitive) plus a short `omitted_species` summary so the LLM
+    knows other tables exist but their schemas weren't inlined. This keeps
+    the prompt small on multi-species deployments without hiding the
+    catalogue entirely.
+    """
     import json as _json
     try:
         overview_data = _build_overview(service, cm)
+        species_full = overview_data["species"]
+        selected_set = None
+        if selected_tables:
+            selected_set = {str(t).lower() for t in selected_tables if t}
+
+        kept_species: List[Dict[str, Any]] = []
+        omitted_codes: List[str] = []
+        for s in species_full:
+            keys = {str(s.get("code") or "").lower(),
+                    str(s.get("full_name") or "").lower(),
+                    str(s.get("table_name") or "").lower()}
+            keys.discard("")
+            if selected_set is None or keys & selected_set:
+                kept_species.append(s)
+            else:
+                omitted_codes.append(s.get("code") or "")
+
         slim = {
             "project": overview_data["project"],
             "global": {
@@ -1564,9 +1403,15 @@ def _build_assistant_context(service, cm) -> str:
                     "tf_count": s.get("derived", {}).get("tf_count"),
                     "orthogroup_count": s.get("derived", {}).get("orthogroup_count"),
                 }
-                for s in overview_data["species"]
+                for s in kept_species
             ],
         }
+        if selected_set is not None and omitted_codes:
+            slim["omitted_species"] = {
+                "count": len(omitted_codes),
+                "codes": [c for c in omitted_codes if c][:50],
+                "note": "Schema omitted to keep prompt small. Call list_schema for details.",
+            }
         return _json.dumps(slim, ensure_ascii=False)
     except Exception as e:
         logger.warning(f"Assistant context build failed: {e}")
@@ -1610,16 +1455,27 @@ def assistant_chat():
 
     # Build the rich system prompt (role + action grammar + tool policy + few-shots).
     from .prompt_builder import build_system_prompt
+    client_ctx = body.get("client_context") or {}
+    # Slim DATA_CONTEXT to the species the user is currently looking at when
+    # the frontend tells us which tables are selected. The full catalogue is
+    # still discoverable via the `list_schema` tool.
+    selected_for_ctx: Optional[List[str]] = None
+    if isinstance(client_ctx, dict):
+        raw_sel = client_ctx.get("selected_table_names") or client_ctx.get("tables")
+        if isinstance(raw_sel, list) and raw_sel:
+            selected_for_ctx = [str(x) for x in raw_sel if x]
+
     data_ctx: Optional[Dict[str, Any]] = None
     if include_context:
         try:
             import json as _json
-            data_ctx = _json.loads(_build_assistant_context(get_service(), cm))
+            data_ctx = _json.loads(
+                _build_assistant_context(get_service(), cm, selected_for_ctx)
+            )
         except Exception:
             data_ctx = None
 
     ui_ctx: Optional[Dict[str, Any]] = None
-    client_ctx = body.get("client_context") or {}
     if isinstance(client_ctx, dict) and client_ctx:
         ui_ctx = {
             k: client_ctx.get(k)
@@ -1699,6 +1555,14 @@ def assistant_chat():
                             f"data: {json.dumps({'content': ev.get('content') or ''}, ensure_ascii=False)}\n\n"
                         )
                     elif etype == "done":
+                        # Charge extra rate-limit weight equal to the number of
+                        # tool iterations actually consumed (the initial
+                        # `allow()` already booked weight=1, so we add the rest).
+                        try:
+                            iters = int(ev.get("iterations") or 1)
+                            _assistant_limiter.charge(_client_ip(), iters)
+                        except Exception:
+                            pass
                         yield f"event: done\ndata: {json.dumps({'model': ev.get('model'), 'iterations': ev.get('iterations')})}\n\n"
                     elif etype == "error":
                         yield f"event: error\ndata: {json.dumps({'error': ev.get('error')})}\n\n"
@@ -1870,6 +1734,40 @@ def assistant_deeplink():
     if view != "catalog" and not resolved:
         return jsonify({"error": "'tables' must contain at least one known dataset for this view"}), 400
 
+    # SCHEMA VALIDATION: drop filter columns that don't exist in any of the
+    # resolved tables, and surface them as warnings. Without this, the
+    # frontend would silently ignore unknown columns and the user would see
+    # a deep-link that doesn't filter as expected.
+    warnings: List[str] = []
+    if resolved and isinstance(filters, dict):
+        nested_pre = filters.get("filters") if isinstance(filters.get("filters"), dict) else None
+        if isinstance(nested_pre, dict) and nested_pre:
+            known_cols: set = set()
+            for tn in resolved:
+                try:
+                    code = service._normalize_table_name(tn)
+                    adata = service.registry.load(code)
+                except Exception:
+                    adata = None
+                if adata is None:
+                    continue
+                known_cols.update(adata.var.columns)
+                known_cols.update(adata.obs.columns)
+            if known_cols:
+                unknown_cols = [c for c in nested_pre.keys() if c not in known_cols]
+                if unknown_cols:
+                    cleaned = {c: v for c, v in nested_pre.items() if c not in unknown_cols}
+                    filters = dict(filters)
+                    filters["filters"] = cleaned
+                    warnings.append(
+                        "Dropped unknown filter column(s): "
+                        + ", ".join(sorted(unknown_cols))
+                    )
+                    logger.info(
+                        "deeplink dropped unknown filter cols %s for tables %s",
+                        unknown_cols, resolved,
+                    )
+
     # GUARD: don't open empty plots. For data-bearing views, drop tables
     # whose .var or .obs rows are entirely cleared by the requested filters.
     # Filters arrive flat under ``filters.filters`` — we split them per
@@ -1963,6 +1861,7 @@ def assistant_deeplink():
         "view": view,
         "tables": resolved,
         "dropped_tables": dropped,
+        "warnings": warnings,
     }), 200
 
 
