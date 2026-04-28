@@ -102,6 +102,7 @@ python run.py
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/api/assistant/chat` | Streaming chat (SSE) with tool-calling over the loaded data |
+| `GET` | `/api/assistant/suggestions` | Dataset-grounded prompt suggestions for the assistant panel (`?n=`, `?seed=`) |
 | `POST` | `/api/assistant/deeplink` | Resolve a `(view, tables, filters, visualizations)` spec into a `?id=`-backed URL the frontend can open |
 | `POST` | `/api/assistant/compute` | Compute small, well-defined statistics (`top_orthogroups`, `top_tfs`, `summary_stats`) on the user's current view |
 
@@ -168,6 +169,8 @@ POST /api/data
 The assistant is **opt-in** and only activates when `LLM_API_BASE`, `LLM_API_KEY` and `LLM_MODEL` are set. It exposes a streaming chat endpoint (`/api/assistant/chat`) that receives the live UI context (current view, selected tables, filters, visible analysis digests) and a fixed catalog of read-only tools (`list_schema`, `resolve_value`, `count_rows`, `top_groups`, `common_values`, `summary_stats`, `build_deeplink`, …).
 
 Responses are markdown plus typed action blocks (`add_filter`, `viz_update`, `select_tables`, `set_expression_display`, `deeplink`, …) that the frontend either turns into one-click chips or applies directly when the user enables Auto-execute. Per-tool rate limits and a hard prompt-size cap (32 000 chars) are enforced by `routes.py`.
+
+The panel's example prompts come from `/api/assistant/suggestions`, which samples real values (species, tissues, TF families, orthogroup IDs) from the loaded H5AD files and renders them into a small set of templates. Each click on the **Shuffle** button issues a fresh request, so the suggestions stay grounded in the actual data and never produce "no results" queries.
 
 ### Auto-Discovery
 

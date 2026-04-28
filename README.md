@@ -199,6 +199,7 @@ The `.h5ad` file should contain:
 | POST | `/api/ora` | Over-representation analysis |
 | POST | `/api/cluster` | Server-side hierarchical clustering |
 | POST | `/api/assistant/chat` | Streaming chat endpoint (SSE) for the AI assistant |
+| GET | `/api/assistant/suggestions` | Dataset-grounded prompt suggestions (`?n=`, `?seed=`) |
 | POST | `/api/assistant/deeplink` | Resolve a view + filter spec into a shareable URL |
 | POST | `/api/assistant/compute` | Compute small derived statistics for the assistant |
 | GET | `/api/species_photos/<filename>` | Serve species photo images |

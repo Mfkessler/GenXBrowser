@@ -1711,6 +1711,40 @@ def assistant_chat():
     return jsonify(result), 200
 
 
+@api_bp.route('/api/assistant/suggestions', methods=['GET'])
+def assistant_suggestions():
+    """Dataset-grounded prompt suggestions for the assistant panel.
+
+    Query params:
+        n (int, default 4, max 10): number of suggestions to return.
+        seed (int, optional): deterministic seed for reproducible output.
+
+    Each refresh resamples templates + fillers from the live H5AD state, so
+    every returned prompt maps to data that is actually loaded.
+    """
+    ok, retry_in = _assistant_limiter.allow(_client_ip())
+    if not ok:
+        return jsonify({"error": "Rate limit exceeded", "retry_after": retry_in}), 429
+    try:
+        n = int(request.args.get("n", "4"))
+    except (TypeError, ValueError):
+        n = 4
+    seed_arg = request.args.get("seed")
+    seed: Optional[int] = None
+    if seed_arg is not None:
+        try:
+            seed = int(seed_arg)
+        except (TypeError, ValueError):
+            seed = None
+    try:
+        from .suggestions import generate_suggestions
+        items = generate_suggestions(get_service(), current_app.config_manager, n=n, seed=seed)
+        return jsonify({"suggestions": items, "count": len(items)}), 200
+    except Exception as e:
+        logger.error("/api/assistant/suggestions failed: %s", e, exc_info=True)
+        return jsonify({"error": "Failed to build suggestions", "details": str(e)}), 500
+
+
 @api_bp.route('/api/assistant/deeplink', methods=['POST'])
 def assistant_deeplink():
     """Validate a proposed view state and persist via the share-ID store.

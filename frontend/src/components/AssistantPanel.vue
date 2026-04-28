@@ -51,7 +51,32 @@
             you currently have open and can propose changes, compute summaries or open deep links.
           </p>
           <div class="space-y-2">
-            <p class="font-semibold text-gray-700">Try:</p>
+            <div class="flex items-center justify-between">
+              <p class="font-semibold text-gray-700">Try:</p>
+              <button
+                type="button"
+                class="inline-flex items-center gap-1 text-[11px] text-gray-600 hover:text-primary-700 hover:bg-primary-50 px-2 py-0.5 rounded cursor-pointer disabled:opacity-50 disabled:cursor-wait"
+                :disabled="suggestionsLoading"
+                @click="refreshSuggestions"
+                v-tooltip="'Shuffle suggestions based on the loaded data'"
+              >
+                <svg
+                  class="w-3 h-3"
+                  :class="{ 'animate-spin': suggestionsLoading }"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M4 4v5h5M20 20v-5h-5M5 9a7 7 0 0111.5-2.5L20 10M19 15a7 7 0 01-11.5 2.5L4 14"
+                  />
+                </svg>
+                Shuffle
+              </button>
+            </div>
             <button
               v-for="p in suggestedPrompts"
               :key="p"
@@ -313,6 +338,8 @@
 import { nextTick, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { marked } from "marked";
+import axios from "axios";
+import { API_BASE_URL } from "@/shared/Config";
 import {
   useAssistantStore,
   type AssistantAction,
@@ -336,12 +363,45 @@ const scrollEl = ref<HTMLElement | null>(null);
 
 marked.setOptions({ gfm: true, breaks: true });
 
-const suggestedPrompts = [
+// Static fallbacks used when the backend suggestions endpoint is unreachable
+// or returns an empty pool (e.g. a brand-new dataset with no annotations).
+const FALLBACK_SUGGESTIONS = [
   "Summarize the loaded datasets.",
   "Which orthogroup is the most represented?",
-  "Show ortho_id as a row side color.",
   "Open a heatmap comparing all species.",
 ];
+
+const suggestedPrompts = ref<string[]>([...FALLBACK_SUGGESTIONS]);
+const suggestionsLoading = ref(false);
+
+async function refreshSuggestions() {
+  if (suggestionsLoading.value) return;
+  suggestionsLoading.value = true;
+  try {
+    const resp = await axios.get<{ suggestions: { id: string; text: string }[] }>(
+      `${API_BASE_URL}/api/assistant/suggestions`,
+      { params: { n: 4 } },
+    );
+    const items = (resp.data?.suggestions || [])
+      .map((s) => s.text)
+      .filter((t) => typeof t === "string" && t.trim().length > 0);
+    suggestedPrompts.value = items.length > 0 ? items : [...FALLBACK_SUGGESTIONS];
+  } catch {
+    suggestedPrompts.value = [...FALLBACK_SUGGESTIONS];
+  } finally {
+    suggestionsLoading.value = false;
+  }
+}
+
+// Initial load: fire as soon as the panel opens for the first time, and any
+// time the user re-opens it after a clear (the empty state re-renders).
+watch(
+  () => store.open,
+  (isOpen) => {
+    if (isOpen && store.messages.length === 0) refreshSuggestions();
+  },
+  { immediate: true },
+);
 
 function stripActionBlocks(content: string): string {
   let out = content

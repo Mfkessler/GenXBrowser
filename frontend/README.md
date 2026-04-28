@@ -62,6 +62,7 @@ When the backend exposes the assistant endpoints (see [backend/README.md](../bac
 - The panel sends the live UI context (`view`, `selected_table_names`, `filters`, `visualizations`, optional analysis digests) on every message, so the model always reflects where the user is right now.
 - Backend responses include typed action blocks (`add_filter`, `viz_update`, `select_tables`, `set_expression_display`, `deeplink`, …) which the panel turns into one-click chips with an Undo step.
 - An **Auto-execute** toggle in the panel header (persisted in `localStorage` under `genx.assistant.autoExecute`) applies actions — including deep-link navigation — directly when streaming completes, without requiring per-action confirmation.
+- The empty-state "Try:" prompts are rendered from `/api/assistant/suggestions` and refreshed via the **Shuffle** button next to them, so every example is built from values that actually exist in the current dataset.
 - Data-bearing views (`/h`, `/c`, `/o`, `/p`) watch `route.query.id` and re-load the persisted filter / visualization state whenever the assistant points to a new hash on the same path, so re-runs (e.g. orthogroup ORA → GO ORA) refresh the view automatically.
 
 ### Frontend Config (`public/genxbrowser_config.yaml`)
