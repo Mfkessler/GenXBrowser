@@ -131,8 +131,13 @@ export const useAssistantStore = defineStore("assistant", () => {
     const clean = text.trim();
     if (!clean || streaming.value) return;
     messages.value.push({ role: "user", content: clean });
-    const assistantMsg: ChatMessage = { role: "assistant", content: "", actions: [] };
-    messages.value.push(assistantMsg);
+    // Push the assistant placeholder, then grab the REACTIVE reference back
+    // out of the array. Mutating the raw local object directly does NOT
+    // trigger Vue's array proxy, so streamed delta tokens were invisible
+    // until the final `streaming.value = false` write forced a re-render —
+    // which the user perceived as "no streaming, just the final answer".
+    messages.value.push({ role: "assistant", content: "", actions: [] });
+    const assistantMsg = messages.value[messages.value.length - 1] as ChatMessage;
 
     streaming.value = true;
     const controller = new AbortController();
