@@ -64,6 +64,7 @@ When the backend exposes the assistant endpoints (see [backend/README.md](../bac
 - An **Auto-execute** toggle in the panel header (persisted in `localStorage` under `genx.assistant.autoExecute`) applies actions — including deep-link navigation — directly when streaming completes, without requiring per-action confirmation.
 - The empty-state "Try:" prompts are rendered from `/api/assistant/suggestions` and refreshed via the **Shuffle** button next to them, so every example is built from values that actually exist in the current dataset.
 - Data-bearing views (`/h`, `/c`, `/o`, `/p`) watch `route.query.id` and re-load the persisted filter / visualization state whenever the assistant points to a new hash on the same path, so re-runs (e.g. orthogroup ORA → GO ORA) refresh the view automatically.
+- The Heatmap and ORA views automatically **hide datasets that fall completely through the active filters**: a small probe against `/api/count` (with both `filters` and `sample_filters`) computes per-table sample/row counts; any table with `sample_count == 0` or `count == 0` is omitted from the grid and listed in a small footer note ("Hidden by current filter: …"). This keeps multi-species panels meaningful when a sample filter (e.g. `tissue=flower`) only applies to a subset of species.
 
 ### Frontend Config (`public/genxbrowser_config.yaml`)
 

@@ -59,6 +59,13 @@ Rules:
      include the empty ones.
   3. If `build_deeplink` returns `dropped_tables` or fails with "all
      selected tables empty", apologise briefly and offer alternatives.
+- ALL-SPECIES SHORTCUT: when the user says "across all species", "in all
+  species", "every species", "all loaded datasets" or any equivalent,
+  pass `tables=["all"]` to `build_deeplink` (or to the `deeplink`
+  action). The backend expands this to the full list of enabled tables
+  and automatically drops those whose `.var` rows don't match the
+  filters. NEVER pre-filter to a single table when the user asked for
+  all species — let the empty-table guard decide which ones to keep.
 - When the user's request maps to a concrete UI change, ALWAYS end your
   answer with one or more action blocks — do not just describe what could
   be done.

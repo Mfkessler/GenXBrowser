@@ -76,7 +76,7 @@ python run.py
 | `GET` | `/api/tables` | List available species/datasets (optional `?tags=`) |
 | `GET` | `/api/columns` | Column metadata (`?table_name=`, `?meta=`, `?columns=`) |
 | `GET` | `/api/column_bins` | Histogram bin edges for numeric columns |
-| `POST` | `/api/count` | Filtered row count |
+| `POST` | `/api/count` | Filtered row + sample count (accepts `filters` and `sample_filters`; returns `{count, sample_count, total_samples}`) |
 | `POST` | `/api/data` | Query gene expression + metadata |
 | `GET` | `/api/col` | Unique values for a column |
 | `POST` | `/api/data/distinct` | Validate values against column uniques |

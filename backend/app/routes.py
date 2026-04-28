@@ -659,7 +659,17 @@ def get_column_bins():
 
 @api_bp.route('/api/count', methods=['POST'])
 def get_row_count():
-    """Get row count for a table with optional filters."""
+    """Get row + sample counts for a table with optional gene/sample filters.
+
+    Body: {table_name, filters?, sample_filters?}.
+
+    Response: {count, sample_count, total_samples}. ``sample_count`` is the
+    number of `.obs` rows passing ``sample_filters`` (full ``adata.n_obs``
+    when no sample filter is set), and ``count`` is the number of `.var`
+    rows passing ``filters`` (= ``adata.n_vars`` when none). The frontend
+    uses ``sample_count`` to hide datasets that completely fall through a
+    sample filter on a per-view basis.
+    """
     try:
         data = request.get_json(force=True, silent=True)
         if not data:
@@ -669,6 +679,7 @@ def get_row_count():
         data = schema.load(data)
         table_name = data.get('table_name')
         filters = data.get('filters')
+        sample_filters = data.get('sample_filters') or {}
         
         service = get_service()
         
@@ -677,11 +688,35 @@ def get_row_count():
         if not is_valid:
             return jsonify({"error": "Invalid 'table_name'"}), 400
         
-        # Parse and apply filters
+        # Parse and apply gene-level (var) filters via the existing helper.
         parsed_filters = parse_filters(filters, service.get_all_columns)
         count = service.get_row_count(table_name, parsed_filters)
+
+        # Compute the post-filter sample count via the registry directly so
+        # we don't have to materialise the full data frame just to count.
+        species_code = service._normalize_table_name(table_name)
+        adata = service.registry.load(species_code)
+        if adata is None:
+            sample_count = 0
+            total_samples = 0
+        else:
+            total_samples = int(adata.n_obs)
+            if not sample_filters:
+                sample_count = total_samples
+            else:
+                parsed_sample = parse_filters(
+                    sample_filters,
+                    lambda **kw: service.get_all_columns(table_name=table_name, **kw),
+                    source="column_meta",
+                )
+                allowed = service._filter_samples(adata, parsed_sample) if parsed_sample else None
+                sample_count = int(len(allowed)) if allowed is not None else total_samples
         
-        return jsonify({"count": count})
+        return jsonify({
+            "count": count,
+            "sample_count": sample_count,
+            "total_samples": total_samples,
+        })
     
     except ValidationError as err:
         return jsonify({"error": "Validation error", "details": err.messages}), 400
@@ -1766,6 +1801,22 @@ def assistant_deeplink():
     raw_tables = [str(t).strip() for t in raw_tables if str(t or "").strip()]
     if not isinstance(filters, dict) or not isinstance(visualizations, dict):
         return jsonify({"error": "'filters' and 'visualizations' must be objects"}), 400
+
+    # Auto-expand the "all loaded species" sentinel so the assistant can
+    # request every table without enumerating species codes. Empty input or
+    # any of the literals "all" / "*" / "__all__" / "every" / "everything"
+    # expands to the full list of enabled tables.
+    _sentinels = {"all", "*", "__all__", "every", "everything"}
+    if not raw_tables or any(t.lower() in _sentinels for t in raw_tables):
+        try:
+            entries = get_service().get_tables(include_disabled=False)
+            raw_tables = [
+                str(e.get("_species_code") or e.get("code"))
+                for e in entries
+                if (e.get("_species_code") or e.get("code"))
+            ]
+        except Exception as e:
+            logger.warning("auto-expand of 'all tables' failed: %s", e)
 
     # Normalize multi-value filter entries so the persisted state matches
     # what the frontend filter store / TextFilter pill component expect

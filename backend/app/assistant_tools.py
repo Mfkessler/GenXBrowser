@@ -641,7 +641,24 @@ def tool_build_deeplink(
     if v not in allowed:
         return {"error": f"Unknown view '{view}'", "allowed": sorted(allowed)}
 
-    codes = _resolve_species_codes(service, tables or [])
+    # Auto-expand the "all loaded species" sentinel so the LLM can request
+    # every table without having to enumerate species codes itself. Empty
+    # input or any of the literals "all" / "*" / "__all__" expands to the
+    # full list of enabled tables.
+    raw_tables = list(tables or [])
+    sentinels = {"all", "*", "__all__", "every", "everything"}
+    if not raw_tables or any(str(t).strip().lower() in sentinels for t in raw_tables):
+        try:
+            entries = service.get_tables(include_disabled=False)
+            raw_tables = [
+                str(e.get("_species_code") or e.get("code"))
+                for e in entries
+                if (e.get("_species_code") or e.get("code"))
+            ]
+        except Exception as e:
+            logger.warning("auto-expand of 'all tables' failed: %s", e)
+
+    codes = _resolve_species_codes(service, raw_tables)
     if v != "catalog" and not codes:
         return {"error": "at least one known table is required for this view"}
 

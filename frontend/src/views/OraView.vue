@@ -4,18 +4,28 @@
       class="flex gap-4 flex-grow p-2 overflow-x-auto overflow-y-auto"
     >
       <div
-        v-for="tableName in tableNames"
+        v-for="tableName in visibleTableNames"
         :key="tableName"
         class="flex-grow min-w-[42rem] flex flex-col"
       >
         <OraComponent
           :table-name="tableName"
-          :existing-tables="tableNames"
+          :existing-tables="visibleTableNames"
           :all-tables="allTables"
           @openSettingsOverlay="openSettingsOverlay"
           @update:tableName="onUpdateTableName(tableName, $event)"
         />
       </div>
+    </div>
+    <div
+      v-if="hiddenTableNames.length > 0"
+      class="px-3 py-1.5 text-[11px] text-gray-500 bg-gray-50 border-t border-gray-200"
+    >
+      Hidden by current filter:
+      <span v-for="(h, i) in hiddenTableNames" :key="h.table" class="ml-1">
+        <span class="font-medium text-gray-700">{{ h.table }}</span>
+        <span class="text-gray-400"> ({{ h.reason }})</span><span v-if="i < hiddenTableNames.length - 1">,</span>
+      </span>
     </div>
     <!-- SettingsOverlay -->
     <VisualizationSettings
@@ -38,6 +48,7 @@ import OraComponent from "@/components/OraComponent.vue";
 import { useFiltersStore } from "@/stores/filters";
 import { useVisualizationStore } from "@/stores/visualization";
 import VisualizationSettings from "@/components/VisualizationSettings.vue";
+import { useDatasetEmptinessFilter } from "@/shared/useDatasetEmptinessFilter";
 import { beautifyLabel } from "@/shared/utils";
 
 const route = useRoute();
@@ -57,6 +68,11 @@ const tableNames = computed(() => {
   const param = route.params.table_names;
   return typeof param === "string" ? param.split(",") : [];
 });
+
+// Hide datasets that have no transcripts / no samples after the current
+// filter set so the user never sees an unfiltered panel sitting next to
+// filtered ones.
+const { visibleTableNames, hiddenTableNames } = useDatasetEmptinessFilter(tableNames);
 
 const openSettingsOverlay = () => {
   showSettingsOverlay.value = true;

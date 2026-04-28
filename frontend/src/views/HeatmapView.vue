@@ -5,19 +5,33 @@
       :style="heatmapGridStyle"
     >
       <div
-        v-for="tableName in tableNames"
+        v-for="tableName in visibleTableNames"
         :key="tableName"
         class="min-w-0 h-full flex flex-col min-h-0"
         :style="heatmapCardStyle"
       >
         <HeatmapComponent
           :table-name="tableName"
-          :existing-tables="tableNames"
+          :existing-tables="visibleTableNames"
           :all-tables="allTables"
           @openSettingsOverlay="openSettingsOverlay"
           @update:tableName="onUpdateTableName(tableName, $event)"
         />
       </div>
+    </div>
+    <div
+      v-if="hiddenTableNames.length > 0"
+      class="px-3 py-1.5 text-[11px] text-gray-500 bg-gray-50 border-t border-gray-200"
+    >
+      Hidden by current filter:
+      <span
+        v-for="(h, i) in hiddenTableNames"
+        :key="h.table"
+        class="ml-1"
+      >
+        <span class="font-medium text-gray-700">{{ h.table }}</span>
+        <span class="text-gray-400"> ({{ h.reason }})</span><span v-if="i < hiddenTableNames.length - 1">,</span>
+      </span>
     </div>
     <!-- SettingsOverlay -->
     <VisualizationSettings
@@ -41,6 +55,7 @@ import HeatmapComponent from "@/components/HeatmapComponent.vue";
 import { useFiltersStore } from "@/stores/filters";
 import { useVisualizationStore } from "@/stores/visualization";
 import VisualizationSettings from "@/components/VisualizationSettings.vue";
+import { useDatasetEmptinessFilter } from "@/shared/useDatasetEmptinessFilter";
 import { beautifyLabel } from "@/shared/utils";
 
 const route = useRoute();
@@ -61,12 +76,17 @@ const tableNames = computed(() => {
   return typeof param === "string" ? param.split(",") : [];
 });
 
+// Auto-hide datasets whose `.var` rows or `.obs` samples fall completely
+// through the active gene/sample filters — keeps panels meaningful instead
+// of showing unfiltered placeholders next to filtered ones.
+const { visibleTableNames, hiddenTableNames } = useDatasetEmptinessFilter(tableNames);
+
 const heatmapGridStyle = computed(() => ({
-  gridTemplateColumns: getHeatmapGridTemplate(tableNames.value.length),
+  gridTemplateColumns: getHeatmapGridTemplate(visibleTableNames.value.length),
 }));
 
 const heatmapCardStyle = computed(() => ({
-  minHeight: getHeatmapCardMinHeight(tableNames.value.length),
+  minHeight: getHeatmapCardMinHeight(visibleTableNames.value.length),
 }));
 
 const openSettingsOverlay = () => {

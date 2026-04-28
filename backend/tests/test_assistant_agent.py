@@ -186,6 +186,37 @@ def test_build_deeplink_rejects_unknown_view():
     assert "error" in res
 
 
+def test_build_deeplink_expands_all_sentinel_to_every_table():
+    """`tables=['all']` should expand to every enabled species."""
+    svc = _make_fake_service()
+    res = tools.tool_build_deeplink(svc, view="heatmap", tables=["all"])
+    # Both fake species (CS, PS) should have been resolved.
+    assert set(res["tables"]) == {"CS", "PS"}
+    assert res["url_path"].startswith("/h/")
+
+
+def test_build_deeplink_expands_empty_tables_when_filters_dont_drop_all():
+    """An empty table list also expands to every enabled species."""
+    svc = _make_fake_service()
+    res = tools.tool_build_deeplink(svc, view="ora", tables=[])
+    assert set(res["tables"]) == {"CS", "PS"}
+
+
+def test_build_deeplink_all_sentinel_with_filter_drops_empty_tables():
+    """After expansion, the existing var-filter empty-table guard should
+    still prune species whose .var rows don't match.
+
+    PS has tf_family values {"MIKC", "bHLH", None} — filtering for
+    "GATA" leaves PS empty so it must be dropped.
+    """
+    svc = _make_fake_service()
+    res = tools.tool_build_deeplink(
+        svc, view="heatmap", tables=["all"],
+        filters={"filters": {"tf_family": {"value": "GATA"}}},
+    )
+    assert res["tables"] == ["CS"]
+
+
 # ---------------------------------------------------------------------------
 # dispatch_tool_call — the adapter used by the loop
 # ---------------------------------------------------------------------------

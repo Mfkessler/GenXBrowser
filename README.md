@@ -185,7 +185,7 @@ The `.h5ad` file should contain:
 | GET | `/api/columns` | Get column definitions |
 | GET | `/api/column_bins` | Get column histogram bin edges |
 | POST | `/api/data` | Query gene expression + metadata |
-| POST | `/api/count` | Count rows matching filters |
+| POST | `/api/count` | Count rows + samples matching filters (returns `count`, `sample_count`, `total_samples`) |
 | GET | `/api/col` | Get column data |
 | POST | `/api/data/distinct` | Get distinct values for columns |
 | GET | `/api/find` | Fuzzy gene search |
