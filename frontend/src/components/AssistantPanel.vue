@@ -15,6 +15,18 @@
           </div>
         </div>
         <div class="flex gap-1">
+          <label
+            class="flex items-center gap-1.5 px-2 py-1 text-[11px] text-gray-700 hover:bg-gray-100 rounded cursor-pointer select-none"
+            v-tooltip="autoExecuteTooltip"
+          >
+            <input
+              type="checkbox"
+              class="w-3 h-3 cursor-pointer accent-blue-600"
+              :checked="store.autoExecute"
+              @change="onToggleAutoExecute(($event.target as HTMLInputElement).checked)"
+            />
+            <span class="font-medium">Auto-execute</span>
+          </label>
           <button
             class="px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 rounded cursor-pointer"
             @click="store.reset()"
@@ -487,6 +499,14 @@ function send(prompt: string) {
   submit();
 }
 
+const autoExecuteTooltip =
+  "When enabled, the assistant directly applies filters, view updates and " +
+  "navigation as soon as it answers — no manual confirmation required.";
+
+function onToggleAutoExecute(value: boolean) {
+  store.setAutoExecute(value);
+}
+
 function submit() {
   const text = draft.value.trim();
   if (!text || store.streaming) return;
@@ -704,6 +724,13 @@ function applyDeeplink(action: AssistantAction): boolean {
 function autoApplyActions(msg: ChatMessage): boolean {
   let mutated = false;
   for (const action of msg.actions || []) {
+    // Deeplinks are pre-marked "applied" by the store (it just resolves
+    // url_path server-side). In auto-execute mode we still want to trigger
+    // navigation, so handle them before the pending-only short-circuit.
+    if (action.kind === "deeplink") {
+      if (applyDeeplink(action)) mutated = true;
+      continue;
+    }
     if (action.status && action.status !== "pending") continue;
     switch (action.kind) {
       case "viz_update":
@@ -718,11 +745,6 @@ function autoApplyActions(msg: ChatMessage): boolean {
         applySelectTables(action); mutated = mutated || action.status === "applied"; break;
       case "set_expression_display":
         applySetExpressionDisplay(action); mutated = mutated || action.status === "applied"; break;
-      case "deeplink":
-        // The store has already resolved url_path + status = "applied".
-        // Auto-navigate now so the user lands on the requested view.
-        if (applyDeeplink(action)) mutated = true;
-        break;
       default: /* compute: handled elsewhere */ break;
     }
   }
@@ -780,6 +802,8 @@ watch(
     if (wasStreaming && !isStreaming) {
       const last = store.messages[store.messages.length - 1];
       if (!last || last.role !== "assistant" || last.undo) return;
+      // Manual mode: leave actions pending so users get explicit chips.
+      if (!store.autoExecute) return;
       // Allow the store's post-stream action extraction to finish first.
       nextTick(() => {
         const pre = snapshotState();

@@ -74,12 +74,26 @@ export interface ClientContext {
   analysis_results?: Record<string, unknown>;
 }
 
+const AUTO_EXECUTE_STORAGE_KEY = "genx.assistant.autoExecute";
+
+function readAutoExecutePref(): boolean {
+  try {
+    return localStorage.getItem(AUTO_EXECUTE_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 export const useAssistantStore = defineStore("assistant", () => {
   const features = ref<FeatureFlags | null>(null);
   const open = ref(false);
   const streaming = ref(false);
   const messages = ref<ChatMessage[]>([]);
   const abortController = ref<AbortController | null>(null);
+  // When true, the panel directly applies pending actions (filters, viz
+  // updates, deeplink navigation) as soon as the model finishes streaming,
+  // instead of surfacing per-action confirmation chips.
+  const autoExecute = ref<boolean>(readAutoExecutePref());
   // Per-view analysis result digests (e.g. ORA results per table). Components
   // call setAnalysisContext() after their data refreshes.
   const analysisContext = ref<Record<string, unknown>>({});
@@ -288,12 +302,22 @@ export const useAssistantStore = defineStore("assistant", () => {
     }
   }
 
+  function setAutoExecute(value: boolean) {
+    autoExecute.value = value;
+    try {
+      localStorage.setItem(AUTO_EXECUTE_STORAGE_KEY, value ? "1" : "0");
+    } catch {
+      /* storage may be unavailable (private mode); state still flips in-memory. */
+    }
+  }
+
   return {
     features,
     open,
     streaming,
     messages,
     analysisContext,
+    autoExecute,
     enabled,
     displayName,
     loadFeatures,
@@ -302,5 +326,6 @@ export const useAssistantStore = defineStore("assistant", () => {
     reset,
     setAnalysisContext,
     clearAnalysisContext,
+    setAutoExecute,
   };
 });
