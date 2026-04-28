@@ -181,8 +181,13 @@
                 </button>
                 <span
                   v-else-if="action.kind === 'viz_update' && action.status === 'applied'"
-                  class="inline-flex items-center gap-1 bg-primary-100 text-primary-800 text-xs font-semibold px-3 py-1.5 rounded-full"
-                >✓ View updated</span>
+                  class="inline-flex items-center gap-1 bg-primary-100 text-primary-800 text-xs font-semibold px-3 py-1.5 rounded-full max-w-full"
+                  :title="action.summary || 'View updated'"
+                >
+                  <span class="truncate">
+                    ✓ View updated<template v-if="action.summary">: {{ action.summary }}</template>
+                  </span>
+                </span>
 
                 <button
                   v-else-if="action.kind === 'add_filter' && action.status !== 'applied'"
@@ -627,20 +632,95 @@ function undoMessage(msg: ChatMessage) {
 function applyVizUpdate(action: AssistantAction) {
   try {
     const patch = (action.spec.patch || action.spec) as Record<string, unknown>;
-    // Shallow-merge into the visualization store.
-    // Only top-level keys that already exist in the store state are applied.
     const state = visualizationStore.$state as unknown as Record<string, unknown>;
-    const safePatch: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(patch)) {
-      if (k === "kind" || k === "patch") continue;
-      if (k in state) safePatch[k] = v;
+
+    // Build a list of ``{path, value}`` entries from the incoming patch.
+    // The LLM may emit either a flat object (top-level keys), a dotted-key
+    // shorthand like ``{"compare.plotType": "box"}``, or a nested object
+    // like ``{"compare": {"plotType": "box"}}``. We normalise all three
+    // shapes here so updates to nested viz state (Compare plot type, ORA
+    // settings, phyloTree state, …) actually take effect — previously the
+    // shallow merge silently dropped any non-top-level key.
+    type Entry = { path: string[]; value: unknown };
+    const entries: Entry[] = [];
+    function walk(prefix: string[], obj: unknown) {
+      if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+        if (prefix.length > 0) entries.push({ path: prefix, value: obj });
+        return;
+      }
+      for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+        if (prefix.length === 0 && (k === "kind" || k === "patch")) continue;
+        const subPath = k.includes(".") ? [...prefix, ...k.split(".")] : [...prefix, k];
+        // Treat plain-object values as nested patches; arrays / primitives
+        // are leaves so we replace them as-is.
+        const isPlainObject = v !== null && typeof v === "object" && !Array.isArray(v);
+        if (isPlainObject) {
+          walk(subPath, v);
+        } else {
+          entries.push({ path: subPath, value: v });
+        }
+      }
     }
-    visualizationStore.$patch(safePatch);
+    walk([], patch);
+
+    // Apply each entry against the live store state. Refuse paths whose
+    // first segment isn't a known store key (avoids creating bogus state).
+    const applied: Array<{ path: string; value: unknown }> = [];
+    visualizationStore.$patch((s: unknown) => {
+      const root = s as Record<string, unknown>;
+      for (const { path, value } of entries) {
+        if (path.length === 0) continue;
+        if (!(path[0] in (state as object))) continue;
+        let cursor: Record<string, unknown> = root;
+        for (let i = 0; i < path.length - 1; i++) {
+          const seg = path[i];
+          const next = cursor[seg];
+          if (!next || typeof next !== "object" || Array.isArray(next)) {
+            // Don't auto-create nested containers — keep the store schema strict.
+            cursor = null as unknown as Record<string, unknown>;
+            break;
+          }
+          cursor = next as Record<string, unknown>;
+        }
+        if (!cursor) continue;
+        cursor[path[path.length - 1]] = value;
+        applied.push({ path: path.join("."), value });
+      }
+    });
+
+    if (applied.length === 0) {
+      action.status = "error";
+      action.error = "no patch keys matched the visualization store";
+      return;
+    }
+    // Stash a human-readable summary on the action so the chip can show
+    // exactly which keys were updated instead of a vague "View updated".
+    action.summary = applied
+      .map(({ path, value }) => `${path} → ${formatVizValue(value)}`)
+      .join(", ");
     action.status = "applied";
   } catch (e) {
     action.status = "error";
     action.error = (e as Error).message || "viz_update failed";
   }
+}
+
+/** Render a viz_update value compactly for the action chip tooltip /
+ *  badge. Strings stay quoted, arrays are joined, objects collapse. */
+function formatVizValue(v: unknown): string {
+  if (v === null || v === undefined) return String(v);
+  if (Array.isArray(v)) {
+    return "[" + v.map((x) => formatVizValue(x)).join(", ") + "]";
+  }
+  if (typeof v === "object") {
+    try {
+      return JSON.stringify(v);
+    } catch {
+      return "{…}";
+    }
+  }
+  if (typeof v === "string") return v;
+  return String(v);
 }
 
 function applyAddFilter(action: AssistantAction) {
@@ -748,15 +828,25 @@ function applySetExpressionDisplay(action: AssistantAction) {
     const spec = action.spec as {
       optionId?: string; layer?: string | null; transform?: "raw" | "log2" | "zscore";
     };
-    const setter = (visualizationStore as unknown as {
+    const store = visualizationStore as unknown as {
       setExpressionDisplay?: (id: string, layer: string | null, transform: "raw" | "log2" | "zscore") => void;
-    }).setExpressionDisplay;
+      setCompareState?: (s: { expression?: string }) => void;
+    };
+    const setter = store.setExpressionDisplay;
     if (!setter) {
       action.status = "error";
       action.error = "store has no setExpressionDisplay()";
       return;
     }
-    setter(String(spec.optionId || "raw"), spec.layer ?? null, spec.transform || "raw");
+    const optionId = String(spec.optionId || "raw");
+    setter(optionId, spec.layer ?? null, spec.transform || "raw");
+    // Compare view keeps its own copy of the expression display under
+    // `compare.expression` (used by the Compare component's dropdown).
+    // Without this mirror call the user sees the action chip flip to
+    // "applied" while the Compare plot keeps showing the previous mode.
+    if (route.path.startsWith("/c/") && typeof store.setCompareState === "function") {
+      store.setCompareState({ expression: optionId });
+    }
     action.status = "applied";
   } catch (e) {
     action.status = "error";

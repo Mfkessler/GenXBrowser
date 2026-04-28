@@ -166,7 +166,9 @@ POST /api/data
 
 ### AI Assistant
 
-The assistant is **opt-in** and only activates when `LLM_API_BASE`, `LLM_API_KEY` and `LLM_MODEL` are set. It exposes a streaming chat endpoint (`/api/assistant/chat`) that receives the live UI context (current view, selected tables, filters, visible analysis digests) and a fixed catalog of read-only tools (`list_schema`, `resolve_value`, `count_rows`, `top_groups`, `common_values`, `summary_stats`, `build_deeplink`, …).
+The assistant is **opt-in** and only activates when `LLM_API_BASE`, `LLM_API_KEY` and `LLM_MODEL` are set. It exposes a streaming chat endpoint (`/api/assistant/chat`) that receives the live UI context (current view, selected tables, filters, visible analysis digests) and a fixed catalog of read-only tools (`list_schema`, `list_view_settings`, `resolve_value`, `count_rows`, `top_groups`, `common_values`, `summary_stats`, `build_deeplink`, …).
+
+`list_view_settings(view, tables?)` is **instance-aware**: it returns only the expression-display options whose backing layer (`tpm`, `tmm`, `getmm`, …) is actually present in every selected H5AD file, plus the per-view controls (color scales, ORA grouping columns, plot type, …) with their valid value spaces. The system prompt requires the LLM to call this tool before emitting any `set_expression_display` or `viz_update` action so it never picks a value that the user cannot select in the UI.
 
 Responses are markdown plus typed action blocks (`add_filter`, `viz_update`, `select_tables`, `set_expression_display`, `deeplink`, …) that the frontend either turns into one-click chips or applies directly when the user enables Auto-execute. Per-tool rate limits and a hard prompt-size cap (32 000 chars) are enforced by `routes.py`.
 

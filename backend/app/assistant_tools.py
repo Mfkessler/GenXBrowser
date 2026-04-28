@@ -212,6 +212,215 @@ def tool_list_schema(service, cm, *, max_values_per_col: int = 0) -> Dict[str, A
     }
 
 
+# Static catalog of expression-display options. The frontend mirror lives at
+# `frontend/src/shared/ExpressionDisplay.ts` — keep these two in sync. The
+# tool below filters this list per instance based on which `.layers` are
+# actually present in the loaded H5AD files, so the assistant never picks
+# an option whose backing layer doesn't exist on this deployment.
+_EXPRESSION_OPTIONS: List[Dict[str, Any]] = [
+    {"id": "tpm",       "label": "TPM (within-sample)",            "layer": "tpm",    "transform": "raw"},
+    {"id": "tmm",       "label": "TMM (between-sample)",           "layer": "tmm",    "transform": "raw"},
+    {"id": "getmm",     "label": "GeTMM (gene-length corrected)",  "layer": "getmm",  "transform": "raw"},
+    {"id": "log2",      "label": "Log\u2082 (on TPM)",             "layer": "tpm",    "transform": "log2"},
+    {"id": "zscore",    "label": "Z-Score (on GeTMM)",             "layer": "getmm",  "transform": "zscore"},
+    {"id": "zscore-tpm","label": "Z-Score (on TPM)",               "layer": "tpm",    "transform": "zscore"},
+    {"id": "raw",       "label": "Raw Counts",                     "layer": "X",      "transform": "raw"},
+]
+
+# Per-view static descriptors of viz controls beyond the expression display.
+# Values are filled in dynamically by `tool_list_view_settings` based on the
+# loaded data (e.g. `oraColumnName.options` is the intersection of `.var`
+# columns across the selected tables).
+_VIEW_CONTROLS: Dict[str, List[Dict[str, Any]]] = {
+    "heatmap": [
+        {"key": "rowLabel",        "type": "boolean", "store_action": "toggleRowLabel"},
+        {"key": "colLabel",        "type": "boolean", "store_action": "toggleColLabel"},
+        {"key": "legend",          "type": "boolean", "store_action": "toggleLegend"},
+        {"key": "hideEmpty",       "type": "boolean", "store_action": "toggleHideEmpty"},
+        {"key": "colorScale",      "type": "enum",    "store_action": "setColorScale"},
+        {"key": "rowSideColors",   "type": "multi_select_var_column",
+         "store_action": "setRowSideColors"},
+        {"key": "colSideColors",   "type": "multi_select_obs_column",
+         "store_action": "setColSideColors"},
+        {"key": "rowOrder.name",   "type": "select_var_column", "store_action": "setRowOrderName"},
+        {"key": "colOrder.name",   "type": "select_obs_column", "store_action": "setColOrderName"},
+        {"key": "expressionDisplay", "type": "expression_display",
+         "store_action": "setExpressionDisplay"},
+    ],
+    "compare": [
+        {"key": "compare.plotType",   "type": "enum",
+         "options": ["line", "box", "violin"], "store_action": "setCompareState"},
+        {"key": "compare.plotHeight", "type": "integer",
+         "min": 200, "max": 1200, "store_action": "setCompareState"},
+        {"key": "compare.expression", "type": "expression_display",
+         "store_action": "setCompareState",
+         "note": "Compare view stores its own expression copy. Use action 'set_expression_display' which mirrors to BOTH expressionDisplay and compare.expression."},
+        {"key": "compare.showAllTranscripts", "type": "boolean",
+         "store_action": "setCompareState"},
+    ],
+    "phylo": [
+        {"key": "phyloTree.selectedOrthogroup", "type": "select_orthogroup",
+         "store_action": "setPhyloTreeState"},
+        {"key": "expressionDisplay", "type": "expression_display",
+         "store_action": "setExpressionDisplay"},
+    ],
+    "ora": [
+        {"key": "oraColumnName",  "type": "select_var_column", "store_action": "setOraColumnName"},
+        {"key": "significance",   "type": "enum",
+         "options": ["0.001", "0.01", "0.05", "0.1"], "store_action": "setSignificance"},
+        {"key": "oraTopN",        "type": "integer", "min": 1, "max": 500,
+         "store_action": "setOraTopN"},
+        {"key": "oraMinCount",    "type": "integer", "min": 1, "max": 50,
+         "store_action": "setOraMinCount"},
+        {"key": "oraTopologicalFilter", "type": "boolean",
+         "store_action": "toggleOraTopologicalFilter"},
+        {"key": "oraOrder.name",  "type": "enum",
+         "options": ["p_value", "fold_enrichment", "subset_count"],
+         "store_action": "setOraOrderName"},
+    ],
+}
+
+# Color-scale enum options the frontend exposes (mirrors COLORSCALES in
+# frontend/src/shared/Colorscales.ts).
+_COLOR_SCALES: List[str] = [
+    "VIRIDIS", "BLUES", "GREENS", "REDS", "GREYS", "ORANGES", "PURPLES",
+    "TURBO", "INFERNO", "MAGMA", "PLASMA", "CIVIDIS", "WARM", "COOL",
+    "CUBEHELIXDEFAULT", "BUGN", "BUPU", "GNBU", "ORRD", "PUBUGN", "PUBU",
+    "PURD", "RDPU", "YLGNBU", "YLGN", "YLORBR", "YLORRD",
+]
+
+
+def tool_list_view_settings(
+    service,
+    *,
+    view: str,
+    tables: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Return the available visualization settings for ``view`` on this
+    GenXBrowser instance, with valid value spaces resolved against the
+    loaded data.
+
+    Why this exists: settings like the expression-display dropdown depend
+    on which `.layers` the H5AD files actually contain — different
+    deployments have different layer sets. The LLM MUST call this tool
+    before emitting a `set_expression_display` / `viz_update` action so
+    it never picks a value that is not selectable in the current UI.
+
+    Returns:
+        {
+          "view": "<view>",
+          "tables_considered": [...],
+          "expression_options": [{id,label,layer,transform,available,reason}],
+          "controls": [{key,type,...,options?,note?}, ...],
+          "common_actions": ["set_expression_display", "viz_update"]
+        }
+    """
+    allowed = {"heatmap", "compare", "phylo", "ora", "catalog"}
+    v = str(view or "").strip().lower()
+    if v not in allowed:
+        return {"error": f"Unknown view '{view}'", "allowed": sorted(allowed)}
+
+    # Resolve the tables in scope: if the caller didn't pass any, use every
+    # enabled species so the assistant gets the full instance picture.
+    raw_tables = list(tables or [])
+    if not raw_tables:
+        try:
+            entries = service.get_tables(include_disabled=False)
+            raw_tables = [
+                str(e.get("_species_code") or e.get("code"))
+                for e in entries
+                if (e.get("_species_code") or e.get("code"))
+            ]
+        except Exception as e:
+            return {"error": f"get_tables failed: {e}"}
+    codes = _resolve_species_codes(service, raw_tables) if raw_tables else []
+
+    # Inspect each table once, collect available layers and column sets.
+    layer_sets: List[set] = []
+    var_col_sets: List[set] = []
+    obs_col_sets: List[set] = []
+    for code in codes:
+        try:
+            adata = service.registry.load(code)
+        except Exception:
+            adata = None
+        if adata is None:
+            continue
+        layers = {"X"}
+        try:
+            layers.update(set(adata.layers.keys()))
+        except Exception:
+            pass
+        layer_sets.append(layers)
+        try:
+            var_col_sets.append(set(adata.var.columns))
+        except Exception:
+            var_col_sets.append(set())
+        try:
+            obs_col_sets.append(set(adata.obs.columns))
+        except Exception:
+            obs_col_sets.append(set())
+
+    # Layer is "available" if it exists in the intersection of all selected
+    # tables (so the frontend can compute the same value uniformly across
+    # multi-species panels). For view="catalog" or no tables loaded we keep
+    # them all marked available.
+    if layer_sets:
+        common_layers = set.intersection(*layer_sets) if len(layer_sets) > 1 else layer_sets[0]
+    else:
+        common_layers = {"X", "tpm", "tmm", "getmm"}
+
+    expression_options: List[Dict[str, Any]] = []
+    for opt in _EXPRESSION_OPTIONS:
+        layer = opt.get("layer")
+        avail = (layer is None) or (str(layer) in common_layers)
+        entry = {
+            "id": opt["id"],
+            "label": opt["label"],
+            "layer": layer,
+            "transform": opt["transform"],
+            "available": bool(avail),
+        }
+        if not avail:
+            entry["reason"] = (
+                f"layer '{layer}' is not present in all selected tables "
+                f"(available layers: {sorted(common_layers)})"
+            )
+        expression_options.append(entry)
+
+    # Var/Obs column intersections drive enum values for column-selectors.
+    common_var = set.intersection(*var_col_sets) if var_col_sets else set()
+    common_obs = set.intersection(*obs_col_sets) if obs_col_sets else set()
+
+    controls_out: List[Dict[str, Any]] = []
+    for ctrl in _VIEW_CONTROLS.get(v, []):
+        c = dict(ctrl)
+        ctype = c.get("type")
+        if ctype == "enum" and c["key"] == "colorScale":
+            c["options"] = _COLOR_SCALES
+        elif ctype == "select_var_column":
+            c["options"] = sorted(common_var)
+        elif ctype == "select_obs_column":
+            c["options"] = sorted(common_obs)
+        elif ctype == "multi_select_var_column":
+            c["options"] = sorted(common_var)
+        elif ctype == "multi_select_obs_column":
+            c["options"] = sorted(common_obs)
+        controls_out.append(c)
+
+    return {
+        "view": v,
+        "tables_considered": codes,
+        "expression_options": expression_options,
+        "controls": controls_out,
+        "available_layers": sorted(common_layers),
+        "common_actions": [
+            "set_expression_display", "viz_update",
+            "add_filter", "remove_filter", "clear_filters",
+        ],
+    }
+
+
 def tool_list_distinct_values(
     service,
     *,
@@ -676,13 +885,22 @@ def tool_build_deeplink(
     # zero rows matching the requested filters. If every table is empty,
     # refuse to build the deeplink so the LLM has to apologise + suggest
     # something else instead of producing dead links.
+    #
+    # Filters in the deeplink payload live under ``filters.filters`` as a
+    # FLAT mapping (the frontend filter store doesn't separate gene vs
+    # sample columns). For each table we look at the loaded AnnData and
+    # split the columns into var- (gene) and obs- (sample) filters,
+    # then check `n_var_match` and `n_obs_match` independently. A table
+    # is kept only if BOTH counts are non-zero (or no filter applies to
+    # that axis). This is what makes "tissue=flower" work for the
+    # Compare view: a species with zero flower samples gets dropped here
+    # instead of failing the whole deeplink.
     dropped_tables: List[Dict[str, Any]] = []
     if v in {"heatmap", "compare", "phylo", "ora"} and codes:
-        nested_var = (filters.get("filters") or {}) if isinstance(filters, dict) else {}
-        # Convert to count_rows shape: {col: [v1, v2, ...]} from the nested
-        # {col: {value: "v1|v2", strict, empty}} the deeplink uses.
-        var_filters_for_check: Dict[str, Any] = {}
-        for col, spec in nested_var.items():
+        nested = (filters.get("filters") or {}) if isinstance(filters, dict) else {}
+        # Normalize {col: {value: "v1|v2", ...}} → {col: [v1, v2]}.
+        flat_filters: Dict[str, List[str]] = {}
+        for col, spec in nested.items():
             if not isinstance(spec, dict):
                 continue
             raw = spec.get("value")
@@ -693,21 +911,46 @@ def tool_build_deeplink(
             else:
                 vals = []
             if vals:
-                var_filters_for_check[col] = vals
+                flat_filters[col] = vals
+
         kept: List[str] = []
         for code in codes:
-            if not var_filters_for_check:
+            if not flat_filters:
                 kept.append(code)
                 continue
             try:
-                cr = tool_count_rows(service, table=code, var_filters=var_filters_for_check)
+                adata = service.registry.load(code)
+            except Exception:
+                adata = None
+            if adata is None:
+                # Don't penalise on load errors — let the view surface them.
+                kept.append(code)
+                continue
+            var_cols = set(adata.var.columns)
+            obs_cols = set(adata.obs.columns)
+            var_f = {c: vs for c, vs in flat_filters.items() if c in var_cols}
+            obs_f = {c: vs for c, vs in flat_filters.items() if c in obs_cols}
+            try:
+                cr = tool_count_rows(
+                    service, table=code,
+                    var_filters=var_f or None,
+                    obs_filters=obs_f or None,
+                )
             except Exception:
                 cr = {}
-            n_match = int(cr.get("n_var_match", 0)) if isinstance(cr, dict) else 0
-            if n_match > 0:
+            cr = cr if isinstance(cr, dict) else {}
+            n_var = int(cr.get("n_var_match", 0))
+            n_obs = int(cr.get("n_obs_match", 0))
+            var_ok = (not var_f) or n_var > 0
+            obs_ok = (not obs_f) or n_obs > 0
+            if var_ok and obs_ok:
                 kept.append(code)
             else:
-                dropped_tables.append({"table": code, "reason": "no rows match filters"})
+                if not var_ok:
+                    reason = "no transcripts match the gene filters"
+                else:
+                    reason = "no samples match the sample filters"
+                dropped_tables.append({"table": code, "reason": reason})
         if not kept:
             return {
                 "error": "all selected tables have zero rows matching the filters; refuse to open empty plot",
@@ -756,6 +999,43 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
                 "to know what data exists."
             ),
             "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_view_settings",
+            "description": (
+                "List the visualization settings available for a view on "
+                "this GenXBrowser instance. Returns the expression-display "
+                "options actually selectable here (filtered by layers that "
+                "exist in the loaded H5AD files), plus per-view controls "
+                "(toggles, color scales, ORA columns, plot types, ...). "
+                "ALWAYS call this BEFORE emitting `set_expression_display` "
+                "or `viz_update` so you never pick a value that the user "
+                "cannot select in the UI — the option set is "
+                "instance-dependent because deployments load different "
+                "expression layers."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "view": {
+                        "type": "string",
+                        "enum": ["heatmap", "compare", "phylo", "ora", "catalog"],
+                    },
+                    "tables": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": (
+                            "Optional: restrict to these species codes. "
+                            "Defaults to every loaded table — the result "
+                            "then reflects the intersection of layers / "
+                            "columns across all tables."
+                        ),
+                    },
+                },
+                "required": ["view"],
+            },
         },
     },
     {
@@ -935,6 +1215,7 @@ def openai_schema() -> List[Dict[str, Any]]:
 def _get_dispatch():
     return {
         "list_schema": lambda service, cm, **kw: tool_list_schema(service, cm, **kw),
+        "list_view_settings": lambda service, cm, **kw: tool_list_view_settings(service, **kw),
         "resolve_value": lambda service, cm, **kw: tool_resolve_value(service, **kw),
         "list_distinct_values": lambda service, cm, **kw: tool_list_distinct_values(service, **kw),
         "count_rows": lambda service, cm, **kw: tool_count_rows(service, **kw),

@@ -217,6 +217,66 @@ def test_build_deeplink_all_sentinel_with_filter_drops_empty_tables():
     assert res["tables"] == ["CS"]
 
 
+def test_build_deeplink_obs_filter_drops_species_without_matching_samples():
+    """Sample-metadata filters (e.g. tissue=flower) must drop species
+    whose .obs has zero matching samples — not fail the whole deeplink.
+
+    The fake service has CS with one 'flower' sample and PS with no
+    flower samples; filtering for tissue=flower must therefore keep CS
+    and drop PS.
+    """
+    svc = _make_fake_service()
+    res = tools.tool_build_deeplink(
+        svc, view="compare", tables=["all"],
+        filters={"filters": {"tissue": {"value": "flower"}}},
+    )
+    assert res["tables"] == ["CS"]
+    dropped = {d["table"] for d in res.get("dropped_tables", [])}
+    assert "PS" in dropped
+
+
+def test_build_deeplink_obs_filter_no_match_anywhere_returns_error():
+    """If a sample filter has zero matches in every species the deeplink
+    must refuse rather than open empty plots."""
+    svc = _make_fake_service()
+    res = tools.tool_build_deeplink(
+        svc, view="heatmap", tables=["all"],
+        filters={"filters": {"tissue": {"value": "moon-base"}}},
+    )
+    assert "error" in res
+    assert res.get("dropped_tables")
+
+
+# ---------------------------------------------------------------------------
+# tool_list_view_settings — instance-aware viz settings discovery
+# ---------------------------------------------------------------------------
+
+def test_list_view_settings_marks_unavailable_layers():
+    """Expression options whose backing layer is missing in the loaded
+    AnnData must be returned with ``available == False``.
+
+    The fake AnnData has no ``.layers`` (only the default ``X``), so
+    every option targeting tpm/tmm/getmm should be unavailable while
+    the raw-counts option stays available.
+    """
+    svc = _make_fake_service()
+    res = tools.tool_list_view_settings(svc, view="heatmap")
+    assert res["view"] == "heatmap"
+    by_id = {o["id"]: o for o in res["expression_options"]}
+    assert by_id["raw"]["available"] is True
+    assert by_id["tpm"]["available"] is False
+    assert "reason" in by_id["tpm"]
+    # Color scale enum is populated.
+    color_ctrl = next(c for c in res["controls"] if c.get("key") == "colorScale")
+    assert "VIRIDIS" in color_ctrl["options"]
+
+
+def test_list_view_settings_rejects_unknown_view():
+    svc = _make_fake_service()
+    res = tools.tool_list_view_settings(svc, view="rainbow")
+    assert "error" in res
+
+
 # ---------------------------------------------------------------------------
 # dispatch_tool_call — the adapter used by the loop
 # ---------------------------------------------------------------------------
@@ -237,7 +297,8 @@ def test_dispatch_passes_args_through():
 
 def test_openai_schema_has_expected_tools():
     names = {t["function"]["name"] for t in tools.openai_schema()}
-    assert {"list_schema", "resolve_value", "count_rows", "top_groups", "build_deeplink"} <= names
+    assert {"list_schema", "list_view_settings", "resolve_value",
+            "count_rows", "top_groups", "build_deeplink"} <= names
 
 
 # ---------------------------------------------------------------------------

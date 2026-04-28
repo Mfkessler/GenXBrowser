@@ -22,6 +22,10 @@ export interface AssistantAction {
   status?: "pending" | "applied" | "error";
   result?: unknown;
   error?: string;
+  /** Human-readable summary of what an action applied (e.g.
+   *  "compare.plotType → box, colorScale → VIRIDIS"). Filled in by the
+   *  per-kind apply* handlers so the chip can show details. */
+  summary?: string;
 }
 
 export interface ToolTrace {
