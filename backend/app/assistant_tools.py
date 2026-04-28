@@ -217,6 +217,98 @@ def apply_assistant_filters(
 # small bound.
 _SCHEMA_CACHE: Dict[Tuple[str, float], Dict[str, Any]] = {}
 
+# (species_code, h5ad_mtime, namespace) → list of (column_name, Counter).
+# Built lazily by ``_get_value_counters`` and reused across every
+# ``tool_resolve_value`` call. The Counter is the dominant cost there;
+# rebuilding it on every invocation routinely hit the 20s tool-timeout
+# on instances with high-cardinality array columns (go_terms, ipr_desc).
+_VALUE_COUNTER_CACHE: Dict[Tuple[str, float, str], List[Tuple[str, "Counter"]]] = {}
+
+# Columns that are pointless to scan with substring-match for resolve_value
+# (gene IDs, free-text descriptions). They drown the result list and
+# inflate counter-build cost. Exact-match still works because exact
+# matches use the same counter and are kept ahead of substring hits.
+_RESOLVE_SKIP_COL_SUBSTR = (
+    "gene_id", "ensembl", "uniprot", "transcript", "go_terms",
+    "description long", "description", "go", "ipr_id", "ipr_desc",
+    "db accession", "lineage",
+)
+
+
+def _column_value_counter(series, col: str) -> Optional["Counter"]:
+    """Build a ``Counter`` over the (split) values of ``series``.
+
+    Returns ``None`` for obvious numeric columns or empty series so the
+    caller can skip them entirely. Lower-cases are NOT applied here so
+    the original spelling survives for the LLM to reuse verbatim.
+    """
+    try:
+        dtype = str(series.dtype)
+        if dtype.startswith("float") or dtype.startswith("int"):
+            return None
+        values = _split_array_values(series)
+        if not values:
+            return None
+        return Counter(values)
+    except Exception:
+        return None
+
+
+def _get_value_counters(adata, code: str, namespace: str, mtime: float
+                        ) -> List[Tuple[str, "Counter"]]:
+    """Cached per-column value counters for ``namespace`` ('var' or 'obs').
+
+    Keyed by (species_code, mtime, namespace). The first call for a given
+    h5ad pays the build cost; subsequent calls are dictionary lookups.
+    The cache automatically invalidates when the file mtime changes.
+
+    High-cardinality / free-text columns listed in
+    ``_RESOLVE_SKIP_COL_SUBSTR`` are excluded entirely — building a
+    ``Counter`` over (e.g.) ``ipr_desc`` with >20k unique values across
+    three species single-threadedly under the GIL was the dominant cost
+    that caused parallel ``resolve_value`` calls to hit the tool
+    timeout. They are also poor filter targets (the LLM would never
+    filter ``ipr_desc`` by substring), so dropping them is a net
+    improvement for resolve quality too.
+    """
+    key = (code, round(float(mtime), 3), namespace)
+    cached = _VALUE_COUNTER_CACHE.get(key)
+    if cached is not None:
+        return cached
+    df = adata.var if namespace == "var" else adata.obs
+    out: List[Tuple[str, "Counter"]] = []
+    for col in df.columns:
+        col_l = str(col).lower()
+        if any(s in col_l for s in _RESOLVE_SKIP_COL_SUBSTR):
+            continue
+        ctr = _column_value_counter(df[col], col)
+        if ctr is not None:
+            out.append((col, ctr))
+    _VALUE_COUNTER_CACHE[key] = out
+    if len(_VALUE_COUNTER_CACHE) > 128:
+        try:
+            _VALUE_COUNTER_CACHE.pop(next(iter(_VALUE_COUNTER_CACHE)))
+        except StopIteration:
+            pass
+    return out
+
+
+def _h5ad_mtime_for(service, code: str) -> float:
+    """Best-effort h5ad mtime for cache keys; ``0.0`` on failure.
+
+    A constant fallback still gives correctness — the cache key is just
+    less specific. mtime moves cache invalidation to the file system.
+    """
+    try:
+        species_map = getattr(getattr(service, "registry", None), "_species", None) or {}
+        info = species_map.get(code) if isinstance(species_map, dict) else None
+        path = info.get("file_path") if isinstance(info, dict) else None
+        if path and os.path.exists(path):
+            return os.path.getmtime(path)
+    except Exception:
+        pass
+    return 0.0
+
 
 def tool_list_schema(service, cm, *, max_values_per_col: int = 0) -> Dict[str, Any]:
     """High-level schema the LLM needs to pick tables/columns/filters.
@@ -586,6 +678,11 @@ def tool_resolve_value(
 
     Returns ranked hits ``{table, column, value, count, match}``. Used by the
     LLM before emitting an ``add_filter`` block so it never guesses the column.
+
+    The per-column ``Counter`` over each species' ``.var`` / ``.obs`` is
+    cached by (code, mtime, namespace) — a cold call rebuilds, every
+    subsequent call is O(columns × unique_values_in_each) at most and
+    typically returns in well under a second.
     """
     if not query:
         return {"error": "'query' is required"}
@@ -603,38 +700,32 @@ def tool_resolve_value(
         if adata is None:
             continue
 
-        # Scan categorical-ish columns of .var and .obs.
-        for ns_name, df in (("var", adata.var), ("obs", adata.obs)):
-            for col in df.columns:
-                try:
-                    series = df[col]
-                    dtype = str(series.dtype)
-                    # Skip obvious numerics.
-                    if dtype.startswith("float") or dtype.startswith("int"):
-                        continue
-                    values = _split_array_values(series)
-                    if not values:
-                        continue
-                    counter = Counter(values)
-                    # Exact (case-insensitive) match.
-                    exact = [v for v in counter if v.lower() == q_lower]
-                    for v in exact:
-                        hits.append({
-                            "table": code, "namespace": ns_name, "column": col,
-                            "value": v, "count": counter[v], "match": "exact",
-                        })
-                    # Substring match (skip if exact already recorded for this column).
-                    if not exact:
-                        subs = [v for v in counter if q_lower in v.lower()]
-                        # Keep top 3 by count per column.
-                        subs.sort(key=lambda x: -counter[x])
-                        for v in subs[:3]:
-                            hits.append({
-                                "table": code, "namespace": ns_name, "column": col,
-                                "value": v, "count": counter[v], "match": "substring",
-                            })
-                except Exception:
+        mtime = _h5ad_mtime_for(service, code)
+        for ns_name in ("var", "obs"):
+            counters = _get_value_counters(adata, code, ns_name, mtime)
+            for col, counter in counters:
+                # Exact (case-insensitive) match.
+                exact = [v for v in counter if v.lower() == q_lower]
+                for v in exact:
+                    hits.append({
+                        "table": code, "namespace": ns_name, "column": col,
+                        "value": v, "count": counter[v], "match": "exact",
+                    })
+                if exact:
                     continue
+                # Skip free-text / very-high-cardinality columns for
+                # substring matching to avoid drowning the LLM in noise.
+                col_l = col.lower()
+                if any(s in col_l for s in _RESOLVE_SKIP_COL_SUBSTR):
+                    continue
+                subs = [v for v in counter if q_lower in v.lower()]
+                # Keep top 3 by count per column.
+                subs.sort(key=lambda x: -counter[x])
+                for v in subs[:3]:
+                    hits.append({
+                        "table": code, "namespace": ns_name, "column": col,
+                        "value": v, "count": counter[v], "match": "substring",
+                    })
 
     # Prefer exact matches, then higher counts.
     hits.sort(key=lambda h: (0 if h["match"] == "exact" else 1, -h["count"]))

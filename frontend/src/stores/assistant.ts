@@ -242,7 +242,15 @@ export const useAssistantStore = defineStore("assistant", () => {
                 assistantMsg.thoughts.push(t);
               }
             } else if (typeof obj.delta === "string") {
-              assistantMsg.content += obj.delta;
+              // The backend may set `replace: true` to swap the bubble's
+              // content (used for retag-cleanup or to wipe pre-tool
+              // "thinking" prose that turned out to be intermediate). The
+              // default mode is append.
+              if (obj.replace === true) {
+                assistantMsg.content = obj.delta;
+              } else {
+                assistantMsg.content += obj.delta;
+              }
             } else if (obj.error) {
               assistantMsg.error = String(obj.error);
             }

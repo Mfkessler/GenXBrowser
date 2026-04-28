@@ -306,16 +306,21 @@ def test_openai_schema_has_expected_tools():
 # ---------------------------------------------------------------------------
 
 def _make_fake_llm(script: List[Dict[str, Any]]):
-    """Scripted ``_complete_with_fallback`` replacement.
+    """Scripted ``_stream_with_fallback`` replacement.
 
     ``script`` is a list of assistant-message dicts to return in order.
+    Each scripted dict is delivered as a single ``("final", msg, model)``
+    event — i.e. no streaming deltas — so existing assertions about the
+    final delta payload still hold.
     """
     calls_left = list(script)
 
     def fake(cfg, messages, *, tools=None):
         if not calls_left:
-            return {"content": "done", "role": "assistant"}, "fake", None
-        return calls_left.pop(0), "fake", None
+            yield ("final", {"content": "done", "role": "assistant"}, "fake")
+            return
+        yield ("final", calls_left.pop(0), "fake")
+
     return fake
 
 
@@ -355,7 +360,7 @@ def test_agentic_loop_mikc_scenario(monkeypatch):
         },
     ]
 
-    monkeypatch.setattr(assistant, "_complete_with_fallback", _make_fake_llm(script))
+    monkeypatch.setattr(assistant, "_stream_with_fallback", _make_fake_llm(script))
 
     events = list(assistant.run_agentic_turn(
         cfg={"model": "fake"},
@@ -396,7 +401,7 @@ def test_agentic_loop_hits_iteration_cap(monkeypatch):
     }
     # Exactly `max_iterations` tool-calling turns, then a final text turn for the cap-fallback.
     script = [infinite_tool_call, infinite_tool_call, {"role": "assistant", "content": "capped."}]
-    monkeypatch.setattr(assistant, "_complete_with_fallback", _make_fake_llm(script))
+    monkeypatch.setattr(assistant, "_stream_with_fallback", _make_fake_llm(script))
 
     events = list(assistant.run_agentic_turn(
         cfg={"model": "fake"},
@@ -536,7 +541,7 @@ def test_agentic_loop_salvages_leaked_tool_call(monkeypatch):
             "content": "The top orthogroup is OG1.\n\n```add_filter\n{\"column\":\"ortho_id\",\"value\":\"OG1\"}\n```",
         },
     ]
-    monkeypatch.setattr(assistant, "_complete_with_fallback", _make_fake_llm(script))
+    monkeypatch.setattr(assistant, "_stream_with_fallback", _make_fake_llm(script))
 
     events = list(assistant.run_agentic_turn(
         cfg={"model": "fake"},

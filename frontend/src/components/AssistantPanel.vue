@@ -115,15 +115,19 @@
                 <div v-for="(t, ti) in msg.thoughts" :key="ti" class="text-gray-600">{{ t }}</div>
               </div>
             </details>
+            <!-- Streamed answer content. Renders independently of thoughts so
+                 the final-iteration answer appears immediately as tokens
+                 arrive even if earlier iterations produced thinking traces. -->
             <div
-              v-else-if="stripActionBlocks(msg.content)"
+              v-if="stripActionBlocks(msg.content)"
               class="assistant-markdown text-sm"
               v-html="renderMarkdown(stripActionBlocks(msg.content))"
             ></div>
-            <!-- Streaming placeholder: surface what the assistant is doing
-                 instead of just an opaque ellipsis so the user sees progress. -->
+            <!-- Streaming placeholder: only when there is NOTHING to show
+                 yet (no content, no error). Visible during model_call gaps
+                 between tool iterations. -->
             <div
-              v-else-if="store.streaming && idx === store.messages.length - 1"
+              v-else-if="store.streaming && idx === store.messages.length - 1 && !msg.error"
               class="text-xs text-gray-500 italic flex items-center gap-2 min-h-[1.5rem]"
             >
               <span class="inline-flex items-center gap-1.5 shrink-0">

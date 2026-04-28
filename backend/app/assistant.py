@@ -544,6 +544,137 @@ def _complete_once(
         return None, None, f"{type(e).__name__}: {e}"
 
 
+def _stream_once(
+    cfg: Dict[str, Any],
+    messages: List[Dict[str, Any]],
+    *,
+    tools: Optional[List[Dict[str, Any]]],
+    model_override: Optional[str] = None,
+) -> Iterator[Tuple[str, Any]]:
+    """Stream a single chat completion. Yields tuples:
+
+    - ``("delta", text)`` for each incremental content chunk.
+    - ``("final", message_dict, model_used)`` once the upstream finishes —
+      ``message_dict`` is a fully-assembled assistant message with both
+      accumulated ``content`` and (if any) the assembled ``tool_calls``.
+    - ``("error", err_string)`` on transport / HTTP failure (no final).
+
+    The streaming variant lets the agentic loop forward content tokens to
+    the SSE client AS THEY ARRIVE rather than waiting for the whole
+    completion. Tool calls are buffered (by ``index``) and only acted on
+    at end-of-stream — exactly the same shape the non-streaming path used
+    to emit, so the rest of the loop stays untouched.
+    """
+    try:
+        resp = call_chat_completion(
+            cfg, messages, stream=True, model_override=model_override,
+            tools=tools, tool_choice="auto" if tools else None,
+        )
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")[:300]
+        yield ("error", f"HTTP {e.code}: {detail}")
+        return
+    except Exception as e:  # noqa: BLE001
+        yield ("error", f"{type(e).__name__}: {e}")
+        return
+
+    content_parts: List[str] = []
+    tc_acc: Dict[int, Dict[str, Any]] = {}
+    used_model = model_override
+
+    try:
+        for raw in resp:
+            if not raw:
+                continue
+            line = raw.decode("utf-8", errors="replace").rstrip("\n").rstrip("\r")
+            if not line.startswith("data:"):
+                continue
+            payload = line[5:].strip()
+            if payload == "[DONE]":
+                break
+            try:
+                obj = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            if obj.get("model"):
+                used_model = obj["model"]
+            choices = obj.get("choices") or []
+            if not choices:
+                continue
+            delta = choices[0].get("delta") or {}
+            content = delta.get("content")
+            if content:
+                content_parts.append(content)
+                yield ("delta", content)
+            for tc in delta.get("tool_calls") or []:
+                idx = tc.get("index", 0)
+                slot = tc_acc.setdefault(idx, {
+                    "id": "",
+                    "type": "function",
+                    "function": {"name": "", "arguments": ""},
+                })
+                if tc.get("id"):
+                    slot["id"] = tc["id"]
+                if tc.get("type"):
+                    slot["type"] = tc["type"]
+                fn = tc.get("function") or {}
+                if fn.get("name"):
+                    slot["function"]["name"] += fn["name"]
+                if fn.get("arguments"):
+                    slot["function"]["arguments"] += fn["arguments"]
+    finally:
+        try:
+            resp.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    final_msg: Dict[str, Any] = {
+        "role": "assistant",
+        "content": "".join(content_parts),
+    }
+    if tc_acc:
+        final_msg["tool_calls"] = [tc_acc[i] for i in sorted(tc_acc.keys())]
+    yield ("final", final_msg, used_model)
+
+
+def _stream_with_fallback(
+    cfg: Dict[str, Any],
+    messages: List[Dict[str, Any]],
+    *,
+    tools: Optional[List[Dict[str, Any]]],
+) -> Iterator[Tuple[str, Any]]:
+    """Stream from primary model, fall back once on transport error.
+
+    Critical: only switches to fallback if the primary fails BEFORE any
+    content / tool_call delta has been emitted to the caller. Once we
+    started streaming content, the caller's UI is already showing tokens
+    from the primary model — silently restarting with a different model
+    would either duplicate tokens or jump in the middle.
+    """
+    last_err: Optional[str] = None
+    for model in [m for m in (cfg.get("model"), cfg.get("fallback_model")) if m]:
+        emitted = False
+        had_error = False
+        for ev in _stream_once(cfg, messages, tools=tools, model_override=model):
+            kind = ev[0]
+            if kind == "error":
+                last_err = f"{ev[1]} (model={model})"
+                logger.warning("LLM streaming failure: %s", last_err)
+                if emitted:
+                    # Already streamed partial output to client — don't
+                    # silently retry; surface the error.
+                    yield ("error", last_err)
+                    return
+                had_error = True
+                break
+            if kind == "delta":
+                emitted = True
+            yield ev
+        if not had_error:
+            return
+    yield ("error", last_err or "no usable model")
+
+
 def _complete_with_fallback(
     cfg: Dict[str, Any],
     messages: List[Dict[str, Any]],
@@ -594,7 +725,27 @@ def run_agentic_turn(
             "iteration": iteration + 1,
             "max_iterations": int(max_iterations),
         }
-        msg, used_model, err = _complete_with_fallback(cfg, messages, tools=tools)
+
+        # Stream the completion. Content tokens are forwarded to the SSE
+        # client as they arrive (huge perceived-latency win); tool_calls
+        # are buffered until end-of-stream and dispatched after.
+        msg: Optional[Dict[str, Any]] = None
+        used_model: Optional[str] = None
+        err: Optional[str] = None
+        emitted_chars = 0  # how many content chars we already streamed
+        for ev in _stream_with_fallback(cfg, messages, tools=tools):
+            kind = ev[0]
+            if kind == "delta":
+                chunk = ev[1] or ""
+                emitted_chars += len(chunk)
+                yield {"type": "delta", "delta": chunk}
+            elif kind == "final":
+                msg = ev[1]
+                used_model = ev[2]
+            elif kind == "error":
+                err = ev[1]
+                break
+
         if msg is None:
             yield {"type": "error", "error": err or "upstream failure"}
             return
@@ -611,6 +762,11 @@ def run_agentic_turn(
                 logger.info("Salvaging %d leaked tool call(s) from assistant text", len(leaked))
                 # Append the (cleaned) assistant turn so the model sees its own draft.
                 cleaned = _strip_leaked_tool_blocks(content, [span for _, _, span in leaked])
+                # We already streamed the leaked JSON to the client. Replace
+                # the assistant bubble's content with the cleaned version
+                # so the user never sees the raw payload.
+                if emitted_chars > 0:
+                    yield {"type": "delta", "delta": cleaned, "replace": True}
                 messages.append({"role": "assistant", "content": cleaned})
                 # Feed each leaked call back as a synthetic tool result.
                 for name, args, _span in leaked:
@@ -640,16 +796,22 @@ def run_agentic_turn(
                             f"the final answer now, ending with any required action blocks."
                         ),
                     })
+                # Reset the streamed-char counter for the next iteration so a
+                # subsequent retag-replace doesn't double-fire.
+                emitted_chars = 0
                 continue  # re-prompt with tool results included
 
-            # Final assistant message — emit text and stop.
+            # Final assistant message — content was already streamed via
+            # delta events above. Apply retag_action_fences as a defensive
+            # post-processing step; if it changed anything, send a
+            # `replace` delta so the client swaps the bubble's content
+            # for the cleaned-up version. Otherwise nothing more to send.
             cleaned = retag_action_fences(content)
-            yield {
-                "type": "delta",
-                "delta": cleaned,
-                "model": used_model,
-                "iterations": iteration + 1,
-            }
+            if emitted_chars == 0:
+                # Some models return content only at end-of-stream (rare).
+                yield {"type": "delta", "delta": cleaned}
+            elif cleaned != content:
+                yield {"type": "delta", "delta": cleaned, "replace": True}
             yield {"type": "done", "model": used_model, "iterations": iteration + 1}
             return
 
@@ -660,9 +822,18 @@ def run_agentic_turn(
             "tool_calls": tool_calls,
         })
 
+        # If we already streamed content tokens to the client this turn,
+        # but the model ALSO emitted tool_calls, the streamed content was
+        # really "thinking" prose, not the final answer. Wipe the bubble
+        # (replace with empty) and re-emit it as a `thought` event so the
+        # UI shows it under the dedicated thoughts section instead of
+        # leaking pre-tool reasoning into the answer.
+        if emitted_chars > 0:
+            yield {"type": "delta", "delta": "", "replace": True}
+            emitted_chars = 0
+
         # Surface the interim "thought" prose (if any) so the UI can show
-        # what the model is reasoning about between tool calls. The raw
-        # text is hidden by default in the UI but visible on demand.
+        # what the model is reasoning about between tool calls.
         thought_text = (msg.get("content") or "").strip()
         if thought_text:
             # Strip any stray fenced action/JSON blocks — the user only sees
@@ -694,9 +865,14 @@ def run_agentic_turn(
         results: Dict[str, Dict[str, Any]] = {}
         # Per-tool wall-clock timeout: ensures one slow tool (e.g. an
         # H5AD load) cannot stall the whole agentic turn. Tunable via
-        # GENX_TOOL_TIMEOUT (seconds, default 20).
+        # GENX_TOOL_TIMEOUT (seconds, default 30). The first call to a
+        # tool that builds a per-column value-counter cache (like
+        # ``resolve_value`` on a fresh boot) can legitimately take 10-15s
+        # on multi-species deployments — subsequent calls hit the cache
+        # in milliseconds. The default is generous enough to cover the
+        # cold path while still bounding genuinely-stuck dispatches.
         try:
-            tool_timeout = float(os.environ.get("GENX_TOOL_TIMEOUT", "20"))
+            tool_timeout = float(os.environ.get("GENX_TOOL_TIMEOUT", "30"))
         except (TypeError, ValueError):
             tool_timeout = 20.0
         if len(prepared) == 1:

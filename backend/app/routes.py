@@ -1540,10 +1540,13 @@ def assistant_chat():
                         )
                     elif etype == "delta":
                         text = ev.get("delta") or ""
-                        # Chunk the final text so the UI can render progressively.
-                        step = 120
-                        for i in range(0, len(text), step):
-                            yield f"data: {json.dumps({'delta': text[i:i+step]})}\n\n"
+                        # Deltas now arrive token-sized straight from the
+                        # upstream stream. Forward as-is so the UI sees
+                        # tokens the moment the model emits them.
+                        frame: Dict[str, Any] = {"delta": text}
+                        if ev.get("replace"):
+                            frame["replace"] = True
+                        yield f"data: {json.dumps(frame)}\n\n"
                     elif etype == "status":
                         yield (
                             f"event: status\n"
