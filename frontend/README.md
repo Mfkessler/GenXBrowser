@@ -55,6 +55,15 @@ npm run dev
 
 ## Configuration
 
+### AI Assistant
+
+When the backend exposes the assistant endpoints (see [backend/README.md](../backend/README.md#ai-assistant)), the frontend renders a slide-in chat panel via [`AssistantPanel.vue`](src/components/AssistantPanel.vue) (state in [`stores/assistant.ts`](src/stores/assistant.ts)).
+
+- The panel sends the live UI context (`view`, `selected_table_names`, `filters`, `visualizations`, optional analysis digests) on every message, so the model always reflects where the user is right now.
+- Backend responses include typed action blocks (`add_filter`, `viz_update`, `select_tables`, `set_expression_display`, `deeplink`, …) which the panel turns into one-click chips with an Undo step.
+- An **Auto-execute** toggle in the panel header (persisted in `localStorage` under `genx.assistant.autoExecute`) applies actions — including deep-link navigation — directly when streaming completes, without requiring per-action confirmation.
+- Data-bearing views (`/h`, `/c`, `/o`, `/p`) watch `route.query.id` and re-load the persisted filter / visualization state whenever the assistant points to a new hash on the same path, so re-runs (e.g. orthogroup ORA → GO ORA) refresh the view automatically.
+
 ### Frontend Config (`public/genxbrowser_config.yaml`)
 
 Controls branding, feature access, and visualization settings. The config is loaded **at runtime** (not baked into the build):
@@ -118,6 +127,7 @@ frontend/
 │   │   └── phylotree.css       # Phylogenetic tree styles
 │   ├── components/             # Reusable Vue components
 │   │   ├── HeatmapComponent    # Core heatmap (Plotly.js)
+│   │   ├── AssistantPanel      # AI assistant chat (SSE + action chips, optional)
 │   │   ├── CatalogComponent    # Dataset browser with CatalogEntry cards
 │   │   ├── SidebarComponent    # Navigation sidebar
 │   │   ├── OraComponent        # ORA results display
@@ -142,6 +152,7 @@ frontend/
 │   │   ├── InfoTooltip         # Info icon with tooltip
 │   │   └── ...                 # Modals, tooltips, empty states
 │   ├── stores/                 # Pinia state management
+│   │   ├── assistant.ts        # AI assistant chat state + action dispatch
 │   │   ├── catalog.ts          # Dataset catalog state
 │   │   ├── columns.ts          # Column definitions
 │   │   ├── filters.ts          # Active filter state

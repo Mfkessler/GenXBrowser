@@ -29,7 +29,7 @@
 <script setup lang="ts">
 import axios from "axios";
 import { API_BASE_URL } from "@/shared/Config";
-import { computed, onMounted, provide, ref } from "vue";
+import { computed, onMounted, provide, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { type CatalogMeta } from "@/shared/CatalogMeta";
@@ -98,31 +98,35 @@ function onUpdateTableName(oldTableName: string, newTableName: string) {
   });
 }
 
-onMounted(async () => {
-  // Check for `id` query parameter
-  const idParam = route.query.id;
-  if (typeof idParam === "string" && idParam.length === 16) {
-    try {
-      const response = await axios.post(`${API_BASE_URL}/api/id`, {
-        id: idParam,
-      });
-
-      const data = response.data;
-
-      // Expecting: data = { filters: {...}, visualizations: {...} }
-      if (data.filters && data.visualizations) {
-        // IMPORTANT: Restore visualization state FIRST,
-        // then filters. This prevents watchers from overwriting selections.
-        visualizationStore.replaceState(data.visualizations);
-        filtersStore.replaceState(data.filters);
-      } else {
-        console.warn("Invalid data received from backend for ID", idParam);
-      }
-    } catch (error) {
-      console.error("Error fetching filter data by ID", idParam, error);
+// Re-load filter / visualization state whenever `?id=` changes — including
+// the initial mount. This is what makes assistant-driven re-navigations
+// (e.g. ORA orthogroup -> GO terms on the same /o/CS path) actually take
+// effect; without it the component would be reused and stale state kept.
+async function loadStateFromIdParam(idParam: unknown) {
+  if (typeof idParam !== "string" || idParam.length !== 16) return;
+  try {
+    const response = await axios.post(`${API_BASE_URL}/api/id`, { id: idParam });
+    const data = response.data;
+    if (data.filters && data.visualizations) {
+      // Visualization state first, then filters — watchers on filters
+      // would otherwise overwrite restored selections.
+      visualizationStore.replaceState(data.visualizations);
+      filtersStore.replaceState(data.filters);
+    } else {
+      console.warn("Invalid data received from backend for ID", idParam);
     }
+  } catch (error) {
+    console.error("Error fetching filter data by ID", idParam, error);
   }
+}
 
+watch(
+  () => route.query.id,
+  (idParam) => { loadStateFromIdParam(idParam); },
+  { immediate: true },
+);
+
+onMounted(async () => {
   // Fetch all possible table names for dropdown options:
   const tagsParam = [...filtersStore.tags].join(",");
   const response = await axios.get<CatalogMeta[]>(

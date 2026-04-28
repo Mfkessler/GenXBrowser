@@ -170,6 +170,7 @@ The `.h5ad` file should contain:
 - **Phylogenetic Trees** — Newick tree visualization for orthogroup gene families
 - **Expression Comparison** — Side-by-side cross-species expression comparison (box plots via Plotly)
 - **Sample Metadata** — Filter and color by sample-level metadata (tissue type, condition, etc.)
+- **AI Assistant** — Optional in-app chat (`/api/assistant/*`) that reads the live UI state, runs read-only data tools (schema, counts, top groups, ORA digests) and proposes one-click filter / view changes or pre-configured deep-links. An **Auto-execute** toggle in the panel applies the proposed actions directly with an Undo step. See [backend/README.md](backend/README.md#ai-assistant) for the LLM environment variables.
 - **Export** — Download filtered data as TSV, share filter states as short URLs, export heatmaps as PNG/PDF
 - **Admin Panel** — Runtime configuration management, column visibility, species toggling
 
@@ -197,6 +198,9 @@ The `.h5ad` file should contain:
 | GET | `/api/go/status` | GO service status |
 | POST | `/api/ora` | Over-representation analysis |
 | POST | `/api/cluster` | Server-side hierarchical clustering |
+| POST | `/api/assistant/chat` | Streaming chat endpoint (SSE) for the AI assistant |
+| POST | `/api/assistant/deeplink` | Resolve a view + filter spec into a shareable URL |
+| POST | `/api/assistant/compute` | Compute small derived statistics for the assistant |
 | GET | `/api/species_photos/<filename>` | Serve species photo images |
 | GET | `/health` | Health check |
 

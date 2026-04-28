@@ -97,6 +97,14 @@ python run.py
 | `POST` | `/api/ora` | Over-Representation Analysis (Fisher's exact + BH-FDR) |
 | `POST` | `/api/cluster` | Server-side hierarchical clustering |
 
+### AI Assistant (`/api/assistant`)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/assistant/chat` | Streaming chat (SSE) with tool-calling over the loaded data |
+| `POST` | `/api/assistant/deeplink` | Resolve a `(view, tables, filters, visualizations)` spec into a `?id=`-backed URL the frontend can open |
+| `POST` | `/api/assistant/compute` | Compute small, well-defined statistics (`top_orthogroups`, `top_tfs`, `summary_stats`) on the user's current view |
+
 ### Admin API (`/api/admin`)
 
 | Method | Endpoint | Description |
@@ -150,6 +158,16 @@ POST /api/data
 | `GO_AUTO_DOWNLOAD` | Auto-download GO OBO if missing | `true` |
 | `SPECIES_PHOTOS_DIR` | Directory containing species photos | — (optional) |
 | `ADMIN_TOKEN` | Bearer token for admin API auth | — (auth disabled when unset) |
+| `LLM_API_BASE` | Base URL of the OpenAI-compatible LLM endpoint used by the assistant | — (assistant disabled when unset) |
+| `LLM_API_KEY` | API key for the LLM endpoint | — |
+| `LLM_MODEL` | Primary model identifier | — |
+| `LLM_FALLBACK_MODEL` | Optional fallback model used on primary failure | — |
+
+### AI Assistant
+
+The assistant is **opt-in** and only activates when `LLM_API_BASE`, `LLM_API_KEY` and `LLM_MODEL` are set. It exposes a streaming chat endpoint (`/api/assistant/chat`) that receives the live UI context (current view, selected tables, filters, visible analysis digests) and a fixed catalog of read-only tools (`list_schema`, `resolve_value`, `count_rows`, `top_groups`, `common_values`, `summary_stats`, `build_deeplink`, …).
+
+Responses are markdown plus typed action blocks (`add_filter`, `viz_update`, `select_tables`, `set_expression_display`, `deeplink`, …) that the frontend either turns into one-click chips or applies directly when the user enables Auto-execute. Per-tool rate limits and a hard prompt-size cap (32 000 chars) are enforced by `routes.py`.
 
 ### Auto-Discovery
 

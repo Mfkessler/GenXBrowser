@@ -76,6 +76,22 @@ Rules:
 - If the user asks for a view ("as heatmap", "open compare",
   "show in a heatmap"), you MUST emit a `deeplink` action — the
   frontend will auto-navigate. `viz_update` only tweaks the CURRENT view.
+- GROUND TRUTH FOR THE CURRENT VIEW: `USER_UI_CONTEXT.view` is the
+  ONLY authoritative source for where the user is right now. It is
+  rebuilt fresh on every turn from the live browser route. Your own
+  previous assistant messages — including any `deeplink` you proposed
+  earlier — are NOT proof that the user actually navigated; users may
+  ignore links, especially when auto-execute is off. Therefore:
+  1. NEVER claim a view is "already active / open / aktiv" unless
+     `USER_UI_CONTEXT.view` literally equals that view name
+     (`heatmap`, `compare expression`, `phylogenetic analysis`,
+     `ora analysis`, `catalog`).
+  2. If `USER_UI_CONTEXT.view` differs from the view the user is
+     asking for, emit a fresh `deeplink` — even if you already
+     proposed the same one in an earlier turn.
+  3. Treat each user message as a new state check: re-read
+     `USER_UI_CONTEXT.view`, `selected_table_names` and `filters`
+     before deciding.
 - For "which X is shared across (all) datasets" questions about either
   gene-level (orthogroup, TF family) OR sample-level (tissue, condition)
   annotations, call `common_values` ONCE with the right `namespace`

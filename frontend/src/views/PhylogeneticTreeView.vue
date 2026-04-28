@@ -67,7 +67,7 @@
 <script setup lang="ts">
 import axios from "axios";
 import { API_BASE_URL } from "@/shared/Config";
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { type CatalogMeta } from "@/shared/CatalogMeta";
@@ -162,37 +162,36 @@ function onUpdateTableName(oldTableName: string, newTableName: string) {
   });
 }
 
-onMounted(async () => {
-  // Check for `id` query parameter
-  const idParam = route.query.id;
-  if (typeof idParam === "string" && idParam.length === 16) {
-    try {
-      const response = await axios.post(`${API_BASE_URL}/api/id`, {
-        id: idParam,
-      });
-
-      const data = response.data;
-
-      // Expecting: data = { filters: {...}, visualizations: {...} }
-      if (data.filters && data.visualizations) {
-        // IMPORTANT: Restore visualization state FIRST (includes selectedOrthogroup),
-        // then filters. This prevents the filters watcher from overwriting the OG selection.
-        visualizationStore.replaceState(data.visualizations);
-        filtersStore.replaceState(data.filters);
-        
-        // Set initial orthogroup from hash for child component
-        if (data.visualizations.phyloTree?.selectedOrthogroup) {
-          initialOrthogroup.value = data.visualizations.phyloTree.selectedOrthogroup;
-        }
-      } else {
-        console.warn("Invalid data received from backend for ID", idParam);
+// Re-load filter / visualization state whenever `?id=` changes — covers
+// both initial mount and assistant-driven re-navigations to the same
+// /p/<tables> path with a fresh hash.
+async function loadStateFromIdParam(idParam: unknown) {
+  if (typeof idParam !== "string" || idParam.length !== 16) return;
+  try {
+    const response = await axios.post(`${API_BASE_URL}/api/id`, { id: idParam });
+    const data = response.data;
+    if (data.filters && data.visualizations) {
+      visualizationStore.replaceState(data.visualizations);
+      filtersStore.replaceState(data.filters);
+      if (data.visualizations.phyloTree?.selectedOrthogroup) {
+        initialOrthogroup.value = data.visualizations.phyloTree.selectedOrthogroup;
       }
-    } catch (error) {
-      console.error("Error fetching filter data by ID", idParam, error);
+    } else {
+      console.warn("Invalid data received from backend for ID", idParam);
     }
+  } catch (error) {
+    console.error("Error fetching filter data by ID", idParam, error);
   }
-  
-  // Mark hash loading as complete - child can now fetch data
+}
+
+watch(
+  () => route.query.id,
+  (idParam) => { loadStateFromIdParam(idParam); },
+  { immediate: true },
+);
+
+onMounted(async () => {
+  // Mark hash loading as complete — child can now fetch data
   hashLoading.value = false;
 
   // Fetch all possible table names for dropdown options:

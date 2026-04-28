@@ -34,7 +34,7 @@
 <script setup lang="ts">
 import axios from "axios";
 import { API_BASE_URL } from "@/shared/Config";
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { type CatalogMeta } from "@/shared/CatalogMeta";
@@ -111,44 +111,38 @@ function onUpdateTableName(oldTableName: string, newTableName: string) {
   });
 }
 
-onMounted(async () => {
-  // Check for `id` query parameter (hash-based share link)
-  const idParam = route.query.id;
-  if (typeof idParam === "string" && idParam.length === 16) {
-    try {
-      const response = await axios.post(`${API_BASE_URL}/api/id`, {
-        id: idParam,
-      });
-
-      const data = response.data;
-
-      // Expecting: data = { filters: {...}, visualizations: {...} }
-      if (data.filters && data.visualizations) {
-        // IMPORTANT: Restore visualization state FIRST (includes selectedOrthogroup),
-        // then filters. This prevents watchers from overwriting the OG selection.
-        visualizationStore.replaceState(data.visualizations);
-        filtersStore.replaceState(data.filters);
-        
-        console.log('[CompareExpression] Hash load - data.visualizations.compare:', data.visualizations.compare);
-        
-        // Use species from the loaded state
-        if (data.visualizations.compare?.selectedSpecies?.length > 0) {
-          hashLoadedSpecies.value = data.visualizations.compare.selectedSpecies;
-          console.log('[CompareExpression] hashLoadedSpecies set to:', hashLoadedSpecies.value);
-        }
-        // Use orthogroup from the loaded state
-        if (data.visualizations.compare?.selectedOrthogroup) {
-          hashLoadedOrthogroup.value = data.visualizations.compare.selectedOrthogroup;
-          console.log('[CompareExpression] hashLoadedOrthogroup set to:', hashLoadedOrthogroup.value);
-        }
-      } else {
-        console.warn("Invalid data received from backend for ID", idParam);
+// Re-load filter / visualization state whenever `?id=` changes. Triggers
+// on initial mount and on assistant-driven re-navigations to the same
+// /c/<tables> path with a fresh hash.
+async function loadStateFromIdParam(idParam: unknown) {
+  if (typeof idParam !== "string" || idParam.length !== 16) return;
+  try {
+    const response = await axios.post(`${API_BASE_URL}/api/id`, { id: idParam });
+    const data = response.data;
+    if (data.filters && data.visualizations) {
+      visualizationStore.replaceState(data.visualizations);
+      filtersStore.replaceState(data.filters);
+      if (data.visualizations.compare?.selectedSpecies?.length > 0) {
+        hashLoadedSpecies.value = data.visualizations.compare.selectedSpecies;
       }
-    } catch (error) {
-      console.error("Error fetching filter data by ID", idParam, error);
+      if (data.visualizations.compare?.selectedOrthogroup) {
+        hashLoadedOrthogroup.value = data.visualizations.compare.selectedOrthogroup;
+      }
+    } else {
+      console.warn("Invalid data received from backend for ID", idParam);
     }
+  } catch (error) {
+    console.error("Error fetching filter data by ID", idParam, error);
   }
+}
 
+watch(
+  () => route.query.id,
+  (idParam) => { loadStateFromIdParam(idParam); },
+  { immediate: true },
+);
+
+onMounted(async () => {
   // Fetch all possible table names for dropdown options:
   const tagsParam = [...filtersStore.tags].join(",");
   const response = await axios.get<CatalogMeta[]>(
