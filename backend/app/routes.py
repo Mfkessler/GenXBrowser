@@ -1871,12 +1871,16 @@ def assistant_deeplink():
         return jsonify({"error": "'tables' must contain at least one known dataset for this view"}), 400
 
     # GUARD: don't open empty plots. For data-bearing views, drop tables
-    # that have zero .var rows matching the requested filters. If every
-    # table is empty, return an error so the assistant can react.
+    # whose .var or .obs rows are entirely cleared by the requested filters.
+    # Filters arrive flat under ``filters.filters`` — we split them per
+    # table into var- vs obs-filters by inspecting the loaded AnnData so a
+    # sample-metadata filter (e.g. ``tissue=flower``) drops only the
+    # species without matching samples instead of failing the whole
+    # request with 422.
     dropped: List[Dict[str, Any]] = []
     if view in {"heatmap", "compare", "phylo", "ora"} and resolved:
         nested = filters.get("filters") if isinstance(filters, dict) else None
-        var_filters_for_check: Dict[str, Any] = {}
+        flat_filters: Dict[str, List[str]] = {}
         if isinstance(nested, dict):
             for col, spec in nested.items():
                 if not isinstance(spec, dict):
@@ -1889,18 +1893,43 @@ def assistant_deeplink():
                 else:
                     vals = []
                 if vals:
-                    var_filters_for_check[col] = vals
-        if var_filters_for_check:
+                    flat_filters[col] = vals
+        if flat_filters:
             try:
                 from . import assistant_tools as _at
                 kept: List[str] = []
                 for tn in resolved:
-                    cr = _at.tool_count_rows(service, table=tn, var_filters=var_filters_for_check)
-                    n_match = int(cr.get("n_var_match", 0)) if isinstance(cr, dict) else 0
-                    if n_match > 0:
+                    code = service._normalize_table_name(tn)
+                    try:
+                        adata = service.registry.load(code)
+                    except Exception:
+                        adata = None
+                    if adata is None:
+                        kept.append(tn)
+                        continue
+                    var_cols = set(adata.var.columns)
+                    obs_cols = set(adata.obs.columns)
+                    var_f = {c: vs for c, vs in flat_filters.items() if c in var_cols}
+                    obs_f = {c: vs for c, vs in flat_filters.items() if c in obs_cols}
+                    cr = _at.tool_count_rows(
+                        service, table=tn,
+                        var_filters=var_f or None,
+                        obs_filters=obs_f or None,
+                    )
+                    cr = cr if isinstance(cr, dict) else {}
+                    n_var = int(cr.get("n_var_match", 0))
+                    n_obs = int(cr.get("n_obs_match", 0))
+                    var_ok = (not var_f) or n_var > 0
+                    obs_ok = (not obs_f) or n_obs > 0
+                    if var_ok and obs_ok:
                         kept.append(tn)
                     else:
-                        dropped.append({"table": tn, "reason": "no rows match filters"})
+                        reason = (
+                            "no transcripts match the gene filters"
+                            if not var_ok
+                            else "no samples match the sample filters"
+                        )
+                        dropped.append({"table": tn, "reason": reason})
                 if not kept:
                     return jsonify({
                         "error": "all selected tables have zero rows matching the filters",
