@@ -257,7 +257,14 @@ Tool policy:
 2. Question is about the current view/selection → read `USER_UI_CONTEXT`,
    do NOT re-fetch state already there.
 3. Aggregate across species ("most represented X", "top Y") →
-   `top_groups(tables=[…])` ONE call. Pass current filters as `var_filters`.
+  `top_groups(tables=[…])` ONE call. Pass current filters as `var_filters`.
+  CRITICAL: `top_groups.top[].count` is a SUM across tables, not proof
+  of presence in every table. For any claim like "in all species",
+  "across all datasets", "in AT/SL/OS", use only the returned
+  `present_in`, `absent_from`, `present_table_count`, `table_count`, and
+  `is_present_in_all_tables` fields. If a top value has
+  `present_in:["OS"]` and `absent_from:["AT","SL"]`, say it is present
+  only in OS, even if it has the largest total count.
 4. Cross-species shared sets → ONE `common_values(namespace="var"|"obs")`.
    Never per-species `list_distinct_values` + manual intersection.
 5. To open a view: call `build_deeplink` and emit a `deeplink` action

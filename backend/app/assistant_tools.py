@@ -979,6 +979,7 @@ def tool_top_groups(
         return {"error": f"Unknown table(s) '{raw}'"}
 
     combined: Counter = Counter()
+    coverage_counts: Dict[str, Dict[str, int]] = {}
     per_table: List[Dict[str, Any]] = []
     total_considered = 0
     for code in codes:
@@ -1013,6 +1014,8 @@ def tool_top_groups(
             values = [str(v) for v in filtered.dropna() if str(v)]
         local = Counter(values)
         combined.update(local)
+        for value, count in local.items():
+            coverage_counts.setdefault(value, {})[code] = int(count)
         per_table.append({
             "table": code,
             "n_rows_considered": n_rows,
@@ -1034,14 +1037,29 @@ def tool_top_groups(
             "top": first.get("top", []),
         }
 
+    top: List[Dict[str, Any]] = []
+    for value, count in combined.most_common(int(top_n)):
+        per_table_counts = coverage_counts.get(value, {})
+        present_in = [code for code in codes if int(per_table_counts.get(code, 0)) > 0]
+        absent_from = [code for code in codes if code not in present_in]
+        top.append({
+            "value": value,
+            "count": int(count),
+            "present_in": present_in,
+            "absent_from": absent_from,
+            "present_table_count": len(present_in),
+            "table_count": len(codes),
+            "is_present_in_all_tables": len(present_in) == len(codes),
+            "per_table_counts": {
+                code: int(per_table_counts.get(code, 0)) for code in codes
+            },
+        })
+
     return {
         "tables": codes,
         "group_column": group_column,
         "n_rows_considered": total_considered,
-        "top": [
-            {"value": v, "count": int(n)}
-            for v, n in combined.most_common(int(top_n))
-        ],
+        "top": top,
         "per_table": per_table,
     }
 

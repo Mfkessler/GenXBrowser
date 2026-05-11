@@ -713,6 +713,107 @@ def _complete_with_fallback(
     return None, None, last_err or "no usable model"
 
 
+def _top_groups_grounding_note(result: Dict[str, Any]) -> Optional[str]:
+    """Return a compact coverage constraint for aggregate top_groups output."""
+    if not isinstance(result, dict):
+        return None
+    tables = result.get("tables")
+    top = result.get("top")
+    if not isinstance(tables, list) or len(tables) < 2 or not isinstance(top, list):
+        return None
+
+    lines: List[str] = []
+    for row in top[:10]:
+        if not isinstance(row, dict):
+            continue
+        value = row.get("value")
+        if value in (None, ""):
+            continue
+        present = row.get("present_in")
+        absent = row.get("absent_from")
+        if not isinstance(present, list) or not isinstance(absent, list):
+            continue
+        present_text = ", ".join(str(item) for item in present) or "none"
+        absent_text = ", ".join(str(item) for item in absent) or "none"
+        if row.get("is_present_in_all_tables") is True:
+            lines.append(f"- {value}: present in all selected tables ({present_text}).")
+        else:
+            lines.append(
+                f"- {value}: present only in {present_text}; absent from {absent_text}."
+            )
+    if not lines:
+        return None
+    return (
+        "[runtime grounding constraint] The last top_groups result is aggregated "
+        "across tables. Its summed counts do NOT imply cross-species presence. "
+        "Use these coverage facts verbatim for any prose claim about where a "
+        "value occurs; never say a value appears in all datasets unless "
+        "is_present_in_all_tables is true:\n" + "\n".join(lines)
+    )
+
+
+def _top_groups_coverage_facts(result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if not isinstance(result, dict):
+        return []
+    top = result.get("top")
+    if not isinstance(top, list):
+        return []
+    facts: List[Dict[str, Any]] = []
+    for row in top[:20]:
+        if not isinstance(row, dict) or row.get("is_present_in_all_tables") is True:
+            continue
+        value = row.get("value")
+        present = row.get("present_in")
+        absent = row.get("absent_from")
+        if value in (None, "") or not isinstance(present, list) or not isinstance(absent, list):
+            continue
+        facts.append({
+            "value": str(value),
+            "count": row.get("count"),
+            "present_in": [str(item) for item in present],
+            "absent_from": [str(item) for item in absent],
+        })
+    return facts
+
+
+_ALL_SPECIES_CLAIM_RE = re.compile(
+    r"(\ball\s+(?:\w+\s+){0,3}(?:species|datasets|tables)\b|"
+    r"\bevery\s+(?:species|dataset|table)\b|"
+    r"\beach\s+(?:species|dataset|table)\b|"
+    r"\ball\s+three\s+species\b|"
+    r"\bacross\s+all\s+(?:species|datasets|tables)\b)",
+    re.IGNORECASE,
+)
+
+
+def _apply_coverage_corrections(content: str, facts: List[Dict[str, Any]]) -> str:
+    if not content or not facts:
+        return content
+
+    corrected = content
+    for fact in facts:
+        value = fact.get("value")
+        if not value or str(value) not in corrected:
+            continue
+        sentences = re.split(r"(?<=[.!?])\s+", corrected)
+        changed = False
+        for index, sentence in enumerate(sentences):
+            if str(value) not in sentence or not _ALL_SPECIES_CLAIM_RE.search(sentence):
+                continue
+            present = ", ".join(fact.get("present_in") or []) or "no selected table"
+            absent = ", ".join(fact.get("absent_from") or []) or "none"
+            count = fact.get("count")
+            count_text = f" with total count {count}" if count is not None else ""
+            sentences[index] = (
+                f"{value} is the top aggregated value{count_text}, but it is "
+                f"present only in {present}; absent from {absent}."
+            )
+            changed = True
+        if changed:
+            corrected = " ".join(sentences)
+    return corrected
+
+
 def run_agentic_turn(
     cfg: Dict[str, Any],
     initial_messages: List[Dict[str, Any]],
@@ -732,6 +833,7 @@ def run_agentic_turn(
     messages: List[Dict[str, Any]] = list(initial_messages)
     started = time.monotonic()
     last_model: Optional[str] = None
+    coverage_facts: List[Dict[str, Any]] = []
 
     for iteration in range(int(max_iterations)):
         if time.monotonic() - started > float(tool_deadline_s):
@@ -827,7 +929,9 @@ def run_agentic_turn(
             # post-processing step; if it changed anything, send a
             # `replace` delta so the client swaps the bubble's content
             # for the cleaned-up version. Otherwise nothing more to send.
-            cleaned = retag_action_fences(content)
+            cleaned = _apply_coverage_corrections(
+                retag_action_fences(content), coverage_facts,
+            )
             if emitted_chars == 0:
                 # Some models return content only at end-of-stream (rare).
                 yield {"type": "delta", "delta": cleaned}
@@ -942,13 +1046,20 @@ def run_agentic_turn(
                 "name": name,
                 "content": content,
             })
+            if name == "top_groups":
+                coverage_facts.extend(_top_groups_coverage_facts(result))
+                grounding_note = _top_groups_grounding_note(result)
+                if grounding_note:
+                    messages.append({"role": "user", "content": grounding_note})
 
     # Iteration cap hit — force one more call without tools to get text.
     final, used_model, err = _complete_with_fallback(cfg, messages, tools=None)
     if final is None:
         yield {"type": "error", "error": err or "iteration cap hit and no fallback response"}
         return
-    final_text = retag_action_fences(final.get("content") or "")
+    final_text = _apply_coverage_corrections(
+        retag_action_fences(final.get("content") or ""), coverage_facts,
+    )
     yield {
         "type": "delta",
         "delta": final_text + "\n\n_(Note: tool iteration cap reached.)_",

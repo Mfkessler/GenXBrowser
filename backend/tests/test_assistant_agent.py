@@ -165,6 +165,22 @@ def test_top_groups_ortho_id_splits_arrays():
     assert res["top"][0]["count"] == 3
 
 
+def test_top_groups_multi_table_reports_value_coverage():
+    svc = _make_fake_service()
+    res = tools.tool_top_groups(
+        svc, tables=["CS", "PS"], group_column="ortho_id",
+        var_filters={"tf_family": ["GATA"]}, top_n=5,
+    )
+    first = res["top"][0]
+    assert first["value"] == "OG2"
+    assert first["present_in"] == ["CS"]
+    assert first["absent_from"] == ["PS"]
+    assert first["present_table_count"] == 1
+    assert first["table_count"] == 2
+    assert first["is_present_in_all_tables"] is False
+    assert first["per_table_counts"] == {"CS": 1, "PS": 0}
+
+
 # ---------------------------------------------------------------------------
 # tool_build_deeplink
 # ---------------------------------------------------------------------------

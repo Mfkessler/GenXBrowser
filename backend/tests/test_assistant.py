@@ -149,3 +149,20 @@ def test_streaming_timeout_is_capped_below_worker_timeout(monkeypatch):
 
     assert captured["stream"] is True
     assert captured["timeout"] <= 50
+
+
+def test_coverage_correction_rewrites_false_all_species_claim():
+    content = (
+        "Let me show you a heatmap of OG0000000, which appears in all three "
+        "species and has the highest count across all datasets."
+    )
+    corrected = assistant._apply_coverage_corrections(content, [{
+        "value": "OG0000000",
+        "count": 519,
+        "present_in": ["OS"],
+        "absent_from": ["AT", "SL"],
+    }])
+
+    assert "appears in all three species" not in corrected
+    assert "present only in OS" in corrected
+    assert "absent from AT, SL" in corrected
