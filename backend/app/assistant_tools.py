@@ -414,6 +414,7 @@ def tool_list_schema(service, cm, *, max_values_per_col: int = 0) -> Dict[str, A
             "deeplink", "add_filter", "remove_filter", "clear_filters",
             "select_tables", "set_expression_display", "viz_update",
         ],
+        "action_block_schemas": _ACTION_BLOCK_SCHEMAS,
     }
 
 
@@ -443,12 +444,28 @@ _VIEW_CONTROLS: Dict[str, List[Dict[str, Any]]] = {
         {"key": "legend",          "type": "boolean", "store_action": "toggleLegend"},
         {"key": "hideEmpty",       "type": "boolean", "store_action": "toggleHideEmpty"},
         {"key": "colorScale",      "type": "enum",    "store_action": "setColorScale"},
+        {"key": "tooltipFields",   "type": "multi_select_var_column_nullable",
+         "store_action": "setTooltipFields"},
+        {"key": "showSequencesInTooltip", "type": "boolean",
+         "store_action": "toggleShowSequencesInTooltip"},
+        {"key": "sequencePreviewLength", "type": "integer", "min": 20, "max": 1000,
+         "store_action": "setSequencePreviewLength"},
         {"key": "rowSideColors",   "type": "multi_select_var_column",
          "store_action": "setRowSideColors"},
         {"key": "colSideColors",   "type": "multi_select_obs_column",
          "store_action": "setColSideColors"},
         {"key": "rowOrder.name",   "type": "select_var_column", "store_action": "setRowOrderName"},
+        {"key": "rowOrder.order",  "type": "enum", "options": ["asc", "desc"],
+         "store_action": "toggleRowOrder"},
         {"key": "colOrder.name",   "type": "select_obs_column", "store_action": "setColOrderName"},
+        {"key": "colOrder.order",  "type": "enum", "options": ["asc", "desc"],
+         "store_action": "toggleColOrder"},
+        {"key": "clustering.clusterRows", "type": "boolean", "store_action": "setClusterRows"},
+        {"key": "clustering.clusterCols", "type": "boolean", "store_action": "setClusterCols"},
+        {"key": "clustering.method", "type": "enum",
+         "options": ["average", "complete", "ward"], "store_action": "setClusterMethod"},
+        {"key": "clustering.distance", "type": "enum",
+         "options": ["correlation", "euclidean"], "store_action": "setClusterDistance"},
         {"key": "expressionDisplay", "type": "expression_display",
          "store_action": "setExpressionDisplay"},
     ],
@@ -460,12 +477,25 @@ _VIEW_CONTROLS: Dict[str, List[Dict[str, Any]]] = {
         {"key": "compare.expression", "type": "expression_display",
          "store_action": "setCompareState",
          "note": "Compare view stores its own expression copy. Use action 'set_expression_display' which mirrors to BOTH expressionDisplay and compare.expression."},
+        {"key": "compare.selectedOrthogroup", "type": "select_orthogroup",
+         "store_action": "setCompareState"},
+        {"key": "compare.selectedSpecies", "type": "multi_select_table",
+         "store_action": "setCompareState"},
         {"key": "compare.showAllTranscripts", "type": "boolean",
          "store_action": "setCompareState"},
     ],
     "phylo": [
         {"key": "phyloTree.selectedOrthogroup", "type": "select_orthogroup",
          "store_action": "setPhyloTreeState"},
+        {"key": "phyloTree.collapsedNodes", "type": "string_array",
+         "store_action": "setPhyloCollapsedNodes"},
+        {"key": "phyloTree.branchLengthMode", "type": "enum",
+         "options": ["cladogram", "phylogram"], "store_action": "setBranchLengthMode"},
+        {"key": "clustering.clusterCols", "type": "boolean", "store_action": "setClusterCols"},
+        {"key": "clustering.method", "type": "enum",
+         "options": ["average", "complete", "ward"], "store_action": "setClusterMethod"},
+        {"key": "clustering.distance", "type": "enum",
+         "options": ["correlation", "euclidean"], "store_action": "setClusterDistance"},
         {"key": "expressionDisplay", "type": "expression_display",
          "store_action": "setExpressionDisplay"},
     ],
@@ -479,9 +509,13 @@ _VIEW_CONTROLS: Dict[str, List[Dict[str, Any]]] = {
          "store_action": "setOraMinCount"},
         {"key": "oraTopologicalFilter", "type": "boolean",
          "store_action": "toggleOraTopologicalFilter"},
+        {"key": "oraTooltipFields", "type": "multi_select_var_column",
+         "store_action": "setOraTooltipFields"},
         {"key": "oraOrder.name",  "type": "enum",
-         "options": ["p_value", "fold_enrichment", "subset_count"],
+         "options": ["p_value", "q_value", "fold_enrichment", "subset_count", "combined_score"],
          "store_action": "setOraOrderName"},
+        {"key": "oraOrder.order", "type": "enum",
+         "options": ["asc", "desc"], "store_action": "toggleOraOrder"},
     ],
 }
 
@@ -607,10 +641,12 @@ def tool_list_view_settings(
             c["options"] = sorted(common_var)
         elif ctype == "select_obs_column":
             c["options"] = sorted(common_obs)
-        elif ctype == "multi_select_var_column":
+        elif ctype in ("multi_select_var_column", "multi_select_var_column_nullable"):
             c["options"] = sorted(common_var)
         elif ctype == "multi_select_obs_column":
             c["options"] = sorted(common_obs)
+        elif ctype == "multi_select_table":
+            c["options"] = codes
         controls_out.append(c)
 
     return {
@@ -1380,6 +1416,110 @@ def tool_build_deeplink(
 # OpenAI tool-calling schema
 # ---------------------------------------------------------------------------
 
+_FILTER_VALUE_SCHEMA: Dict[str, Any] = {
+    "oneOf": [
+        {"type": "string"},
+        {"type": "number"},
+        {"type": "boolean"},
+        {"type": "array", "items": {"type": ["string", "number", "boolean"]}},
+    ]
+}
+
+_FILTER_SPEC_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "value": _FILTER_VALUE_SCHEMA,
+        "values": {"type": "array", "items": {"type": ["string", "number", "boolean"]}},
+        "match_mode": {"type": "string", "enum": ["or", "and"], "default": "or"},
+        "exact": {"type": "boolean", "default": True},
+    },
+    "additionalProperties": False,
+}
+
+_FILTER_MAP_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": {
+        "oneOf": [_FILTER_VALUE_SCHEMA, _FILTER_SPEC_SCHEMA],
+    },
+}
+
+_VISUALIZATION_PATCH_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "Whitelisted visualization patch. Prefer dotted keys such as "
+        "'clustering.clusterRows' or nested objects like {'clustering': "
+        "{'clusterRows': true}}. Values are validated client-side against "
+        "the same ranges and enums as the manual UI."
+    ),
+    "additionalProperties": True,
+}
+
+_VIEW_STATE_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "tags": {"type": "array", "items": {"type": "string"}},
+        "table_names": {"type": "array", "items": {"type": "string"}},
+        "filters": _FILTER_MAP_SCHEMA,
+        "datasetIdFilters": _FILTER_MAP_SCHEMA,
+    },
+    "additionalProperties": False,
+}
+
+_ACTION_BLOCK_SCHEMAS: Dict[str, Any] = {
+    "add_filter": {
+        "type": "object",
+        "properties": {
+            "column": {"type": "string", "minLength": 1},
+            "value": _FILTER_VALUE_SCHEMA,
+            "values": {"type": "array", "items": {"type": ["string", "number", "boolean"]}},
+            "match_mode": {"type": "string", "enum": ["or", "and"], "default": "or"},
+            "exact": {"type": "boolean", "default": True},
+        },
+        "required": ["column"],
+        "additionalProperties": False,
+    },
+    "remove_filter": {
+        "type": "object",
+        "properties": {"column": {"type": "string", "minLength": 1}},
+        "required": ["column"],
+        "additionalProperties": False,
+    },
+    "clear_filters": {"type": "object", "properties": {}, "additionalProperties": False},
+    "select_tables": {
+        "type": "object",
+        "properties": {"tables": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1}},
+        "required": ["tables"],
+        "additionalProperties": False,
+    },
+    "set_expression_display": {
+        "type": "object",
+        "properties": {
+            "optionId": {"type": "string", "enum": [o["id"] for o in _EXPRESSION_OPTIONS]},
+            "layer": {"type": ["string", "null"], "enum": ["tpm", "tmm", "getmm", "X", None]},
+            "transform": {"type": "string", "enum": ["raw", "log2", "zscore"]},
+        },
+        "required": ["optionId", "transform"],
+        "additionalProperties": False,
+    },
+    "viz_update": {
+        "type": "object",
+        "properties": {"patch": _VISUALIZATION_PATCH_SCHEMA},
+        "required": ["patch"],
+        "additionalProperties": False,
+    },
+    "deeplink": {
+        "type": "object",
+        "properties": {
+            "view": {"type": "string", "enum": ["heatmap", "compare", "phylo", "ora", "catalog"]},
+            "tables": {"type": "array", "items": {"type": "string"}},
+            "filters": _VIEW_STATE_SCHEMA,
+            "visualizations": {"type": "object", "additionalProperties": True},
+        },
+        "required": ["view", "tables"],
+        "additionalProperties": False,
+    },
+}
+
 _TOOL_SCHEMAS: List[Dict[str, Any]] = [
     {
         "type": "function",
@@ -1640,12 +1780,13 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "view": {"type": "string"},
+                    "view": {"type": "string", "enum": ["heatmap", "compare", "phylo", "ora", "catalog"]},
                     "tables": {"type": "array", "items": {"type": "string"}},
-                    "filters": {"type": "object", "additionalProperties": True},
-                    "visualizations": {"type": "object", "additionalProperties": True},
+                    "filters": _VIEW_STATE_SCHEMA,
+                    "visualizations": _VISUALIZATION_PATCH_SCHEMA,
                 },
                 "required": ["view", "tables"],
+                "additionalProperties": False,
             },
         },
     },

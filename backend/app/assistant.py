@@ -204,14 +204,27 @@ def call_chat_completion(
         if tool_choice is not None:
             payload["tool_choice"] = tool_choice
     url = _build_url(cfg["api_base"], "chat/completions")
-    # Streaming responses can pause for many seconds between SSE chunks while
-    # the upstream model "thinks" (especially for tool-calling models that
-    # emit a burst of tokens then stall). Use a generous read timeout there
-    # to avoid bogus TimeoutError aborts; non-streaming requests still use
-    # the configured ``request_timeout_s`` so the UI doesn't hang on a stuck
-    # endpoint.
     base_timeout = int(cfg.get("request_timeout_s", 60))
-    timeout_s = max(base_timeout, 180) if stream else base_timeout
+    # Gunicorn kills a sync/gthread worker when a request exceeds its worker
+    # timeout. The assistant may try both primary and fallback models, so a
+    # single upstream read timeout must fit safely inside that outer budget.
+    # Otherwise an unavailable LLM endpoint turns into a full backend worker
+    # abort instead of a recoverable chat error.
+    try:
+        worker_timeout = int(os.environ.get("GUNICORN_TIMEOUT", "120"))
+    except (TypeError, ValueError):
+        worker_timeout = 120
+    model_attempts = 2 if cfg.get("fallback_model") else 1
+    per_attempt_cap = max(10, int((worker_timeout - 20) / max(1, model_attempts)))
+    if stream:
+        configured_stream_timeout = cfg.get("stream_timeout_s") or os.environ.get("GENX_LLM_STREAM_TIMEOUT")
+        try:
+            stream_timeout = int(configured_stream_timeout) if configured_stream_timeout else min(base_timeout, 45)
+        except (TypeError, ValueError):
+            stream_timeout = min(base_timeout, 45)
+        timeout_s = min(stream_timeout, per_attempt_cap)
+    else:
+        timeout_s = min(base_timeout, per_attempt_cap)
     return _post_json(url, cfg["api_key"], payload, timeout_s, stream=stream)
 
 

@@ -161,22 +161,36 @@ Action blocks (fenced, one per action, at end of message):
   * `colOrder.name`  : .obs column to sort columns by.
   * `colOrder.order` : "asc"|"desc".
   * `colorScale`     : enum (see list_view_settings).
+  * `tooltipFields`  : string[]|null of .var fields shown in heatmap tooltips.
+  * `showSequencesInTooltip` : bool.
+  * `sequencePreviewLength` : integer 20..1000.
   * `rowLabel`,`colLabel`,`legend`,`hideEmpty` : booleans.
   * `clustering.clusterRows`,`clustering.clusterCols` : booleans.
+  * `clustering.method` : "average"|"complete"|"ward".
+  * `clustering.distance` : "correlation"|"euclidean".
 - Compare nested: `compare.plotType` ("line"|"box"|"violin"),
-  `compare.showAllTranscripts`, `compare.plotHeight` (200..1200).
+  `compare.showAllTranscripts`, `compare.plotHeight` (200..1200),
+  `compare.selectedOrthogroup`, `compare.selectedSpecies`.
   Compare expression layer: emit `set_expression_display` (mirrors
   into `compare.expression` automatically) — never patch
   `compare.expression` directly.
-- Phylo: `phyloTree.selectedOrthogroup` (string, an OG id).
+- Phylo: `phyloTree.selectedOrthogroup` (string, an OG id),
+  `phyloTree.branchLengthMode` ("cladogram"|"phylogram"),
+  `phyloTree.collapsedNodes` (string[]). Column clustering settings also
+  apply to the phylo heatmap panel.
 - ORA: `oraColumnName` (.var col), `significance` ("0.001"|"0.01"|"0.05"|"0.1"),
   `oraTopN` (1..500), `oraMinCount` (1..50),
   `oraTopologicalFilter` (bool),
-  `oraOrder.name` ("p_value"|"fold_enrichment"|"subset_count").
+  `oraTooltipFields` (string[]),
+  `oraOrder.name` ("p_value"|"q_value"|"fold_enrichment"|"subset_count"|"combined_score"),
+  `oraOrder.order` ("asc"|"desc").
 - Source of truth = `list_view_settings(view, tables)` — instance-aware,
   reflects exactly which columns / layers are selectable here. CALL IT
   before patching `rowSideColors`/`colSideColors`/`*Order.name`/
   `colorScale`/`oraColumnName` so the value is guaranteed valid.
+- The frontend validates every action against the same ranges/enums as the
+  manual UI and records an audit-log entry with before/after state for
+  reproducibility. Invalid actions surface as clear error chips.
 
 ```deeplink
 {"view":"heatmap"|"compare"|"phylo"|"ora"|"catalog",

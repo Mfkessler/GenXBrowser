@@ -123,3 +123,29 @@ def test_complete_chat_falls_back_to_secondary_model():
     assert result["ok"] is True
     assert result["model"] == "fallback"
     assert calls == ["primary", "fallback"]
+
+
+def test_streaming_timeout_is_capped_below_worker_timeout(monkeypatch):
+    cfg = {
+        "api_base": "https://x",
+        "api_key": "k",
+        "model": "primary",
+        "fallback_model": "fallback",
+        "request_timeout_s": 60,
+    }
+    captured = {}
+
+    def fake_post(url, api_key, payload, timeout, stream=False):
+        captured["timeout"] = timeout
+        captured["stream"] = stream
+        fake_resp = MagicMock()
+        fake_resp.read.return_value = b'{"choices":[{"message":{"content":"ok"}}]}'
+        fake_resp.close.return_value = None
+        return fake_resp
+
+    monkeypatch.setenv("GUNICORN_TIMEOUT", "120")
+    with patch.object(assistant, "_post_json", side_effect=fake_post):
+        assistant.call_chat_completion(cfg, [{"role": "user", "content": "hi"}], stream=True)
+
+    assert captured["stream"] is True
+    assert captured["timeout"] <= 50

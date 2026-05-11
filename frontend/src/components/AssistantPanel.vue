@@ -354,11 +354,15 @@ import {
   type AssistantAction,
   type ChatMessage,
   type ClientContext,
-  type UndoSnapshot,
 } from "@/stores/assistant";
-import { useFiltersStore, type FilterValue } from "@/stores/filters";
+import { useFiltersStore } from "@/stores/filters";
 import { useVisualizationStore } from "@/stores/visualization";
 import { useCatalogStore } from "@/stores/catalog";
+import {
+  createAssistantActionDispatcher,
+  restoreSnapshot,
+  snapshotState as captureAssistantSnapshot,
+} from "@/shared/assistantActions";
 import AiSparkleIcon from "@/components/icons/AiSparkleIcon.vue";
 
 const store = useAssistantStore();
@@ -589,320 +593,53 @@ function openDeeplink(urlPath: string) {
 }
 
 // ---------------------------------------------------------------------------
-// Snapshot / Undo — capture pre-action state per assistant message
+// Assistant action dispatch — validated registry + audit log
 // ---------------------------------------------------------------------------
 
-function snapshotState(): UndoSnapshot {
-  let filters: Record<string, unknown> | null = null;
-  let visualizations: Record<string, unknown> | null = null;
-  try { filters = filtersStore.toObject ? filtersStore.toObject() : null; } catch { /* empty */ }
-  try { visualizations = visualizationStore.toObject ? visualizationStore.toObject() : null; } catch { /* empty */ }
-  const selected = Array.from(catalogStore.selectedTableNames || []);
+function undoMessage(msg: ChatMessage) {
+  restoreSnapshot(msg, dispatcherDeps());
+}
+
+function dispatcherDeps() {
   return {
-    filters,
-    visualizations,
-    selectedTableNames: selected,
-    route: route.fullPath,
+    filtersStore,
+    visualizationStore: visualizationStore as unknown as Parameters<typeof createAssistantActionDispatcher>[0]["visualizationStore"],
+    catalogStore,
+    router,
+    route,
   };
 }
 
-function undoMessage(msg: ChatMessage) {
-  const snap = msg.undo;
-  if (!snap) return;
-  try {
-    if (snap.filters) {
-      // Partial restore — keep the replaceState/API of the filters store.
-      filtersStore.replaceState?.(snap.filters as Parameters<typeof filtersStore.replaceState>[0]);
-    }
-  } catch { /* empty */ }
-  try {
-    if (snap.visualizations) {
-      const api = (visualizationStore as unknown as {
-        replaceState?: (s: Record<string, unknown>) => void;
-      }).replaceState;
-      api?.(snap.visualizations);
-    }
-  } catch { /* empty */ }
-  try {
-    catalogStore.selectAll?.(snap.selectedTableNames || []);
-  } catch { /* empty */ }
-  if (snap.route && snap.route !== route.fullPath) {
-    router.replace(snap.route).catch(() => { /* empty */ });
-  }
-  msg.undone = true;
-  msg.undo = null;
+async function executeAssistantAction(action: AssistantAction): Promise<boolean> {
+  return createAssistantActionDispatcher(dispatcherDeps()).dispatch(action);
 }
 
 function applyVizUpdate(action: AssistantAction) {
-  try {
-    const patch = (action.spec.patch || action.spec) as Record<string, unknown>;
-    const state = visualizationStore.$state as unknown as Record<string, unknown>;
-
-    // Build a list of ``{path, value}`` entries from the incoming patch.
-    // The LLM may emit either a flat object (top-level keys), a dotted-key
-    // shorthand like ``{"compare.plotType": "box"}``, or a nested object
-    // like ``{"compare": {"plotType": "box"}}``. We normalise all three
-    // shapes here so updates to nested viz state (Compare plot type, ORA
-    // settings, phyloTree state, …) actually take effect — previously the
-    // shallow merge silently dropped any non-top-level key.
-    type Entry = { path: string[]; value: unknown };
-    const entries: Entry[] = [];
-    function walk(prefix: string[], obj: unknown) {
-      if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
-        if (prefix.length > 0) entries.push({ path: prefix, value: obj });
-        return;
-      }
-      for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-        if (prefix.length === 0 && (k === "kind" || k === "patch")) continue;
-        const subPath = k.includes(".") ? [...prefix, ...k.split(".")] : [...prefix, k];
-        // Treat plain-object values as nested patches; arrays / primitives
-        // are leaves so we replace them as-is.
-        const isPlainObject = v !== null && typeof v === "object" && !Array.isArray(v);
-        if (isPlainObject) {
-          walk(subPath, v);
-        } else {
-          entries.push({ path: subPath, value: v });
-        }
-      }
-    }
-    walk([], patch);
-
-    // Apply each entry against the live store state. Refuse paths whose
-    // first segment isn't a known store key (avoids creating bogus state).
-    const applied: Array<{ path: string; value: unknown }> = [];
-    visualizationStore.$patch((s: unknown) => {
-      const root = s as Record<string, unknown>;
-      for (const { path, value } of entries) {
-        if (path.length === 0) continue;
-        if (!(path[0] in (state as object))) continue;
-        let cursor: Record<string, unknown> = root;
-        for (let i = 0; i < path.length - 1; i++) {
-          const seg = path[i];
-          const next = cursor[seg];
-          if (!next || typeof next !== "object" || Array.isArray(next)) {
-            // Don't auto-create nested containers — keep the store schema strict.
-            cursor = null as unknown as Record<string, unknown>;
-            break;
-          }
-          cursor = next as Record<string, unknown>;
-        }
-        if (!cursor) continue;
-        cursor[path[path.length - 1]] = value;
-        applied.push({ path: path.join("."), value });
-      }
-    });
-
-    if (applied.length === 0) {
-      action.status = "error";
-      action.error = "no patch keys matched the visualization store";
-      return;
-    }
-    // Stash a human-readable summary on the action so the chip can show
-    // exactly which keys were updated instead of a vague "View updated".
-    action.summary = applied
-      .map(({ path, value }) => `${path} → ${formatVizValue(value)}`)
-      .join(", ");
-    action.status = "applied";
-  } catch (e) {
-    action.status = "error";
-    action.error = (e as Error).message || "viz_update failed";
-  }
-}
-
-/** Render a viz_update value compactly for the action chip tooltip /
- *  badge. Strings stay quoted, arrays are joined, objects collapse. */
-function formatVizValue(v: unknown): string {
-  if (v === null || v === undefined) return String(v);
-  if (Array.isArray(v)) {
-    return "[" + v.map((x) => formatVizValue(x)).join(", ") + "]";
-  }
-  if (typeof v === "object") {
-    try {
-      return JSON.stringify(v);
-    } catch {
-      return "{…}";
-    }
-  }
-  if (typeof v === "string") return v;
-  return String(v);
+  void executeAssistantAction(action);
 }
 
 function applyAddFilter(action: AssistantAction) {
-  try {
-    const spec = action.spec;
-    const column = String(spec.column || spec.key || "");
-    if (!column) {
-      action.status = "error";
-      action.error = "missing column";
-      return;
-    }
-    // Normalize multi-value filters to the pipe-separated form the
-    // TextFilter chip component expects. The assistant may emit `value`
-    // as an array, a comma/newline-separated string, or a `values` field.
-    const value = normalizeFilterValue(spec.value ?? (spec as { values?: unknown }).values);
-    const rawSpec = spec as {
-      match_mode?: unknown;
-      exact?: unknown;
-    };
-    const matchMode: "or" | "and" =
-      rawSpec.match_mode === "and" || rawSpec.match_mode === "or"
-        ? rawSpec.match_mode
-        : "or";
-    const exact = rawSpec.exact === undefined ? true : Boolean(rawSpec.exact);
-    const filter: FilterValue = {
-      value,
-      match_mode: matchMode,
-      exact,
-    };
-    filtersStore.setFilter(column, filter);
-    action.status = "applied";
-  } catch (e) {
-    action.status = "error";
-    action.error = (e as Error).message || "add_filter failed";
-  }
-}
-
-/** Convert array / comma-separated / newline-separated input to the pipe-
- *  separated form the filter store + TextFilter component require. Empty
- *  inputs become "" so the `empty` flag still works. */
-function normalizeFilterValue(raw: unknown): string {
-  if (raw === null || raw === undefined) return "";
-  let parts: string[];
-  if (Array.isArray(raw)) {
-    parts = raw.map((v) => String(v).trim());
-  } else {
-    const s = String(raw);
-    if (!s.trim()) return s;
-    parts = s.split(/[,;\n\r|]+/).map((v) => v.trim());
-  }
-  const seen = new Set<string>();
-  const deduped: string[] = [];
-  for (const v of parts) {
-    if (!v || seen.has(v)) continue;
-    seen.add(v);
-    deduped.push(v);
-  }
-  return deduped.join("|");
+  void executeAssistantAction(action);
 }
 
 function applyRemoveFilter(action: AssistantAction) {
-  try {
-    const column = String(action.spec.column || action.spec.key || "");
-    if (!column) {
-      action.status = "error";
-      action.error = "missing column";
-      return;
-    }
-    filtersStore.removeFilter(column);
-    action.status = "applied";
-  } catch (e) {
-    action.status = "error";
-    action.error = (e as Error).message || "remove_filter failed";
-  }
+  void executeAssistantAction(action);
 }
 
 function applyClearFilters(action: AssistantAction) {
-  try {
-    filtersStore.clearFilters();
-    action.status = "applied";
-  } catch (e) {
-    action.status = "error";
-    action.error = (e as Error).message || "clear_filters failed";
-  }
+  void executeAssistantAction(action);
 }
 
 function applySelectTables(action: AssistantAction) {
-  try {
-    const list = action.spec.tables as unknown;
-    if (!Array.isArray(list)) {
-      action.status = "error";
-      action.error = "spec.tables must be an array";
-      return;
-    }
-    catalogStore.selectAll?.(list.map((v) => String(v)));
-    action.status = "applied";
-  } catch (e) {
-    action.status = "error";
-    action.error = (e as Error).message || "select_tables failed";
-  }
+  void executeAssistantAction(action);
 }
 
 function applySetExpressionDisplay(action: AssistantAction) {
-  try {
-    const spec = action.spec as {
-      optionId?: string; layer?: string | null; transform?: "raw" | "log2" | "zscore";
-    };
-    const store = visualizationStore as unknown as {
-      setExpressionDisplay?: (id: string, layer: string | null, transform: "raw" | "log2" | "zscore") => void;
-      setCompareState?: (s: { expression?: string }) => void;
-    };
-    const setter = store.setExpressionDisplay;
-    if (!setter) {
-      action.status = "error";
-      action.error = "store has no setExpressionDisplay()";
-      return;
-    }
-    const optionId = String(spec.optionId || "raw");
-    setter(optionId, spec.layer ?? null, spec.transform || "raw");
-    // Compare view keeps its own copy of the expression display under
-    // `compare.expression` (used by the Compare component's dropdown).
-    // Without this mirror call the user sees the action chip flip to
-    // "applied" while the Compare plot keeps showing the previous mode.
-    if (route.path.startsWith("/c/") && typeof store.setCompareState === "function") {
-      store.setCompareState({ expression: optionId });
-    }
-    action.status = "applied";
-  } catch (e) {
-    action.status = "error";
-    action.error = (e as Error).message || "set_expression_display failed";
-  }
+  void executeAssistantAction(action);
 }
 
-/** Navigate to a deeplink that the assistant store has already resolved
- *  (server side) into an url_path. Status is already "applied" from the
- *  store hook, so we just push the route. */
-function applyDeeplink(action: AssistantAction): boolean {
-  try {
-    if (!action.url_path) return false;
-    if (action.url_path === route.fullPath) return false;
-    router.push(action.url_path).catch(() => { /* ignore nav rejection */ });
-    return true;
-  } catch (e) {
-    action.status = "error";
-    action.error = (e as Error).message || "deeplink navigation failed";
-    return false;
-  }
-}
-
-/** Auto-apply every pending action of an assistant message. Returns true if any mutation happened. */
-function autoApplyActions(msg: ChatMessage): boolean {
-  let mutated = false;
-  for (const action of msg.actions || []) {
-    // Deeplinks are pre-marked "applied" by the store (it just resolves
-    // url_path server-side). In auto-execute mode we still want to trigger
-    // navigation, so handle them before the pending-only short-circuit.
-    if (action.kind === "deeplink") {
-      if (applyDeeplink(action)) mutated = true;
-      continue;
-    }
-    if (action.status && action.status !== "pending") continue;
-    switch (action.kind) {
-      case "viz_update":
-        applyVizUpdate(action); mutated = mutated || action.status === "applied"; break;
-      case "add_filter":
-        applyAddFilter(action); mutated = mutated || action.status === "applied"; break;
-      case "remove_filter":
-        applyRemoveFilter(action); mutated = mutated || action.status === "applied"; break;
-      case "clear_filters":
-        applyClearFilters(action); mutated = mutated || action.status === "applied"; break;
-      case "select_tables":
-        applySelectTables(action); mutated = mutated || action.status === "applied"; break;
-      case "set_expression_display":
-        applySetExpressionDisplay(action); mutated = mutated || action.status === "applied"; break;
-      default: /* compute: handled elsewhere */ break;
-    }
-  }
-  return mutated;
+async function autoApplyActions(msg: ChatMessage): Promise<boolean> {
+  return createAssistantActionDispatcher(dispatcherDeps()).autoApplyActions(msg);
 }
 
 interface ResultTable {
@@ -959,9 +696,9 @@ watch(
       // Manual mode: leave actions pending so users get explicit chips.
       if (!store.autoExecute) return;
       // Allow the store's post-stream action extraction to finish first.
-      nextTick(() => {
-        const pre = snapshotState();
-        const mutated = autoApplyActions(last);
+      nextTick(async () => {
+        const pre = captureAssistantSnapshot(dispatcherDeps());
+        const mutated = await autoApplyActions(last);
         if (mutated) last.undo = pre;
       });
     }
