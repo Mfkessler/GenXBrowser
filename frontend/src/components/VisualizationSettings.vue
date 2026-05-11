@@ -85,6 +85,36 @@
             />
           </div>
 
+          <!-- PhyloTree: Tree-X-Axis (cladogram / phylogram) -->
+          <div
+            v-if="context === 'phylogeneticTree'"
+            class="mb-4"
+          >
+            <div class="flex items-center gap-2 mb-2">
+              <h3 class="text-md font-semibold cursor-default text-primary-900">
+                Tree axis
+              </h3>
+              <InfoTooltip
+                title="Tree X-axis"
+                description="Cladogram ignores branch lengths and aligns all leaves at the right edge (easier to read for skewed trees). Phylogram scales the x-axis by branch length (preserves evolutionary distances)."
+              />
+            </div>
+            <div class="flex gap-2">
+              <button
+                type="button"
+                class="px-3 py-1 text-sm rounded border"
+                :class="store.phyloTree.branchLengthMode === 'cladogram' ? 'bg-primary-500 text-white border-primary-500' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'"
+                @click="store.setBranchLengthMode('cladogram')"
+              >Cladogram</button>
+              <button
+                type="button"
+                class="px-3 py-1 text-sm rounded border"
+                :class="store.phyloTree.branchLengthMode === 'phylogram' ? 'bg-primary-500 text-white border-primary-500' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'"
+                @click="store.setBranchLengthMode('phylogram')"
+              >Phylogram</button>
+            </div>
+          </div>
+
           <!-- Heatmap: Hide empty columns -->
           <div
             class="flex items-center gap-2 mb-2"

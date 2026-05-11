@@ -22,10 +22,11 @@ export interface ClusteringState {
 }
 
 export interface PhyloTreeState {
-  collapsedNodes: string[];  // Node IDs that are collapsed
+  collapsedNodes: string[];  // Node IDs (topology-derived) that are collapsed
   zoomTransform: { k: number; x: number; y: number };  // D3 zoom transform state
   resetCounter: number;  // Incremented on reset to trigger watcher
   selectedOrthogroup: string;  // Currently selected orthogroup for phylotree view
+  branchLengthMode: 'cladogram' | 'phylogram';  // Tree x-axis interpretation
 }
 
 export interface CompareState {
@@ -111,6 +112,7 @@ function getDefaultState(): VisualizationState {
       zoomTransform: { k: 1, x: 0, y: 0 },
       resetCounter: 0, // Incremented on reset to trigger watcher
       selectedOrthogroup: '',  // Will be auto-selected when OGs are loaded
+      branchLengthMode: 'cladogram',  // Default: cladogram (better readability with skewed branch lengths)
     },
     // Compare view state
     compare: {
@@ -263,6 +265,12 @@ export const useVisualizationStore = defineStore("visualization", {
       this.phyloTree.zoomTransform = { k: 1, x: 0, y: 0 };
       this.phyloTree.resetCounter++; // Trigger watcher
     },
+    setPhyloCollapsedNodes(ids: string[]) {
+      this.phyloTree.collapsedNodes = [...ids];
+    },
+    setBranchLengthMode(mode: 'cladogram' | 'phylogram') {
+      this.phyloTree.branchLengthMode = mode;
+    },
     // PhyloTree state setter (like setCompareState)
     setPhyloTreeState(state: Partial<PhyloTreeState>) {
       Object.assign(this.phyloTree, state);
@@ -345,6 +353,7 @@ export const useVisualizationStore = defineStore("visualization", {
           collapsedNodes: [...this.phyloTree.collapsedNodes],
           zoomTransform: { ...this.phyloTree.zoomTransform },
           selectedOrthogroup: this.phyloTree.selectedOrthogroup,
+          branchLengthMode: this.phyloTree.branchLengthMode,
         },
         compare: {
           plotType: this.compare.plotType,

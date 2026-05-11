@@ -13,7 +13,24 @@
         </svg>
         Reset View
       </button>
-      
+
+      <!-- Quick-collapse actions -->
+      <button
+        @click="callOnAllTrees('expandAll')"
+        class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-100 transition-colors"
+        title="Expand every collapsed clade"
+      >Expand all</button>
+      <button
+        @click="callOnAllTrees('collapseAll')"
+        class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-100 transition-colors"
+        title="Collapse every internal clade (top-level only stays visible)"
+      >Collapse all</button>
+      <button
+        @click="callOnAllTrees('collapseToSpecies')"
+        class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-100 transition-colors"
+        title="Collapse every monophyletic species clade"
+      >Collapse to species</button>
+
       <!-- Zoom level indicator -->
       <span class="text-sm text-gray-500 ml-2">
         Zoom: {{ Math.round(zoomLevel * 100) }}%
@@ -28,7 +45,7 @@
       
       <!-- Hint -->
       <span class="text-xs text-gray-400">
-        Scroll to zoom • Drag to pan • Click nodes to collapse
+        Scroll to zoom • Drag to pan • Click internal nodes to collapse • Right-click for more
       </span>
     </div>
 
@@ -108,6 +125,15 @@ function closeSettingsOverlay() {
 
 function resetPhyloTreeView() {
   visualizationStore.resetPhyloTreeState();
+}
+
+function callOnAllTrees(method: 'expandAll' | 'collapseAll' | 'collapseToSpecies') {
+  const refs = phyloTreeRefs.value;
+  if (!refs) return;
+  for (const r of refs) {
+    const fn = (r as any)?.[method];
+    if (typeof fn === 'function') fn();
+  }
 }
 
 const zoomLevel = computed(() => visualizationStore.phyloTree.zoomTransform.k);

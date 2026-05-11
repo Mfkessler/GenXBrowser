@@ -5,9 +5,9 @@
       <LoadingOverlay v-if="loading"/>
     </div>
 
-    <div v-if="!loading && newickstr !== null" class="flex-grow relative h-[90vh] w-full">
+    <div v-if="!loading && newickstr !== null" class="flex-grow relative h-[90vh] w-full flex flex-col min-h-0">
       <!-- Phylogenetic Tree Title + Buttons in same row -->
-      <div v-if="commonOGs_array.length > 0" class="flex flex-wrap items-center gap-3 mb-1 p-3 bg-gray-50 rounded-lg border border-gray-200">
+      <div v-if="commonOGs_array.length > 0" class="flex flex-wrap items-center gap-3 mb-1 p-3 bg-gray-50 rounded-lg border border-gray-200 flex-shrink-0">
         <!-- Orthogroup Selector - same styling as Compare view -->
         <div class="flex-grow min-w-48">
           <DropdownMenu
@@ -60,7 +60,7 @@
       <div
         ref="phylotreeContainer"
         id="phylotreeContainer"
-        class="border border-gray-300 rounded-2xl bg-white p-1 pb-32 w-full shadow-sm min-w-0 overflow-y-auto h-[calc(100dvh-3rem)]"
+        class="border border-gray-300 rounded-2xl bg-white p-1 w-full shadow-sm min-w-0 overflow-hidden flex-1 min-h-0 relative"
       ></div>
     </div>
 
@@ -99,9 +99,17 @@
 import axios from "axios";
 import {storeToRefs} from "pinia";
 import {onMounted, ref, computed, toRaw, watch, unref, inject, nextTick} from 'vue'
-import {phylotree} from 'phylotree'
 import '../assets/phylotree.css' // CSS from phylotree GitHub page https://github.com/veg/phylotree.js/blob/master/phylotree.css (modified)
 import * as d3 from "d3";
+import { parseNewick } from "@/utils/newick";
+import {
+  buildHierarchy,
+  applyCollapse,
+  layout as computePhyloLayout,
+  collapseToSpeciesIds,
+  type LayoutNode,
+  type PhyloDatum,
+} from "@/utils/phyloLayout";
 import {API_BASE_URL} from "@/shared/Config.ts";
 import {COLORSCALES} from "@/shared/Colorscales.ts";
 import type {MetaFormat} from "@/shared/MetaFormat.ts";
@@ -160,6 +168,11 @@ const collapsedNodes = computed(() => new Set(visualizationStore.phyloTree.colla
 // Zoom behavior reference
 let currentZoomBehavior: d3.ZoomBehavior<SVGSVGElement, unknown> | null = null;
 
+// Cached parsed hierarchy of the current tree (used for view-level collapse actions)
+const fullHierarchy = ref<d3.HierarchyNode<PhyloDatum> | null>(null);
+// Cached metrics from the last data fetch — used for cheap re-render on collapse / mode change.
+const lastMetrics = ref<any>(null);
+
 const closeTooltipModal = () => {
   showTooltipModal.value = false;
   selectedRowData.value = null;
@@ -203,7 +216,10 @@ const commonOGs_options = computed(() => {
 
 // Expose orthogroupOptions to parent
 defineExpose({
-  orthogroupOptions: commonOGs_options
+  orthogroupOptions: commonOGs_options,
+  collapseAll: () => collapseAllClades(),
+  expandAll: () => visualizationStore.resetPhyloTreeState(),
+  collapseToSpecies: () => collapseToSpecies(),
 });
 
 // URL state management
@@ -688,872 +704,731 @@ async function initPhylotree(newick_str: string, metrics: any) {
 
   resetContainer()
 
-  const tree = new phylotree(newick_str)
   const container = phylotreeContainer.value
+  if (!container) { loading.value = false; return }
 
-  const renderedTree = tree.render({
-    width: container?.clientWidth || window.innerWidth * 0.8,
-    height: window.innerHeight,
-    'top-bottom-spacing': 'fit-to-size',
-    selectable: false,
-    collapsible: true,   // Enable phylotree's built-in collapse on node click
-    'show-scale': false,  // Scale bar disabled
-    zoom: false,  // We implement our own zoom
-    brush: false,
-    reroot: false,  // Disable default reroot behavior on branch click
-    hide: false,    // Disable default hide behavior
-    container: '#phylotreeContainer'
-  })
-
-  const svgElement = renderedTree.show()
-
-  if (!container || !(svgElement instanceof SVGSVGElement)) {
+  // === 1. Parse Newick + build hierarchy + apply persisted collapse state ===
+  let rawTree
+  try {
+    rawTree = parseNewick(newick_str)
+  } catch (e) {
+    console.error('[PhyloTree] Newick parse error:', e)
+    loading.value = false
     return
   }
 
-  renderedTree.layout(true)
+  const fullHier = buildHierarchy(rawTree)
+  fullHierarchy.value = fullHier
+  const collapsedSet = new Set(visualizationStore.phyloTree.collapsedNodes)
+  const visibleHier = applyCollapse(fullHier, collapsedSet)
 
-  container.innerHTML = ''
-  container.appendChild(svgElement)
-
-  const svgSel = d3.select<SVGSVGElement, unknown>(svgElement)
-
-  const mainGroup = svgSel.select<SVGGElement>('g')
-  if (!mainGroup.node()) return
-
-  // === ZOOM IMPLEMENTATION ===
-  // Create a wrapper group for zoom transforms
-  const zoomGroup = svgSel.insert('g', ':first-child')
-    .attr('class', 'zoom-container');
-  
-  // Move the main group into the zoom container
-  mainGroup.remove();
-  zoomGroup.append(() => mainGroup.node());
-  
-  // Create zoom behavior
-  const zoomBehavior = d3.zoom<SVGSVGElement, unknown>()
-    .scaleExtent([0.1, 10])  // Allow 10% to 1000% zoom
-    .filter((event) => {
-      // Don't zoom when clicking on nodes (let node click handlers work)
-      const target = event.target as Element;
-      const isNode = target.closest('g.node') !== null;
-      // Allow zoom for scroll wheel, but not for click on nodes
-      if (event.type === 'wheel') return true;
-      if (event.type === 'mousedown' && isNode) return false;
-      if (event.type === 'dblclick' && isNode) return false;
-      return true;
-    })
-    .on('zoom', (event) => {
-      zoomGroup.attr('transform', event.transform.toString());
-      // Persist zoom state to store (throttled to avoid excessive updates)
-      visualizationStore.setPhyloTreeZoom({
-        k: event.transform.k,
-        x: event.transform.x,
-        y: event.transform.y
-      });
-    });
-  
-  // Apply zoom behavior to SVG
-  svgSel.call(zoomBehavior);
-  currentZoomBehavior = zoomBehavior;
-  
-  // Restore saved zoom transform from store
-  const savedTransform = visualizationStore.phyloTree.zoomTransform;
-  if (savedTransform.k !== 1 || savedTransform.x !== 0 || savedTransform.y !== 0) {
-    const transform = d3.zoomIdentity
-      .translate(savedTransform.x, savedTransform.y)
-      .scale(savedTransform.k);
-    svgSel.call(zoomBehavior.transform, transform);
-  }
-  // === END ZOOM IMPLEMENTATION ===
-
-  // Note: Title is now rendered in the Vue template, not in SVG
-
-  const bbox = mainGroup.node()!.getBBox()
-  const leaves: { name: string; y: number }[] = []
-
-  svgSel.selectAll<SVGGElement, any>('g.node').each(function (d: any) {
-    const g = d3.select(this)
-    const datum = d || g.datum()
-    const name: string | undefined =
-      datum?.name || datum?.data?.name || datum?.data?.id
-
-    if (!name) return
-
-    const transform = g.attr('transform') || ''
-    const m = /translate\(([^,]+),\s*([^)]+)\)/.exec(transform)
-    if (!m) return
-
-    const y = +m[2]
-    leaves.push({name, y})
+  // === 2. Layout (shared y-scale with heatmap by construction) ===
+  const cellSize = 14
+  const cellPad = 6
+  const rowHeight = cellSize + cellPad  // = 20 px, == heatmap row stride
+  const leafCount = visibleHier.leaves().length
+  // Adaptive tree width — narrow trees for small OGs, capped for large ones.
+  const treeWidth = Math.max(280, Math.min(900, leafCount * 3 + 200))
+  const layoutResult = computePhyloLayout(visibleHier, {
+    rowHeight,
+    treeWidth,
+    mode: visualizationStore.phyloTree.branchLengthMode,
   })
 
-  const prefixes = Array.from(new Set(leaves.map(l => getPrefix(l.name))))
-
-  const selectedScheme = colorSchemes[visualizationStore.colorScale] || d3.schemeSet1;
-
-  const prefixColor = d3.scaleOrdinal()
-    .domain(prefixes)
-    .range(selectedScheme)
-
-  svgSel.selectAll<SVGGElement, any>('g.node').each(function (d: any) {
-    const g = d3.select(this)
-    const datum = d || g.datum()
-
-    const name: string | undefined =
-      datum?.name || datum?.data?.name || datum?.data?.id
-
-    if (!name) return
-
-    const prefix = getPrefix(name)
-    const color = String(prefixColor(prefix))
-
-    const resolvedLeaf = resolvePhyloLeafMatch(name, metrics, props.speciesCodeMap ?? {})
-    const shouldHighlightLeaf = resolvedLeaf
-      ? highlightedGeneIds.value[resolvedLeaf.tableName]?.has(resolvedLeaf.geneId) ?? false
-      : false
-
-    g.selectAll('.filtered-leaf-marker').remove()
-
-    g.select('circle').attr('fill', color)
-    const textSelection = g.select('text')
-      .attr('fill', color)
-      .attr('font-weight', shouldHighlightLeaf ? 800 : 400)
-      .attr('stroke', shouldHighlightLeaf ? '#ffffff' : 'none')
-      .attr('stroke-width', shouldHighlightLeaf ? 0.8 : 0)
-      .attr('paint-order', shouldHighlightLeaf ? 'stroke' : null)
-
-    if (shouldHighlightLeaf) {
-      const textNode = textSelection.node() as SVGTextElement | null
-      if (textNode) {
-        const bbox = textNode.getBBox()
-        g.insert('text', 'text')
-          .attr('class', 'filtered-leaf-marker')
-          .attr('x', bbox.x - 13)
-          .attr('y', bbox.y + bbox.height / 2)
-          .attr('dominant-baseline', 'middle')
-          .attr('fill', '#b45309')
-          .attr('font-size', '13px')
-          .attr('font-weight', 900)
-          .attr('stroke', '#fffbeb')
-          .attr('stroke-width', 0.9)
-          .attr('paint-order', 'stroke')
-          .text('★')
-      }
-    }
-  })
-
-  // === BOOTSTRAP VALUES DISPLAY ===
-  // Display bootstrap/support values on internal nodes if available in node name or attribute
-  svgSel.selectAll<SVGGElement, any>('g.internal-node').each(function (d: any) {
-    const g = d3.select(this);
-    const datum = d || g.datum();
-    
-    // Bootstrap values can be in node name (e.g., "100" or "0.95") or in attribute
-    const nodeName = datum?.data?.name || datum?.name || '';
-    const nodeAttr = datum?.data?.annotation || datum?.annotation || '';
-    
-    // Try to parse as bootstrap value (numeric between 0-100 or 0-1)
-    let bootstrapValue: number | null = null;
-    const numericName = parseFloat(nodeName);
-    const numericAttr = parseFloat(nodeAttr);
-    
-    if (!isNaN(numericName) && numericName >= 0) {
-      bootstrapValue = numericName;
-    } else if (!isNaN(numericAttr) && numericAttr >= 0) {
-      bootstrapValue = numericAttr;
-    }
-    
-    // Display bootstrap value if found and significant (>= 50% or >= 0.5)
-    if (bootstrapValue !== null) {
-      // Normalize to 0-100 range if needed
-      const displayValue = bootstrapValue <= 1 ? Math.round(bootstrapValue * 100) : Math.round(bootstrapValue);
-      
-      if (displayValue >= 50) {
-        const circle = g.select('circle, ellipse, rect');
-        const cx = parseFloat(circle.attr('cx') || '0');
-        const cy = parseFloat(circle.attr('cy') || '0');
-        
-        g.append('text')
-          .attr('class', 'bootstrap-value')
-          .attr('x', cx - 5)
-          .attr('y', cy - 8)
-          .attr('font-size', '9px')
-          .attr('fill', displayValue >= 90 ? '#059669' : displayValue >= 70 ? '#d97706' : '#dc2626')
-          .attr('font-weight', displayValue >= 90 ? 'bold' : 'normal')
-          .text(displayValue.toString());
-      }
-    }
-  });
-
-  // === CLADE HIGHLIGHTING ===
-  // Apply stored clade colors to branches
-  function getDescendantNodeIds(node: any): string[] {
-    const ids: string[] = [];
-    function traverse(n: any) {
-      if (!n) return;
-      const nodeId = n.data?.name || n.name || '';
-      if (nodeId) ids.push(nodeId);
-      if (n.children) {
-        n.children.forEach((child: any) => traverse(child));
-      }
-    }
-    traverse(node);
-    return ids;
-  }
-  
-  // Simple nodeId generator for clade highlighting (defined before main getNodeId)
-  function getSimpleNodeId(g: d3.Selection<SVGGElement, any, any, any>, datum: any): string {
-    if (datum?.data?.name) return datum.data.name;
-    if (datum?.name) return datum.name;
-    const transform = g.attr('transform') || '';
-    const m = /translate\\(([^,]+),\\s*([^)]+)\\)/.exec(transform);
-    if (m) return `internal_${Math.round(+m[1])}_${Math.round(+m[2])}`;
-    return '';
-  }
-  
-  // Color branches for highlighted clades — pre-build node-ID-to-element map for O(1) lookup
-  const nodeElementMap = new Map<string, { g: d3.Selection<SVGGElement, any, any, any>; datum: any }>();
-  svgSel.selectAll<SVGGElement, any>('g.node, g.internal-node').each(function (d: any) {
-    const g = d3.select(this);
-    const datum = d || g.datum();
-    const nodeId = getSimpleNodeId(g, datum);
-    if (nodeId) {
-      nodeElementMap.set(nodeId, { g, datum });
-    }
-  });
-
-  cladeColors.value.forEach((color, nodeId) => {
-    const entry = nodeElementMap.get(nodeId);
-    if (!entry) return;
-
-    // Color the subtree branches
-    const descendantIds = getDescendantNodeIds(entry.datum);
-
-    // Color nodes in subtree using map lookup instead of full scan
-    for (const descId of descendantIds) {
-      const descEntry = nodeElementMap.get(descId);
-      if (descEntry) {
-        descEntry.g.select('circle, ellipse, rect').attr('fill', color);
-        descEntry.g.select('text').attr('fill', color);
-      }
-    }
-
-    // Also color the clicked node itself
-    entry.g.select('circle, ellipse, rect')
-      .attr('fill', color)
-      .attr('stroke', color)
-      .attr('stroke-width', 2);
-  });
-
-
+  // === 3. Tissues / column clustering / color scale (reused logic) ===
   const groupNames = Object.keys(metrics)
   const tissueSet = new Set<string>()
   for (const group of Object.values(metrics)) {
-    for (const gene of Object.values(group)) {
-      const norm = gene.normalizationTissue ?? {}
-      for (const t of Object.keys(norm)) {
-        tissueSet.add(t)
-      }
+    for (const gene of Object.values(group as Record<string, any>)) {
+      const norm = (gene as any).normalizationTissue ?? {}
+      for (const t of Object.keys(norm)) tissueSet.add(t)
     }
   }
-
   let tissues = Array.from(tissueSet)
-  
-  // Apply column clustering if enabled
+
   if (visualizationStore.clustering.clusterCols && tissues.length > 2) {
     try {
-      // Build a data matrix for clustering: rows = genes, cols = tissues
-      const allGenes: { geneId: string; values: number[] }[] = [];
-      
-      for (const [_, genesObj] of Object.entries(metrics)) {
+      const allGenes: { geneId: string; values: number[] }[] = []
+      for (const [, genesObj] of Object.entries(metrics)) {
         for (const [geneId, geneData] of Object.entries(genesObj as Record<string, any>)) {
-          const tn = geneData?.normalizationTissue ?? {};
+          const tn = (geneData as any)?.normalizationTissue ?? {}
           const values = tissues.map(t => {
-            let v = tn[t];
-            if (Array.isArray(v)) v = v[0];
-            return typeof v === 'number' && Number.isFinite(v) ? v : 0;
-          });
-          allGenes.push({ geneId, values });
+            let v = tn[t]
+            if (Array.isArray(v)) v = v[0]
+            return typeof v === 'number' && Number.isFinite(v) ? v : 0
+          })
+          allGenes.push({ geneId, values })
         }
       }
-      
       if (allGenes.length > 0) {
-        // Transpose for column clustering: each row is a tissue profile across all genes
-        const colProfiles: number[][] = tissues.map((_, colIdx) =>
-          allGenes.map(g => g.values[colIdx])
-        );
-        
-        // Perform hierarchical clustering on columns (returns order directly)
+        const colProfiles: number[][] = tissues.map((_, colIdx) => allGenes.map(g => g.values[colIdx]))
         const clusterResult = hierarchicalCluster(
           colProfiles,
           visualizationStore.clustering.method,
-          visualizationStore.clustering.distance
-        );
-        
-        // Reorder tissues based on clustering
-        tissues = clusterResult.order.map(idx => tissues[idx]);
+          visualizationStore.clustering.distance,
+        )
+        tissues = clusterResult.order.map(idx => tissues[idx])
       }
     } catch (error) {
-      console.warn('Column clustering failed, using original order:', error);
+      console.warn('Column clustering failed, using original order:', error)
     }
   }
 
-  const columns: { tissue: string; colIndex: number }[] =
-    tissues.map((tissue, idx) => ({tissue, colIndex: idx}))
-
+  const columnsArr: { tissue: string; colIndex: number }[] =
+    tissues.map((tissue, idx) => ({ tissue, colIndex: idx }))
 
   const allValues: number[] = []
-
-  for (const [_, genesObj] of Object.entries(metrics)) {
-    const geneIds = Object.keys(genesObj)
+  for (const [, genesObj] of Object.entries(metrics)) {
+    const geneIds = Object.keys(genesObj as Record<string, any>)
     geneIds.forEach(geneId => {
-      const tn = genesObj[geneId]?.normalizationTissue ?? {}
+      const tn = (genesObj as any)[geneId]?.normalizationTissue ?? {}
       tissues.forEach(t => {
         let v = tn[t]
         if (Array.isArray(v)) v = v[0]
-        if (typeof v === 'number' && Number.isFinite(v)) {
-          allValues.push(v)
-        }
+        if (typeof v === 'number' && Number.isFinite(v)) allValues.push(v)
       })
     })
   }
-
   const minVal = d3.min(allValues) ?? 0
   const maxVal = d3.max(allValues) ?? 1
-
   const color = d3
-    .scaleSequential(
-      COLORSCALES[visualizationStore.colorScale] as (t: number) => string,
-    )
+    .scaleSequential(COLORSCALES[visualizationStore.colorScale] as (t: number) => string)
     .domain([minVal, maxVal])
 
-  const treeRight = bbox.x + bbox.width
-
-  const cellSize = 14
-  const cellPad = 6
-  const heatmapX = treeRight
-
-  const heatmapGroup = mainGroup.append('g')
-    .attr('class', 'tree-heatmap')
-    .attr('transform', `translate(${heatmapX})`)
-
-  // Build map: species prefix -> lowercase table name
-  // Supports both full species name prefixes (e.g., "Capnoides_sempervirens" -> "capnoides_sempervirens")
-  // and short species code prefixes (e.g., "AT" -> "arabidopsis_thaliana")
+  // Species prefix → table-name map (full name + short code)
   const speciesNameToTable: Record<string, string> = {}
   groupNames.forEach(tableName => {
-    // Full species name: "capnoides_sempervirens" -> "Capnoides_sempervirens"
     const sentenceCase = tableName.charAt(0).toUpperCase() + tableName.slice(1)
     speciesNameToTable[sentenceCase] = tableName
-    // Also add short species code mapping if available (e.g., "AT" -> "arabidopsis_thaliana")
     const code = props.speciesCodeMap?.[tableName]
-    if (code && !(code in speciesNameToTable)) {
-      speciesNameToTable[code] = tableName
-    }
+    if (code && !(code in speciesNameToTable)) speciesNameToTable[code] = tableName
   })
-  
-  // === NODE INTERACTIVITY WITH COLLAPSE SUPPORT ===
 
-  // Helper to generate a unique node ID for internal nodes based on position
-  function getNodeId(g: d3.Selection<SVGGElement, any, any, any>, datum: any): string {
-    // Try to get name first
-    if (datum?.data?.name) return datum.data.name;
-    if (datum?.name) return datum.name;
-    // Use transform position as unique identifier for unnamed internal nodes
-    const transform = g.attr('transform') || '';
-    const m = /translate\(([^,]+),\s*([^)]+)\)/.exec(transform);
-    if (m) {
-      return `internal_${Math.round(+m[1])}_${Math.round(+m[2])}`;
-    }
-    return `internal_${Math.random().toString(36).substr(2, 9)}`;
-  }
-  
-  // Count internal nodes for debugging
-  let internalNodeCount = 0;
-  let leafNodeCount = 0;
-  
-  // Debug: Log element counts
-  const allNodes = svgSel.selectAll<SVGGElement, any>('g.node');
-  const branches = svgSel.selectAll<SVGPathElement, any>('path.branch');
-  console.log(`[PhyloTree] Elements - Nodes: ${allNodes.size()}, Branches: ${branches.size()}`);
-  
-  // Add hover effects to branches for better UX
-  branches.each(function() {
-    const path = d3.select(this);
-    const originalStroke = path.attr('stroke') || '#aaa';
-    const originalWidth = path.attr('stroke-width') || '1.5';
-    
-    path.style('cursor', 'pointer')
-      .on('mouseenter', function() {
-        d3.select(this)
-          .attr('stroke-width', 3)
-          .attr('stroke', '#3b82f6');
+  // Species-prefix color scale (matches old behavior)
+  const leafNames = layoutResult.leaves
+    .filter(l => !l.isCollapsed)
+    .map(l => l.hnode.data.name)
+  const prefixes = Array.from(new Set(leafNames.map(getPrefix)))
+  const selectedScheme = colorSchemes[visualizationStore.colorScale] || d3.schemeSet1
+  const prefixColor = d3.scaleOrdinal<string, string>().domain(prefixes).range(selectedScheme as string[])
+
+  heatmapCols.value = tissues
+
+  // Reserve a real SVG header band for rotated tissue labels. The tree and
+  // heatmap rows are shifted down together, preserving their shared y-axis,
+  // while labels are clipped to the header so they cannot paint over cells.
+  const longestTissueLabel = tissues.reduce((max, tissue) => Math.max(max, tissue.length), 0)
+  const heatmapLabelHeaderHeight = Math.max(70, Math.min(180, longestTissueLabel * 6.5 + 18))
+  const rowY = (y: number) => y + heatmapLabelHeaderHeight
+
+  // === 4. Build SVG ===
+  const svgNS = 'http://www.w3.org/2000/svg'
+  const svgElement = document.createElementNS(svgNS, 'svg') as SVGSVGElement
+  container.innerHTML = ''
+  container.appendChild(svgElement)
+  const svgSel = d3.select<SVGSVGElement, unknown>(svgElement)
+
+  // zoom-container (kept as class name so ShareOverlay's exporter still works)
+  const zoomGroup = svgSel.append('g').attr('class', 'zoom-container')
+  const mainGroup = zoomGroup.append('g').attr('class', 'tree-root')
+
+  // --- Branches (elbow style) ---
+  const branchGroup = mainGroup.append('g').attr('class', 'branches')
+  for (const link of layoutResult.links) {
+    const path = `M${link.source.x},${rowY(link.source.y)} V${rowY(link.target.y)} H${link.target.x}`
+    branchGroup.append('path')
+      .attr('class', 'branch')
+      .attr('d', path)
+      .attr('fill', 'none')
+      .attr('stroke', '#999')
+      .attr('stroke-width', 1.5)
+      .style('cursor', 'pointer')
+      .on('mouseenter', function () {
+        d3.select(this).attr('stroke-width', 3).attr('stroke', '#3b82f6')
       })
-      .on('mouseleave', function() {
-        d3.select(this)
-          .attr('stroke-width', originalWidth)
-          .attr('stroke', originalStroke);
-      });
-  });
-  
-  svgSel.selectAll<SVGGElement, any>('g.node').each(function (d: any) {
-    const g = d3.select(this)
-    const datum = d || g.datum()
-    
-    // Get node name - leaves have names, internal nodes typically don't
-    const nodeName: string | undefined =
-      datum?.data?.name || datum?.name || datum?.data?.id
-    
-    // Check for circle element - internal nodes typically have circles
-    const circleEl = g.select('circle');
-    const hasCircle = circleEl.node() !== null;
-    
-    // Determine if this is a leaf node by checking the text element
-    // Leaf nodes have visible species/gene name labels, internal nodes have no text or empty text
-    const textEl = g.select('text');
-    const textContent = textEl.node() ? textEl.text().trim() : '';
-    const hasVisibleLabel = textContent.length > 0;
-    
-    // A node is INTERNAL if it has a circle but no visible text label
-    // OR if it explicitly has no name
-    const isInternalNode = (hasCircle && !hasVisibleLabel) || (!nodeName && hasCircle);
-    
-    const nodeId = getNodeId(g, datum);
-    
-    if (isInternalNode) internalNodeCount++;
-    else leafNodeCount++;
-    
-    // For LEAF nodes only - add context menu for species operations
-    // (phylotree.js handles internal node collapse via collapsible: true)
-    if (!isInternalNode && nodeName) {
-      // For leaf nodes - species hide/show behavior via context menu
-      const speciesTableName = matchLeafToDataset(nodeName, groupNames, props.speciesCodeMap ?? {})?.tableName;
-      if (!speciesTableName) return;
-      
-      g.on('contextmenu', function(event: MouseEvent) {
-          event.preventDefault();
-          event.stopPropagation();
-          showNodeContextMenu(event, container, speciesTableName, metrics);
-        });
-    }
-  });
-  
-  console.log(`[PhyloTree] Node counts - Internal: ${internalNodeCount}, Leaf: ${leafNodeCount}`);
-  
-  // Context menu for leaf nodes
-  function showNodeContextMenu(event: MouseEvent, container: HTMLElement, speciesTableName: string, metrics: any) {
-    // Remove any existing context menus
-    d3.selectAll('.node-context-menu').remove();
-    
-    const contextMenu = d3.select(container)
-      .append('div')
-      .attr('class', 'node-context-menu')
-      .style('position', 'absolute')
-      .style('left', (event.clientX - container.getBoundingClientRect().left) + 'px')
-      .style('top', (event.clientY - container.getBoundingClientRect().top) + 'px')
-      .style('background', 'white')
-      .style('border', '1px solid #ccc')
-      .style('border-radius', '4px')
-      .style('box-shadow', '0 2px 8px rgba(0,0,0,0.15)')
-      .style('z-index', '1000')
-      .style('padding', '4px 0');
-    
-    const isHidden = hiddenSpecies.value.has(speciesTableName);
-    
-    const menuItems = [
-      { label: isHidden ? 'Show species' : 'Hide species', action: () => {
-        if (isHidden) {
-          hiddenSpecies.value.delete(speciesTableName);
-        } else {
-          hiddenSpecies.value.add(speciesTableName);
+      .on('mouseleave', function () {
+        d3.select(this).attr('stroke-width', 1.5).attr('stroke', '#999')
+      })
+  }
+
+  // --- Nodes (internal + leaves) ---
+  const nodeGroup = mainGroup.append('g').attr('class', 'nodes')
+
+  // Helper: get species prefix from a leaf datum
+  const prefixOfLeaf = (ln: LayoutNode): string => getPrefix(ln.hnode.data.name)
+
+  // Apply clade-highlight colours into a map for O(1) lookup
+  const cladeColorByNodeId = new Map<string, string>()
+  cladeColors.value.forEach((color, nodeId) => cladeColorByNodeId.set(nodeId, color))
+
+  // Pre-compute: for each layout node, the clade highlight (inherited from nearest highlighted ancestor)
+  const inheritedHighlight = new Map<LayoutNode, string | null>()
+  function findInheritedHighlight(ln: LayoutNode): string | null {
+    if (inheritedHighlight.has(ln)) return inheritedHighlight.get(ln)!
+    const own = cladeColorByNodeId.get(ln.hnode.data.nodeId)
+    if (own) { inheritedHighlight.set(ln, own); return own }
+    const parentLn = layoutResult.nodes.find(n => n.hnode === ln.hnode.parent) || null
+    const result = parentLn ? findInheritedHighlight(parentLn) : null
+    inheritedHighlight.set(ln, result)
+    return result
+  }
+
+  // --- Render each node ---
+  for (const ln of layoutResult.nodes) {
+    const datum = ln.hnode.data
+    const isLeaf = ln.isLeaf && !ln.isCollapsed
+    const isCollapsed = ln.isCollapsed
+    const isInternal = !isLeaf && !isCollapsed
+    const g = nodeGroup.append('g')
+      .attr('class', isInternal ? 'node internal-node' : 'node')
+      .attr('transform', `translate(${ln.x},${rowY(ln.y)})`)
+      .datum(ln)
+
+    const highlightColor = findInheritedHighlight(ln)
+
+    if (isCollapsed) {
+      // Triangle pointing right, size scaled by hidden leaf count
+      const fullNode = fullHier.descendants().find(d => d.data.nodeId === datum.nodeId)
+      const hiddenLeafCount = fullNode ? fullNode.leaves().length : datum.leafNames.length
+      const triSize = Math.max(6, Math.min(20, Math.sqrt(hiddenLeafCount) * 2))
+      const triH = rowHeight * 0.8
+      g.append('polygon')
+        .attr('class', 'node-collapsed')
+        .attr('points', `0,${-triH / 2} ${triSize * 2},${-triH / 2} ${triSize * 2},${triH / 2} 0,${triH / 2}`)
+        .attr('fill', highlightColor || '#888')
+        .attr('stroke', '#333')
+        .attr('stroke-width', 0.6)
+        .style('cursor', 'pointer')
+        .append('title')
+        .text(`${hiddenLeafCount} leaves collapsed — click to expand`)
+      g.select('polygon')
+        .on('click', (event: MouseEvent) => {
+          event.stopPropagation()
+          visualizationStore.toggleNodeCollapsed(datum.nodeId)
+        })
+      g.append('text')
+        .attr('x', triSize * 2 + 4)
+        .attr('y', 0)
+        .attr('dominant-baseline', 'middle')
+        .attr('font-size', 11)
+        .attr('fill', '#444')
+        .text(`(${hiddenLeafCount})`)
+    } else if (isInternal) {
+      g.append('circle')
+        .attr('r', 3.2)
+        .attr('fill', highlightColor || '#CCC')
+        .attr('stroke', highlightColor || '#666')
+        .attr('stroke-width', highlightColor ? 2 : 0.5)
+        .style('cursor', 'pointer')
+        .append('title')
+        .text(`Click to collapse — ${datum.leafNames.length} leaves`)
+      // Click to collapse, right-click for menu
+      g.select('circle')
+        .on('click', (event: MouseEvent) => {
+          event.stopPropagation()
+          visualizationStore.toggleNodeCollapsed(datum.nodeId)
+        })
+        .on('contextmenu', (event: MouseEvent) => {
+          event.preventDefault()
+          event.stopPropagation()
+          showInternalNodeContextMenu(event, container, datum.nodeId, ln.hnode, metrics)
+        })
+
+      // Bootstrap-value display: if the node has a numeric name >= 50 (or >= 0.5 normalized)
+      const bv = parseFloat(datum.name)
+      if (!isNaN(bv) && bv >= 0) {
+        const display = bv <= 1 ? Math.round(bv * 100) : Math.round(bv)
+        if (display >= 50) {
+          g.append('text')
+            .attr('class', 'bootstrap-value')
+            .attr('x', -5)
+            .attr('y', -6)
+            .attr('font-size', '9px')
+            .attr('fill', display >= 90 ? '#059669' : display >= 70 ? '#d97706' : '#dc2626')
+            .attr('font-weight', display >= 90 ? 'bold' : 'normal')
+            .text(String(display))
         }
-        initPhylotree(newickstr.value, metrics);
-      }},
-      { label: 'Show all species', action: () => {
-        hiddenSpecies.value.clear();
-        initPhylotree(newickstr.value, metrics);
-      }}
-    ];
-    
-    menuItems.forEach(item => {
+      }
+    } else {
+      // Leaf
+      const name = datum.name
+      const prefix = getPrefix(name)
+      const speciesColor = highlightColor || String(prefixColor(prefix))
+
+      const resolvedLeaf = resolvePhyloLeafMatch(name, metrics, props.speciesCodeMap ?? {})
+      const shouldHighlightLeaf = resolvedLeaf
+        ? highlightedGeneIds.value[resolvedLeaf.tableName]?.has(resolvedLeaf.geneId) ?? false
+        : false
+
+      g.append('circle')
+        .attr('r', 2)
+        .attr('fill', speciesColor)
+
+      const textSel = g.append('text')
+        .attr('x', 6)
+        .attr('y', 0)
+        .attr('dominant-baseline', 'middle')
+        .attr('font-size', 11)
+        .attr('fill', speciesColor)
+        .attr('font-weight', shouldHighlightLeaf ? 800 : 400)
+        .attr('stroke', shouldHighlightLeaf ? '#ffffff' : 'none')
+        .attr('stroke-width', shouldHighlightLeaf ? 0.8 : 0)
+        .attr('paint-order', shouldHighlightLeaf ? 'stroke' : null)
+        .text(name)
+
+      if (shouldHighlightLeaf) {
+        const textNode = textSel.node() as SVGTextElement | null
+        if (textNode) {
+          const bbox = textNode.getBBox()
+          g.insert('text', 'text')
+            .attr('class', 'filtered-leaf-marker')
+            .attr('x', bbox.x - 13)
+            .attr('y', bbox.y + bbox.height / 2)
+            .attr('dominant-baseline', 'middle')
+            .attr('fill', '#b45309')
+            .attr('font-size', '13px')
+            .attr('font-weight', 900)
+            .attr('stroke', '#fffbeb')
+            .attr('stroke-width', 0.9)
+            .attr('paint-order', 'stroke')
+            .text('★')
+        }
+      }
+
+      // Right-click context menu for leaf: species hide/show
+      const speciesTableName = matchLeafToDataset(name, groupNames, props.speciesCodeMap ?? {})?.tableName
+      if (speciesTableName) {
+        g.on('contextmenu', function (event: MouseEvent) {
+          event.preventDefault()
+          event.stopPropagation()
+          showNodeContextMenu(event, container, speciesTableName, metrics)
+        })
+      }
+    }
+  }
+
+  // --- Compute right edge of tree (in tree-local coords) for heatmap placement ---
+  // Use max(leaf.x) + leaf-label width approximation. For accurate placement after
+  // text rendering we measure the bbox now.
+  const treeBBox = mainGroup.node()!.getBBox()
+  const heatmapX = treeBBox.x + treeBBox.width + 8
+
+  // --- Heatmap (shares y-axis with tree by construction) ---
+  const heatmapGroup = mainGroup.append('g')
+    .attr('class', 'tree-heatmap')
+    .attr('transform', `translate(${heatmapX}, 0)`)
+
+  // Create reusable tooltip div
+  const tooltip = d3.select(container)
+    .append('div')
+    .attr('class', 'phylo-tooltip')
+    .style('position', 'absolute')
+    .style('visibility', 'hidden')
+    .style('background-color', 'white')
+    .style('color', '#333')
+    .style('font-size', '0.75rem')
+    .style('border-radius', '0.375rem')
+    .style('padding', '0.25rem 0.5rem')
+    .style('min-width', '8rem')
+    .style('white-space', 'normal')
+    .style('word-wrap', 'break-word')
+    .style('max-width', '24rem')
+    .style('border', '1px solid #d1d5db')
+    .style('box-shadow', '0 1px 2px rgba(0,0,0,0.05)')
+    .style('pointer-events', 'auto')
+    .style('user-select', 'text')
+    .style('z-index', '1000')
+
+  // Render heatmap rows for visible leaves
+  for (const ln of layoutResult.leaves) {
+    if (ln.isCollapsed) continue
+    const name = ln.hnode.data.name
+    const resolvedLeaf = resolvePhyloLeafMatch(name, metrics, props.speciesCodeMap ?? {})
+    if (!resolvedLeaf) continue
+    const matchedTable = resolvedLeaf.tableName
+    if (hiddenSpecies.value.has(matchedTable)) continue
+
+    for (const { tissue, colIndex } of columnsArr) {
+      const genesObj = metrics[matchedTable]
+      if (!genesObj) continue
+      const geneObj = genesObj[resolvedLeaf.matchedKey]
+      if (!geneObj) continue
+
+      let v: any = geneObj.normalizationTissue?.[tissue]
+      if (Array.isArray(v)) v = v[0]
+      if (typeof v !== 'number' || !Number.isFinite(v)) continue
+
+      const originalItems = (tableData.value[matchedTable] as { items?: RowType[] } | undefined)?.items ?? []
+      const originalRowData = originalItems.find(
+        (item: any) => String(item[config.visualization.id_column]) === resolvedLeaf.geneId,
+      ) || null
+
+      const cellData = {
+        geneId: resolvedLeaf.geneId,
+        tissue,
+        value: v,
+        species: matchedTable,
+        tableName: matchedTable,
+        geneObj,
+        rowData: originalRowData,
+      }
+
+      heatmapGroup.append('rect')
+        .attr('x', colIndex * (cellSize + cellPad))
+        .attr('y', rowY(ln.y) - cellSize / 2)
+        .attr('width', cellSize)
+        .attr('height', cellSize)
+        .attr('fill', color(v))
+        .attr('class', 'heatmap-cell')
+        .style('cursor', 'pointer')
+        .datum(cellData)
+        .on('mouseover', function (_event, d) {
+          d3.select(this).attr('stroke', 'white').style('stroke-width', 2)
+          const entityLabel = getEntityIdLabel()
+          const selectedFields = visualizationStore.tooltipFields
+          let tooltipHtml = `
+            <b>${entityLabel}:</b> ${d.geneId}<br>
+            <b>Tissue:</b> ${d.tissue}<br>
+            <b>Value:</b> ${typeof d.value === 'number' ? d.value.toFixed(3) : d.value}<br>
+            <b>Species:</b> ${d.species}<br>
+          `
+          if (d.rowData && selectedFields !== null && selectedFields.length > 0) {
+            const metaLines = selectedFields
+              .filter(field => field !== config.visualization.id_column && d.rowData![field] !== undefined)
+              .map(field => {
+                let value = d.rowData![field]
+                if (Array.isArray(value)) {
+                  value = value.length > 3 ? value.slice(0, 3).join(', ') + '...' : value.join(', ')
+                }
+                return `<b>${getDisplayName(field)}:</b> ${value}`
+              })
+              .join('<br>')
+            if (metaLines) {
+              tooltipHtml += `<hr style="margin:4px 0; border-color:#888"/>${metaLines}`
+            }
+          }
+          tooltipHtml += `
+            <hr style="margin:4px 0; border-color:#888"/>
+            <div style="text-align:center; font-size:0.7rem; color:#6b7280;">Right-click for more details</div>
+          `
+          tooltip.html(tooltipHtml).style('visibility', 'visible')
+        })
+        .on('mousemove', function (event) {
+          if (!container) return
+          const containerRect = container.getBoundingClientRect()
+          const tooltipNode = tooltip.node()
+          if (!tooltipNode) return
+          const tooltipRect = (tooltipNode as HTMLElement).getBoundingClientRect()
+          const offsetX = 12
+          let xPos = event.clientX - containerRect.left + offsetX
+          let yPos = event.clientY - containerRect.top - tooltipRect.height / 2
+          if (xPos + tooltipRect.width > containerRect.width) {
+            xPos = event.clientX - containerRect.left - tooltipRect.width - offsetX
+          }
+          xPos = Math.max(0, xPos)
+          yPos = Math.max(0, Math.min(yPos, containerRect.height - tooltipRect.height))
+          tooltip.style('left', xPos + 'px').style('top', yPos + 'px')
+        })
+        .on('mouseout', function () {
+          d3.select(this).attr('stroke', 'none')
+          tooltip.style('visibility', 'hidden')
+        })
+        .on('contextmenu', function (event, d) {
+          event.preventDefault()
+          if (d.rowData) {
+            selectedRowData.value = d.rowData
+            selectedTableName.value = d.tableName
+            selectedColumnValue.value = d.tissue
+            selectedCellValue.value = d.value
+            heatmapCols.value = Array.from(tissueSet)
+            showTooltipModal.value = true
+          }
+        })
+    }
+  }
+
+  // --- Tissue column labels (rotated -90°, clipped to header band) ---
+  const labelClipId = `phylo-heatmap-labels-${Math.random().toString(36).slice(2)}`
+  svgSel.append('defs')
+    .append('clipPath')
+    .attr('id', labelClipId)
+    .append('rect')
+    .attr('x', -cellSize)
+    .attr('y', 0)
+    .attr('width', columnsArr.length * (cellSize + cellPad) + cellSize * 2)
+    .attr('height', heatmapLabelHeaderHeight)
+
+  const labelGroup = heatmapGroup.append('g')
+    .attr('class', 'tree-heatmap-labels')
+    .attr('clip-path', `url(#${labelClipId})`)
+
+  const firstLeafY = layoutResult.leaves.length > 0 ? layoutResult.leaves[0].y : 0
+  const firstCellTop = rowY(firstLeafY) - cellSize / 2
+  const labelBaselineY = Math.min(heatmapLabelHeaderHeight - 8, firstCellTop - 10)
+  for (const { tissue, colIndex } of columnsArr) {
+    const cx = colIndex * (cellSize + cellPad) + cellSize / 2
+    labelGroup.append('text')
+      .attr('x', -labelBaselineY)
+      .attr('y', cx)
+      .attr('text-anchor', 'start')
+      .attr('dominant-baseline', 'middle')
+      .attr('font-size', 12)
+      .attr('transform', 'rotate(-90)')
+      .text(tissue.charAt(0).toUpperCase() + tissue.slice(1))
+  }
+
+  // --- Legend ---
+  const heatmapWidth = columnsArr.length * (cellSize + cellPad)
+  const hasHighlightedLeaves = Object.values(highlightedGeneIds.value).some((geneIds) => geneIds.size > 0)
+  if (visualizationStore.legend) {
+    const legendWidth = 18
+    const legendHeight = 180
+    const legendSteps = 40
+    const legendX = heatmapX + heatmapWidth + 40
+    const legendY = Math.max(0, rowY(firstLeafY) - 20)
+    const legendGroup = mainGroup.append('g')
+      .attr('class', 'heatmap-legend')
+      .attr('transform', `translate(${legendX}, ${legendY})`)
+    const legendValueScale = d3.scaleLinear().domain([minVal, maxVal]).range([legendHeight, 0])
+    const stepHeight = legendHeight / legendSteps
+    const legendData = d3.range(legendSteps).map(i => {
+      const t0 = i / legendSteps
+      return { index: i, value: minVal + t0 * (maxVal - minVal) }
+    })
+    legendGroup.selectAll('rect')
+      .data(legendData)
+      .enter()
+      .append('rect')
+      .attr('x', 0)
+      .attr('y', d => legendValueScale(d.value))
+      .attr('width', legendWidth)
+      .attr('height', stepHeight + 1)
+      .attr('fill', d => color(d.value))
+    legendGroup.append('g')
+      .attr('transform', `translate(${legendWidth + 4}, 0)`)
+      .call(d3.axisRight(legendValueScale).ticks(5).tickSize(4))
+      .selectAll('text')
+      .style('font-size', '11px')
+    legendGroup.append('text')
+      .attr('x', legendWidth / 2)
+      .attr('y', -8)
+      .attr('text-anchor', 'middle')
+      .style('font-size', '11px')
+      .text(getExpressionOption(visualizationStore.expressionDisplay.optionId)?.label || 'Expression values')
+    if (hasHighlightedLeaves) {
+      const markerLegend = legendGroup.append('g')
+        .attr('transform', `translate(-8, ${legendHeight + 28})`)
+      markerLegend.append('text')
+        .attr('x', 0).attr('y', 0)
+        .attr('dominant-baseline', 'middle')
+        .attr('fill', '#b45309')
+        .attr('font-size', '13px')
+        .attr('font-weight', 900)
+        .attr('stroke', '#fffbeb').attr('stroke-width', 0.9).attr('paint-order', 'stroke')
+        .text('★')
+      markerLegend.append('text')
+        .attr('x', 12).attr('y', 0)
+        .attr('dominant-baseline', 'middle')
+        .attr('fill', '#000')
+        .style('font-size', '12px')
+        .text('passes current filters')
+    }
+  }
+
+  // === 5. ViewBox + zoom ===
+  const finalBBox = mainGroup.node()!.getBBox()
+  const padding = 12
+  const viewWidth = finalBBox.width + padding * 2
+  const viewHeight = finalBBox.height + padding * 2
+  // Shift the tree-root so the heatmap labels above row 0 are not clipped.
+  mainGroup.attr('transform', `translate(${padding - finalBBox.x}, ${padding - finalBBox.y})`)
+  svgElement.setAttribute('viewBox', `0 0 ${viewWidth} ${viewHeight}`)
+  // 'xMidYMid meet' keeps the tree centred in the (possibly larger) container,
+  // 'meet' guarantees it fits without distortion. 'overflow:hidden' on both the
+  // SVG and the parent ensures zoom/pan never bleeds outside the rounded card.
+  svgElement.setAttribute('preserveAspectRatio', 'xMidYMid meet')
+  svgElement.style.width = '100%'
+  svgElement.style.height = '100%'
+  svgElement.style.overflow = 'hidden'
+  svgElement.style.display = 'block'
+
+  // Zoom + pan
+  const zoomBehavior = d3.zoom<SVGSVGElement, unknown>()
+    .scaleExtent([0.1, 10])
+    .filter((event) => {
+      const target = event.target as Element
+      const isNode = target.closest('g.node') !== null
+      if (event.type === 'wheel') return true
+      if (event.type === 'mousedown' && isNode) return false
+      if (event.type === 'dblclick' && isNode) return false
+      return true
+    })
+    .on('zoom', (event) => {
+      zoomGroup.attr('transform', event.transform.toString())
+      visualizationStore.setPhyloTreeZoom({
+        k: event.transform.k,
+        x: event.transform.x,
+        y: event.transform.y,
+      })
+    })
+  svgSel.call(zoomBehavior)
+  currentZoomBehavior = zoomBehavior
+
+  const savedTransform = visualizationStore.phyloTree.zoomTransform
+  if (savedTransform.k !== 1 || savedTransform.x !== 0 || savedTransform.y !== 0) {
+    const t = d3.zoomIdentity.translate(savedTransform.x, savedTransform.y).scale(savedTransform.k)
+    svgSel.call(zoomBehavior.transform, t)
+  }
+
+  loading.value = false
+}
+
+// Context menu for leaf nodes (hide / show species)
+function showNodeContextMenu(event: MouseEvent, container: HTMLElement, speciesTableName: string, metrics: any) {
+  d3.selectAll('.node-context-menu').remove()
+  const contextMenu = d3.select(container)
+    .append('div')
+    .attr('class', 'node-context-menu')
+    .style('position', 'absolute')
+    .style('left', (event.clientX - container.getBoundingClientRect().left) + 'px')
+    .style('top', (event.clientY - container.getBoundingClientRect().top) + 'px')
+    .style('background', 'white')
+    .style('border', '1px solid #ccc')
+    .style('border-radius', '4px')
+    .style('box-shadow', '0 2px 8px rgba(0,0,0,0.15)')
+    .style('z-index', '1000')
+    .style('padding', '4px 0')
+  const isHidden = hiddenSpecies.value.has(speciesTableName)
+  const menuItems = [
+    { label: isHidden ? 'Show species' : 'Hide species', action: () => {
+      if (isHidden) hiddenSpecies.value.delete(speciesTableName)
+      else hiddenSpecies.value.add(speciesTableName)
+      initPhylotree(newickstr.value, metrics)
+    }},
+    { label: 'Show all species', action: () => {
+      hiddenSpecies.value.clear()
+      initPhylotree(newickstr.value, metrics)
+    }},
+  ]
+  menuItems.forEach(item => {
+    contextMenu.append('div')
+      .style('padding', '6px 12px')
+      .style('cursor', 'pointer')
+      .style('font-size', '13px')
+      .text(item.label)
+      .on('mouseover', function () { d3.select(this).style('background', '#f0f0f0') })
+      .on('mouseout', function () { d3.select(this).style('background', 'white') })
+      .on('click', function () { item.action(); contextMenu.remove() })
+  })
+  d3.select('body').on('click.contextmenu', function () {
+    contextMenu.remove()
+    d3.select('body').on('click.contextmenu', null)
+  })
+}
+
+// Context menu for internal nodes (collapse/expand, export, highlight)
+function showInternalNodeContextMenu(event: MouseEvent, container: HTMLElement, nodeId: string, hnode: d3.HierarchyNode<PhyloDatum>, metrics: any) {
+  d3.selectAll('.node-context-menu').remove()
+  const contextMenu = d3.select(container)
+    .append('div')
+    .attr('class', 'node-context-menu')
+    .style('position', 'absolute')
+    .style('left', (event.clientX - container.getBoundingClientRect().left) + 'px')
+    .style('top', (event.clientY - container.getBoundingClientRect().top) + 'px')
+    .style('background', 'white')
+    .style('border', '1px solid #ccc')
+    .style('border-radius', '4px')
+    .style('box-shadow', '0 2px 8px rgba(0,0,0,0.15)')
+    .style('z-index', '1000')
+    .style('padding', '4px 0')
+  const isCollapsed = collapsedNodes.value.has(nodeId)
+  const isHighlighted = cladeColors.value.has(nodeId)
+  const menuItems: ({ label: string; action: () => void } | null)[] = [
+    { label: isCollapsed ? '▶ Expand clade' : '▼ Collapse clade', action: () => {
+      visualizationStore.toggleNodeCollapsed(nodeId)
+    }},
+    { label: '↺ Expand all clades', action: () => {
+      visualizationStore.resetPhyloTreeState()
+    }},
+    null,
+    { label: '📥 Export subtree (Newick)', action: () => {
+      const newick = hierarchyToNewick(hnode)
+      const filename = `subtree_${og.value}_${nodeId.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 60)}.nwk`
+      downloadTextFile(newick, filename)
+    }},
+    null,
+    { label: isHighlighted ? '🎨 Remove highlight' : '🎨 Highlight clade', action: () => {
+      if (isHighlighted) {
+        cladeColors.value.delete(nodeId)
+      } else {
+        const c = highlightColorPalette[nextColorIndex % highlightColorPalette.length]
+        nextColorIndex++
+        cladeColors.value.set(nodeId, c)
+      }
+      initPhylotree(newickstr.value, metrics)
+    }},
+    { label: '🧹 Clear all highlights', action: () => {
+      cladeColors.value.clear()
+      nextColorIndex = 0
+      initPhylotree(newickstr.value, metrics)
+    }},
+  ]
+  menuItems.forEach(item => {
+    if (item === null) {
+      contextMenu.append('div')
+        .style('height', '1px')
+        .style('background', '#e5e7eb')
+        .style('margin', '4px 0')
+    } else {
       contextMenu.append('div')
         .style('padding', '6px 12px')
         .style('cursor', 'pointer')
         .style('font-size', '13px')
         .text(item.label)
-        .on('mouseover', function() { d3.select(this).style('background', '#f0f0f0'); })
-        .on('mouseout', function() { d3.select(this).style('background', 'white'); })
-        .on('click', function() { item.action(); contextMenu.remove(); });
-    });
-    
-    d3.select('body').on('click.contextmenu', function() {
-      contextMenu.remove();
-      d3.select('body').on('click.contextmenu', null);
-    });
-  }
-  
-  // Context menu for internal nodes (collapse/expand, export, highlight)
-  function showInternalNodeContextMenu(event: MouseEvent, container: HTMLElement, nodeId: string, datum: any, metrics: any) {
-    d3.selectAll('.node-context-menu').remove();
-    
-    const contextMenu = d3.select(container)
-      .append('div')
-      .attr('class', 'node-context-menu')
-      .style('position', 'absolute')
-      .style('left', (event.clientX - container.getBoundingClientRect().left) + 'px')
-      .style('top', (event.clientY - container.getBoundingClientRect().top) + 'px')
-      .style('background', 'white')
-      .style('border', '1px solid #ccc')
-      .style('border-radius', '4px')
-      .style('box-shadow', '0 2px 8px rgba(0,0,0,0.15)')
-      .style('z-index', '1000')
-      .style('padding', '4px 0');
-    
-    const isCollapsed = collapsedNodes.value.has(nodeId);
-    const isHighlighted = cladeColors.value.has(nodeId);
-    
-    // Menu items with separators (null = separator)
-    const menuItems: ({ label: string; action: () => void; icon?: string } | null)[] = [
-      { label: isCollapsed ? '▶ Expand clade' : '▼ Collapse clade', action: () => {
-        visualizationStore.toggleNodeCollapsed(nodeId);
-        initPhylotree(newickstr.value, metrics);
-      }},
-      { label: '↺ Expand all clades', action: () => {
-        visualizationStore.resetPhyloTreeState();
-        initPhylotree(newickstr.value, metrics);
-      }},
-      null, // Separator
-      { label: '📥 Export subtree (Newick)', action: () => {
-        const newick = getSubtreeNewick(datum);
-        const filename = `subtree_${og.value}_${nodeId.replace(/[^a-zA-Z0-9]/g, '_')}.nwk`;
-        downloadTextFile(newick, filename);
-      }},
-      null, // Separator
-      { label: isHighlighted ? '🎨 Remove highlight' : '🎨 Highlight clade', action: () => {
-        if (isHighlighted) {
-          cladeColors.value.delete(nodeId);
-        } else {
-          // Assign next color from palette
-          const color = highlightColorPalette[nextColorIndex % highlightColorPalette.length];
-          nextColorIndex++;
-          cladeColors.value.set(nodeId, color);
-        }
-        initPhylotree(newickstr.value, metrics);
-      }},
-      { label: '🧹 Clear all highlights', action: () => {
-        cladeColors.value.clear();
-        nextColorIndex = 0;
-        initPhylotree(newickstr.value, metrics);
-      }}
-    ];
-    
-    menuItems.forEach(item => {
-      if (item === null) {
-        // Render separator
-        contextMenu.append('div')
-          .style('height', '1px')
-          .style('background', '#e5e7eb')
-          .style('margin', '4px 0');
-      } else {
-        contextMenu.append('div')
-          .style('padding', '6px 12px')
-          .style('cursor', 'pointer')
-          .style('font-size', '13px')
-          .text(item.label)
-          .on('mouseover', function() { d3.select(this).style('background', '#f0f0f0'); })
-          .on('mouseout', function() { d3.select(this).style('background', 'white'); })
-          .on('click', function() { item.action(); contextMenu.remove(); });
-      }
-    });
-    
-    d3.select('body').on('click.contextmenu', function() {
-      contextMenu.remove();
-      d3.select('body').on('click.contextmenu', null);
-    });
-  }
-  // === END NODE INTERACTIVITY ===
-
-  // Create tooltip div
-  const tooltip = d3.select(container)
-    .append("div")
-    .attr("class", "phylo-tooltip")
-    .style("position", "absolute")
-    .style("visibility", "hidden")
-    .style("background-color", "white")
-    .style("color", "#333")
-    .style("font-size", "0.75rem")
-    .style("border-radius", "0.375rem")
-    .style("padding", "0.25rem 0.5rem")
-    .style("min-width", "8rem")
-    .style("white-space", "normal")
-    .style("word-wrap", "break-word")
-    .style("max-width", "24rem")
-    .style("border", "1px solid #d1d5db")
-    .style("box-shadow", "0 1px 2px rgba(0,0,0,0.05)")
-    .style("pointer-events", "auto")
-    .style("user-select", "text")
-    .style("z-index", "1000");
-
-  // Store tissue columns for TooltipModal
-  heatmapCols.value = tissues;
-
-  leaves.forEach(leaf => {
-    const leafName = leaf.name  // e.g., "Staphisagria_picta_evm.model.ptg000098l.1147"
-
-    const resolvedLeaf = resolvePhyloLeafMatch(leafName, metrics, props.speciesCodeMap ?? {})
-    if (!resolvedLeaf) return
-
-    const matchedTable = resolvedLeaf.tableName
-
-    // Skip hidden species
-    if (hiddenSpecies.value.has(matchedTable)) return;
-
-    columns.forEach(({tissue, colIndex}) => {
-      const genesObj = metrics[matchedTable]
-      if (!genesObj) return
-
-      const geneObj = genesObj[resolvedLeaf.matchedKey]
-      if (!geneObj) return
-
-      let v: any = geneObj.normalizationTissue?.[tissue]
-      if (Array.isArray(v)) v = v[0]
-      if (typeof v === 'number' && Number.isFinite(v)) {
-        // Get the original row data for this gene from tableData
-        const originalItems = (tableData.value[matchedTable] as { items?: RowType[] } | undefined)?.items ?? []
-        const originalRowData = originalItems.find(
-          (item: any) => String(item[config.visualization.id_column]) === resolvedLeaf.geneId
-        );
-        
-        // Store references for tooltip/modal access
-        const cellData = {
-          geneId: resolvedLeaf.geneId,
-          tissue: tissue,
-          value: v,
-          species: matchedTable,
-          tableName: matchedTable,
-          geneObj: geneObj,
-          rowData: originalRowData || null // Store full row data for modal
-        };
-
-        heatmapGroup.append('rect')
-          .attr('x', colIndex * (cellSize + cellPad))
-          .attr('y', leaf.y - cellSize / 2 + (-3))
-          .attr('width', cellSize)
-          .attr('height', cellSize)
-          .attr('fill', color(v))
-          .attr('class', 'heatmap-cell')
-          .style('cursor', 'pointer')
-          .datum(cellData)
-          .on('mouseover', function(event, d) {
-            d3.select(this).attr('stroke', 'white').style('stroke-width', 2);
-            
-            // Build tooltip content with dynamic entity label and selected fields
-            const entityLabel = getEntityIdLabel();
-            const selectedFields = visualizationStore.tooltipFields;
-            
-            // Start with base fields
-            let tooltipHtml = `
-              <b>${entityLabel}:</b> ${d.geneId}<br>
-              <b>Tissue:</b> ${d.tissue}<br>
-              <b>Value:</b> ${typeof d.value === 'number' ? d.value.toFixed(3) : d.value}<br>
-              <b>Species:</b> ${d.species}<br>
-            `;
-            
-            // Add selected metadata fields if row data is available
-            if (d.rowData && selectedFields !== null && selectedFields.length > 0) {
-              const metaLines = selectedFields
-                .filter(field => field !== config.visualization.id_column && d.rowData[field] !== undefined)
-                .map(field => {
-                  let value = d.rowData[field];
-                  if (Array.isArray(value)) {
-                    value = value.length > 3 ? value.slice(0, 3).join(', ') + '...' : value.join(', ');
-                  }
-                  return `<b>${getDisplayName(field)}:</b> ${value}`;
-                })
-                .join('<br>');
-              
-              if (metaLines) {
-                tooltipHtml += `<hr style="margin:4px 0; border-color:#888"/>${metaLines}`;
-              }
-            }
-            
-            tooltipHtml += `
-              <hr style="margin:4px 0; border-color:#888"/>
-              <div style="text-align:center; font-size:0.7rem; color:#6b7280;">Right-click for more details</div>
-            `;
-            
-            tooltip.html(tooltipHtml).style('visibility', 'visible');
-          })
-          .on('mousemove', function(event) {
-            if (!container) return;
-            const containerRect = container.getBoundingClientRect();
-            const tooltipNode = tooltip.node();
-            if (!tooltipNode) return;
-            const tooltipRect = tooltipNode.getBoundingClientRect();
-            
-            const offsetX = 12;
-            let xPos = event.clientX - containerRect.left + offsetX;
-            let yPos = event.clientY - containerRect.top - tooltipRect.height / 2;
-            
-            if (xPos + tooltipRect.width > containerRect.width) {
-              xPos = event.clientX - containerRect.left - tooltipRect.width - offsetX;
-            }
-            
-            xPos = Math.max(0, xPos);
-            yPos = Math.max(0, Math.min(yPos, containerRect.height - tooltipRect.height));
-            
-            tooltip
-              .style('left', xPos + 'px')
-              .style('top', yPos + 'px');
-          })
-          .on('mouseout', function() {
-            d3.select(this).attr('stroke', 'none');
-            tooltip.style('visibility', 'hidden');
-          })
-          .on('contextmenu', function(event, d) {
-            event.preventDefault();
-            
-            // Use the stored rowData directly
-            if (d.rowData) {
-              selectedRowData.value = d.rowData;
-              selectedTableName.value = d.tableName;
-              selectedColumnValue.value = d.tissue;
-              selectedCellValue.value = d.value;
-              // Update heatmapCols with available tissue columns
-              heatmapCols.value = Array.from(tissueSet);
-              showTooltipModal.value = true;
-            } else {
-              console.warn('No row data available for this cell');
-            }
-          });
-      }
-    })
+        .on('mouseover', function () { d3.select(this).style('background', '#f0f0f0') })
+        .on('mouseout', function () { d3.select(this).style('background', 'white') })
+        .on('click', function () { item.action(); contextMenu.remove() })
+    }
   })
-
-  const firstLeafY = d3.min(leaves, d => d.y) ?? 0
-
-  const topCellY = firstLeafY - cellSize
-
-  const labelY = topCellY - 10
-
-  columns.forEach(({tissue, colIndex}) => {
-    const x = colIndex * (cellSize + cellPad) + cellSize / 2
-
-    heatmapGroup.append('text')
-      .attr('x', x)
-      .attr('y', labelY)
-      .attr('text-anchor', 'left')
-      .attr('font-size', 17)
-      .attr('transform', `rotate(-90, ${x}, ${labelY})`)
-      .text(tissue.charAt(0).toUpperCase() + tissue.slice(1))
+  d3.select('body').on('click.contextmenu', function () {
+    contextMenu.remove()
+    d3.select('body').on('click.contextmenu', null)
   })
-
-  const heatmapWidth = columns.length * (cellSize + cellPad)
-  const hasHighlightedLeaves = Object.values(highlightedGeneIds.value).some((geneIds) => geneIds.size > 0)
-
-  const legendWidth = 26
-  const legendHeight = 230
-  const legendSteps = 40
-
-  const legendX = heatmapX + heatmapWidth + 200
-
-  const legendY = firstLeafY - legendHeight + 200
-
-  // Only render legend if visualizationStore.legend is true
-  if (visualizationStore.legend) {
-    const legendGroup = mainGroup.append('g')
-      .attr('class', 'heatmap-legend')
-      .attr('transform', `translate(${legendX}, ${legendY})`)
-
-
-  const legendValueScale = d3.scaleLinear()
-    .domain([minVal, maxVal])
-    .range([legendHeight, 0])
-
-  const stepHeight = legendHeight / legendSteps
-
-  const legendData = d3.range(legendSteps).map(i => {
-    const t0 = i / legendSteps
-    const v = minVal + t0 * (maxVal - minVal)
-    return {index: i, value: v}
-  })
-
-  legendGroup.selectAll('rect')
-    .data(legendData)
-    .enter()
-    .append('rect')
-    .attr('x', 0)
-    .attr('y', d => legendValueScale(d.value))
-    .attr('width', legendWidth)
-    .attr('height', stepHeight + 10)
-    .attr('fill', d => color(d.value))
-
-
-  legendGroup.append('g')
-    .attr('transform', `translate(${legendWidth + 4}, 0)`)
-    .call(
-      d3.axisRight(legendValueScale)
-        .ticks(5)
-        .tickSize(4)
-    )
-    .selectAll('text')
-    .style('font-size', '18')
-
-
-  legendGroup.append('text')
-    .attr('x', legendWidth / 2)
-    .attr('y', -10)
-    .attr('text-anchor', 'middle')
-    .style('font-size', '14px')
-    .text(getExpressionOption(visualizationStore.expressionDisplay.optionId)?.label || 'Expression values')
-
-  if (hasHighlightedLeaves) {
-    const markerLegend = legendGroup.append('g')
-      .attr('transform', `translate(-8, ${legendHeight + 34})`)
-
-    markerLegend.append('text')
-      .attr('x', 0)
-      .attr('y', 0)
-      .attr('dominant-baseline', 'middle')
-      .attr('fill', '#b45309')
-      .attr('font-size', '15px')
-      .attr('font-weight', 900)
-      .attr('stroke', '#fffbeb')
-      .attr('stroke-width', 0.9)
-      .attr('paint-order', 'stroke')
-      .text('★')
-
-    markerLegend.append('text')
-      .attr('x', 14)
-      .attr('y', 0)
-      .attr('dominant-baseline', 'middle')
-      .attr('fill', '#000000')
-      .style('font-size', '15px')
-      .text('passes current filters')
-  }
-  }
-
-
-  const finalBBox = mainGroup.node()!.getBBox()
-
-  const padding = 10
-  const viewWidth = finalBBox.width + padding * 2
-  const viewHeight = finalBBox.height + padding * 2
-
-  const shiftY = padding - finalBBox.y
-
-  mainGroup.attr('transform', `translate(0, ${shiftY})`)
-
-  svgElement.setAttribute('viewBox', `0 0 ${viewWidth} ${viewHeight}`)
-  svgElement.removeAttribute('width')
-  svgElement.removeAttribute('height')
-  svgElement.style.width = '100%'
-  svgElement.style.height = 'auto'
-  svgElement.setAttribute('preserveAspectRatio', 'xMinYMin meet')
-
-  loading.value = false
 }
+
+// Serialize a d3.hierarchy node back to a Newick string.
+function hierarchyToNewick(node: d3.HierarchyNode<PhyloDatum>): string {
+  function rec(n: d3.HierarchyNode<PhyloDatum>): string {
+    const bl = n.data.branchLength ? `:${n.data.branchLength}` : ''
+    const name = n.data.name || ''
+    if (n.children && n.children.length > 0) {
+      const inner = n.children.map(rec).join(',')
+      return `(${inner})${name}${bl}`
+    }
+    return `${name}${bl}`
+  }
+  return rec(node) + ';'
+}
+
+// View-level actions (called via defineExpose)
+function collapseAllClades() {
+  if (!fullHierarchy.value) return
+  const ids: string[] = []
+  fullHierarchy.value.each((n) => {
+    // Collapse every internal node except the root.
+    if (n.children && n.children.length > 0 && n.depth > 0) {
+      ids.push(n.data.nodeId)
+    }
+  })
+  visualizationStore.setPhyloCollapsedNodes(ids)
+}
+
+function collapseToSpecies() {
+  if (!fullHierarchy.value) return
+  const ids = collapseToSpeciesIds(fullHierarchy.value, getPrefix)
+  visualizationStore.setPhyloCollapsedNodes(ids)
+}
+
 
 
 // Helper function to render tree for currently selected orthogroup
@@ -1566,6 +1441,7 @@ async function renderTreeForSelectedOG() {
         fetchHighlightedGenesForAllSpecies(),
       ]);
       const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
+      lastMetrics.value = metrics;
       newickstr.value = fullNewick.value;
       await nextTick();
       initPhylotree(newickstr.value, metrics);
@@ -1581,6 +1457,7 @@ async function renderTreeForSelectedOG() {
   ]);
   
   const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
+  lastMetrics.value = metrics;
   newickstr.value = newicks.value[selectedOrthogroup.value];
   if (newickstr.value !== null) {
     await nextTick();
@@ -1609,6 +1486,7 @@ async function loadFullNewickForOG() {
     ]);
 
     const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
+    lastMetrics.value = metrics;
     await nextTick();
     initPhylotree(newickstr.value, metrics);
   } catch (e) {
@@ -1761,6 +1639,21 @@ watch(
       await renderTreeForSelectedOG();
     }
   }
+);
+
+// Re-render when collapse state or branch-length mode changes (cheap: no refetch)
+watch(
+  [
+    () => visualizationStore.phyloTree.collapsedNodes,
+    () => visualizationStore.phyloTree.branchLengthMode,
+  ],
+  async () => {
+    if (props.hashLoading) return;
+    if (!newickstr.value || !lastMetrics.value) return;
+    await nextTick();
+    initPhylotree(newickstr.value, lastMetrics.value);
+  },
+  { deep: true }
 );
 
 
