@@ -204,7 +204,15 @@ def call_chat_completion(
         if tool_choice is not None:
             payload["tool_choice"] = tool_choice
     url = _build_url(cfg["api_base"], "chat/completions")
-    return _post_json(url, cfg["api_key"], payload, int(cfg.get("request_timeout_s", 60)), stream=stream)
+    # Streaming responses can pause for many seconds between SSE chunks while
+    # the upstream model "thinks" (especially for tool-calling models that
+    # emit a burst of tokens then stall). Use a generous read timeout there
+    # to avoid bogus TimeoutError aborts; non-streaming requests still use
+    # the configured ``request_timeout_s`` so the UI doesn't hang on a stuck
+    # endpoint.
+    base_timeout = int(cfg.get("request_timeout_s", 60))
+    timeout_s = max(base_timeout, 180) if stream else base_timeout
+    return _post_json(url, cfg["api_key"], payload, timeout_s, stream=stream)
 
 
 def test_connection(cfg: Dict[str, Any]) -> Dict[str, Any]:

@@ -358,10 +358,24 @@ def create_app():
         # Initialize GO hierarchy helper with caching
         app.go_hierarchy = GOHierarchyHelper(app.go_service)
         logger.info("GO hierarchy helper initialized")
+
+        # Pre-warm the dataset's unique go_terms cache in the background so
+        # the first `search_go_terms` tool call returns immediately instead
+        # of paying the H5AD scan cost on the user's critical path. The
+        # service caches the result, so a single warmup call is enough.
+        import threading as _threading
+        def _prewarm_go_terms():
+            try:
+                vals = app.h5ad_service.get_unique_values('go_terms')
+                logger.info("Pre-warmed go_terms cache: %d unique IDs", len(vals))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Pre-warm of go_terms cache failed: %s", exc)
+
+        _threading.Thread(target=_prewarm_go_terms, daemon=True).start()
     else:
         logger.warning("GO service not available - GO term names will not be shown")
         app.go_hierarchy = None
-    
+
     # Pre-compute global histogram bins in background so sliders are usable before
     # any dataset is selected, and after every config/metadata refresh.
     import threading

@@ -1389,6 +1389,14 @@ def _build_assistant_context(service, cm, selected_tables: Optional[List[str]] =
                 if k in ("n_species", "n_samples", "n_genes", "orthogroup_count",
                          "gene_tree_count", "tf_total")
             },
+            "services": {
+                # Surface which optional backend services are wired up so the
+                # LLM never has to guess (or worse, claim "not available").
+                "go_ontology_loaded": bool(
+                    getattr(current_app, "go_service", None)
+                    and current_app.go_service.is_available()
+                ),
+            },
             "species": [
                 {
                     "code": s["code"],

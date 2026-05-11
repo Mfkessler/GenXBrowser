@@ -732,6 +732,96 @@ def tool_resolve_value(
     return {"query": query, "hits": hits[: int(max_hits)]}
 
 
+def tool_search_go_terms(
+    service,
+    *,
+    query: str,
+    limit: int = 20,
+    only_in_dataset: bool = True,
+) -> Dict[str, Any]:
+    """Resolve a free-form biological-process term to GO IDs.
+
+    Uses the loaded GO OBO ontology (via ``current_app.go_service``) to
+    fuzzy-match human descriptions like ``"photosynthesis"`` or
+    ``"flower development"`` to their canonical ``GO:#######`` IDs and
+    definitions. This is the GO-aware counterpart to ``resolve_value`` —
+    the latter scans column values verbatim and therefore cannot map a
+    natural-language process name (which is NOT stored in ``go_terms``)
+    to its ID.
+
+    By default results are restricted to GO terms that actually appear
+    in the dataset's ``go_terms`` column so the LLM can immediately
+    emit an ``add_filter`` on ``go_terms`` without producing an empty
+    plot. Set ``only_in_dataset=False`` to also surface ontology terms
+    that are not annotated in any loaded H5AD (useful for hierarchy /
+    "did you mean" follow-ups).
+
+    Returns ``{available, query, results:[{id,name,namespace,definition,
+    in_dataset}], count, in_dataset_count}``.
+    """
+    if not query or not str(query).strip():
+        return {"error": "'query' is required"}
+
+    # Fetch go_service from the Flask app context. Done lazily so the tool
+    # module stays importable in non-Flask test contexts.
+    go_service = None
+    try:
+        from flask import current_app  # noqa: WPS433
+        go_service = getattr(current_app, "go_service", None)
+    except Exception:
+        go_service = None
+
+    if not go_service or not getattr(go_service, "is_available", lambda: False)():
+        return {
+            "available": False,
+            "query": query,
+            "results": [],
+            "message": "GO ontology not loaded on this instance",
+        }
+
+    lim = max(1, min(int(limit or 20), 100))
+    try:
+        # Pull more than `limit` so the dataset-intersection filter still
+        # leaves a useful number of hits.
+        raw_hits = go_service.search_terms(query, limit=lim * 5) or []
+    except Exception as e:
+        logger.warning("search_go_terms: ontology search failed: %s", e)
+        return {"error": f"GO search failed: {e}"}
+
+    dataset_ids: set = set()
+    try:
+        dataset_ids = set(service.get_unique_values("go_terms") or [])
+    except Exception:
+        dataset_ids = set()
+
+    results: List[Dict[str, Any]] = []
+    for hit in raw_hits:
+        if not isinstance(hit, dict):
+            continue
+        gid = hit.get("id")
+        in_ds = bool(gid and gid in dataset_ids)
+        if only_in_dataset and not in_ds:
+            continue
+        results.append({
+            "id": gid,
+            "name": hit.get("name"),
+            "namespace": hit.get("namespace"),
+            "definition": hit.get("definition"),
+            "in_dataset": in_ds,
+        })
+        if len(results) >= lim:
+            break
+
+    return {
+        "available": True,
+        "query": query,
+        "results": results,
+        "count": len(results),
+        "in_dataset_count": sum(1 for r in results if r["in_dataset"]),
+        "only_in_dataset": bool(only_in_dataset),
+    }
+
+
 def tool_count_rows(
     service,
     *,
@@ -1366,6 +1456,54 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "search_go_terms",
+            "description": (
+                "MANDATORY for any user request that mentions a "
+                "Gene-Ontology concept by NAME (English or any other "
+                "language) — e.g. 'flower development', 'photosynthesis', "
+                "'Photosynthese', 'Blütenentwicklung', 'DNA binding', "
+                "'cell wall biosynthesis'. The dataset's `go_terms` "
+                "column stores `GO:#######` IDs only, never process "
+                "names, so neither `resolve_value` nor "
+                "`list_distinct_values` (on tissue / condition / "
+                "description / genename) can resolve such a query. "
+                "This tool maps the natural-language name to canonical "
+                "GO IDs via the loaded GO OBO ontology and (by default) "
+                "only returns IDs that are actually annotated in this "
+                "dataset, so the very next step can be `add_filter` on "
+                "`go_terms` + `build_deeplink`. ALWAYS try this BEFORE "
+                "concluding that no GO match exists. If it returns "
+                "`available:false`, only then may you say the ontology "
+                "is not loaded."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural-language GO term name or fragment.",
+                    },
+                    "limit": {
+                        "type": "integer", "default": 20,
+                        "minimum": 1, "maximum": 100,
+                    },
+                    "only_in_dataset": {
+                        "type": "boolean", "default": True,
+                        "description": (
+                            "If true (default), restrict to GO IDs present "
+                            "in the dataset's go_terms column. Set false to "
+                            "also include ontology terms not annotated in "
+                            "any loaded table."
+                        ),
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_distinct_values",
             "description": (
                 "List up to `limit` distinct values in a column, optionally "
@@ -1525,6 +1663,7 @@ def _get_dispatch():
         "list_schema": lambda service, cm, **kw: tool_list_schema(service, cm, **kw),
         "list_view_settings": lambda service, cm, **kw: tool_list_view_settings(service, **kw),
         "resolve_value": lambda service, cm, **kw: tool_resolve_value(service, **kw),
+        "search_go_terms": lambda service, cm, **kw: tool_search_go_terms(service, **kw),
         "list_distinct_values": lambda service, cm, **kw: tool_list_distinct_values(service, **kw),
         "count_rows": lambda service, cm, **kw: tool_count_rows(service, **kw),
         "top_groups": lambda service, cm, **kw: tool_top_groups(service, **kw),
@@ -1546,10 +1685,15 @@ def dispatch_tool_call(
     fn = dispatch.get(name)
     if fn is None:
         return {"error": f"unknown tool '{name}'", "available": sorted(dispatch.keys())}
+    logger.info("assistant tool dispatch: %s args=%s", name, arguments)
     try:
-        return fn(service, config_manager, **(arguments or {}))
+        result = fn(service, config_manager, **(arguments or {}))
     except TypeError as e:
         return {"error": f"bad arguments: {e}"}
     except Exception as e:  # noqa: BLE001 — the LLM gets the error and can retry.
         logger.warning("tool %s failed: %s", name, e, exc_info=True)
         return {"error": f"{type(e).__name__}: {e}"}
+    if isinstance(result, dict):
+        keys = sorted(result.keys())[:6]
+        logger.info("assistant tool result: %s keys=%s", name, keys)
+    return result
