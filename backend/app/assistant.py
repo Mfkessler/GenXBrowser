@@ -785,6 +785,12 @@ _ALL_SPECIES_CLAIM_RE = re.compile(
     re.IGNORECASE,
 )
 
+_PHYLO_REQUEST_RE = re.compile(
+    r"\b(phylo(?:genetic|geny|tree)?|gene\s*tree|genbaum|phylogenetisch|stammbaum)\b",
+    re.IGNORECASE,
+)
+_ORTHOGROUP_ID_RE = re.compile(r"\bOG[0-9A-Za-z_.-]+\b", re.IGNORECASE)
+
 
 def _apply_coverage_corrections(content: str, facts: List[Dict[str, Any]]) -> str:
     if not content or not facts:
@@ -814,6 +820,106 @@ def _apply_coverage_corrections(content: str, facts: List[Dict[str, Any]]) -> st
     return corrected
 
 
+def _latest_user_text(messages: List[Dict[str, Any]]) -> str:
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            return str(message.get("content") or "")
+    return ""
+
+
+def _extract_orthogroup_id(spec: Dict[str, Any], user_text: str) -> Optional[str]:
+    visualizations = spec.get("visualizations") if isinstance(spec.get("visualizations"), dict) else {}
+    for section in ("phyloTree", "compare"):
+        state = visualizations.get(section) if isinstance(visualizations, dict) else None
+        if isinstance(state, dict) and state.get("selectedOrthogroup"):
+            return str(state["selectedOrthogroup"])
+
+    filters = spec.get("filters") if isinstance(spec.get("filters"), dict) else {}
+    nested = filters.get("filters") if isinstance(filters.get("filters"), dict) else {}
+    filter_items = nested.items() if isinstance(nested, dict) else []
+    for column, filter_spec in filter_items:
+        if "ortho" not in str(column).lower():
+            continue
+        if isinstance(filter_spec, dict):
+            raw_value = filter_spec.get("value") or filter_spec.get("values")
+        else:
+            raw_value = filter_spec
+        values = raw_value if isinstance(raw_value, list) else [raw_value]
+        for value in values:
+            if value:
+                match = _ORTHOGROUP_ID_RE.search(str(value))
+                if match:
+                    return match.group(0)
+
+    match = _ORTHOGROUP_ID_RE.search(user_text or "")
+    return match.group(0) if match else None
+
+
+def _repair_phylo_request_deeplink(content: str, user_text: str) -> str:
+    """Keep explicit phylo requests from being downgraded to heatmap actions."""
+    if not content or not _PHYLO_REQUEST_RE.search(user_text or "") or "```" not in content:
+        return content
+
+    blocks: List[str] = []
+    repaired = False
+    for match in _FENCE_ANY_RE.finditer(content):
+        tag = (match.group(1) or "").lower()
+        body = match.group(2) or ""
+        if tag != "deeplink":
+            blocks.append(match.group(0))
+            continue
+        try:
+            spec = json.loads(body)
+        except Exception:
+            blocks.append(match.group(0))
+            continue
+        if not isinstance(spec, dict):
+            blocks.append(match.group(0))
+            continue
+        view = str(spec.get("view") or "").lower()
+        if view == "phylo":
+            blocks.append(match.group(0))
+            continue
+        orthogroup = _extract_orthogroup_id(spec, user_text)
+        if not orthogroup:
+            blocks.append(match.group(0))
+            continue
+
+        spec = dict(spec)
+        spec["view"] = "phylo"
+        filters = dict(spec.get("filters") or {})
+        nested_filters = dict(filters.get("filters") or {})
+        if not any("ortho" in str(column).lower() for column in nested_filters):
+            nested_filters["ortho_id"] = {
+                "value": orthogroup,
+                "match_mode": "or",
+                "exact": True,
+            }
+        filters["filters"] = nested_filters
+        spec["filters"] = filters
+        visualizations = dict(spec.get("visualizations") or {})
+        phylo_state = dict(visualizations.get("phyloTree") or {})
+        phylo_state["selectedOrthogroup"] = orthogroup
+        visualizations["phyloTree"] = phylo_state
+        spec["visualizations"] = visualizations
+        blocks.append(
+            "```deeplink\n" + json.dumps(spec, ensure_ascii=False) + "\n```"
+        )
+        repaired = True
+
+    if not repaired:
+        return content
+
+    orthogroup_match = _ORTHOGROUP_ID_RE.search(user_text or "")
+    target = f" for {orthogroup_match.group(0)}" if orthogroup_match else ""
+    return (
+        f"Opening the phylogenetic view{target}. The orthogroup only needs to be "
+        "present in at least one selected dataset; datasets without matching "
+        "transcripts will be pruned by the deeplink resolver.\n\n"
+        + "\n\n".join(blocks)
+    )
+
+
 def run_agentic_turn(
     cfg: Dict[str, Any],
     initial_messages: List[Dict[str, Any]],
@@ -831,6 +937,7 @@ def run_agentic_turn(
     frames. The final ``delta`` event contains the assistant's text answer.
     """
     messages: List[Dict[str, Any]] = list(initial_messages)
+    requested_user_text = _latest_user_text(initial_messages)
     started = time.monotonic()
     last_model: Optional[str] = None
     coverage_facts: List[Dict[str, Any]] = []
@@ -932,6 +1039,7 @@ def run_agentic_turn(
             cleaned = _apply_coverage_corrections(
                 retag_action_fences(content), coverage_facts,
             )
+            cleaned = _repair_phylo_request_deeplink(cleaned, requested_user_text)
             if emitted_chars == 0:
                 # Some models return content only at end-of-stream (rare).
                 yield {"type": "delta", "delta": cleaned}
@@ -1060,6 +1168,7 @@ def run_agentic_turn(
     final_text = _apply_coverage_corrections(
         retag_action_fences(final.get("content") or ""), coverage_facts,
     )
+    final_text = _repair_phylo_request_deeplink(final_text, requested_user_text)
     yield {
         "type": "delta",
         "delta": final_text + "\n\n_(Note: tool iteration cap reached.)_",

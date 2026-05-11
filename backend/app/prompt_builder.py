@@ -55,6 +55,16 @@ Rules:
   species that were dropped. Mention dropped tables briefly. Do NOT
   precheck with a separate `count_rows` round-trip unless the user
   explicitly asked for the count.
+- PHYLO / GENE TREE REQUESTS: if the user asks for a gene tree,
+  phylogenetic tree, phylotree, Genbaum, or Stammbaum for an orthogroup,
+  the orthogroup only needs to exist in AT LEAST ONE selected/loaded
+  dataset. Call `build_deeplink(view="phylo", ...)` with an `ortho_id`
+  filter and `visualizations.phyloTree.selectedOrthogroup`. Let
+  `build_deeplink` prune datasets without matching transcripts. Never
+  substitute a heatmap merely because the orthogroup is absent from some
+  selected species. Do not infer "phylo is unavailable" from
+  `gene_tree_count == 0`; the phylo route can still open the selected
+  orthogroup context and the frontend handles missing Newick trees.
 - VIEW SWITCH: "as heatmap / open compare / show as ora / phylo" → emit
   a `deeplink` action with the new view + same filters. `viz_update`
   only tweaks the CURRENT view.

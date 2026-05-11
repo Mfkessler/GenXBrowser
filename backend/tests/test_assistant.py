@@ -166,3 +166,42 @@ def test_coverage_correction_rewrites_false_all_species_claim():
     assert "appears in all three species" not in corrected
     assert "present only in OS" in corrected
     assert "absent from AT, SL" in corrected
+
+
+def test_phylo_request_repairs_heatmap_deeplink_for_orthogroup():
+    content = (
+        "The phylogenetic tree view is not available, so I will show a heatmap.\n\n"
+        "```deeplink\n"
+        '{"view":"heatmap","tables":["AT","OS"],'
+        '"filters":{"filters":{"ortho_id":{"value":"OG0011744"}}}}'
+        "\n```"
+    )
+    repaired = assistant._repair_phylo_request_deeplink(
+        content,
+        "Open the gene tree for orthogroup OG0011744.",
+    )
+
+    assert "phylogenetic tree view is not available" not in repaired
+    assert '"view": "phylo"' in repaired
+    assert '"selectedOrthogroup": "OG0011744"' in repaired
+    assert '"view":"heatmap"' not in repaired
+
+
+def test_phylo_request_keeps_non_action_answer_without_orthogroup():
+    content = "I can help if you provide an orthogroup ID."
+    assert assistant._repair_phylo_request_deeplink(content, "phylo tree") == content
+
+
+def test_phylo_request_adds_missing_orthogroup_filter():
+    content = (
+        "```deeplink\n"
+        '{"view":"heatmap","tables":["AT","SL","OS"],"filters":{"filters":{}}}'
+        "\n```"
+    )
+    repaired = assistant._repair_phylo_request_deeplink(
+        content,
+        "phylo tree OG0011744",
+    )
+
+    assert '"view": "phylo"' in repaired
+    assert '"ortho_id": {"value": "OG0011744", "match_mode": "or", "exact": true}' in repaired
