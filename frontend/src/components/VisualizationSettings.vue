@@ -622,14 +622,14 @@
             </div>
           </div>
           <div>
-            <h3
-              class="text-md font-semibold mb-2 cursor-default text-primary-900"
-            >
-              Significance (FDR q-value)
+            <div class="flex items-center gap-2 mb-2">
+              <h3 class="text-md font-semibold cursor-default text-primary-900">
+                Significance (FDR q-value)
+              </h3>
               <InfoTooltip 
-                text="Benjamini-Hochberg FDR-adjusted significance threshold. Lower values = stricter filtering. Standard: 0.01 (1%), Relaxed: 0.05 (5%)" 
+                description="Benjamini-Hochberg FDR-adjusted significance threshold. Lower values = stricter filtering. Standard: 0.01 (1%), Relaxed: 0.05 (5%)" 
               />
-            </h3>
+            </div>
             <div class="flex items-center mb-4">
               <DropdownMenu
                 v-model="store.significance"
@@ -639,14 +639,14 @@
             </div>
           </div>
           <div>
-            <h3
-              class="text-md font-semibold mb-2 cursor-default text-primary-900"
-            >
-              Maximum Results (Top N)
+            <div class="flex items-center gap-2 mb-2">
+              <h3 class="text-md font-semibold cursor-default text-primary-900">
+                Maximum Results (Top N)
+              </h3>
               <InfoTooltip 
-                text="Number of top enriched terms to show, ranked by combined score (-log₁₀(q-value) × gene_ratio). Higher values show more terms but may clutter the plot." 
+                description="Number of top enriched terms to show, ranked by combined score (-log10(q-value) x gene_ratio). Higher values show more terms but may clutter the plot." 
               />
-            </h3>
+            </div>
             <div class="flex items-center mb-4">
               <input
                 type="range"
@@ -660,14 +660,14 @@
             </div>
           </div>
           <div>
-            <h3
-              class="text-md font-semibold mb-2 cursor-default text-primary-900"
-            >
-              {{ getMinimumCountLabel() }}
+            <div class="flex items-center gap-2 mb-2">
+              <h3 class="text-md font-semibold cursor-default text-primary-900">
+                {{ getMinimumCountLabel() }}
+              </h3>
               <InfoTooltip 
-                :text="`Minimum number of ${getEntityLabelPluralLower()} from your filtered set that must contain a term for it to be tested. Higher values increase statistical power but may miss rare terms. Standard: 3 ${getEntityLabelPluralLower()}.`" 
+                :description="`Minimum number of ${getEntityLabelPluralLower()} from your filtered set that must contain a term for it to be tested. Higher values increase statistical power but may miss rare terms. Standard: 3 ${getEntityLabelPluralLower()}.`" 
               />
-            </h3>
+            </div>
             <div class="flex items-center mb-4">
               <input
                 type="range"
