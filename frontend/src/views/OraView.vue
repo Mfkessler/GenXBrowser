@@ -1,7 +1,7 @@
 <template>
-  <div class="h-[calc(100vh-7rem)] flex flex-col overflow-hidden">
+  <div class="flex flex-col">
     <div
-      class="flex gap-4 flex-grow p-2 overflow-x-auto overflow-y-auto"
+      class="flex gap-4 p-2 overflow-x-auto overflow-y-hidden"
     >
       <div
         v-for="tableName in visibleTableNames"
@@ -12,6 +12,7 @@
           :table-name="tableName"
           :existing-tables="visibleTableNames"
           :all-tables="allTables"
+          :hash-loading="hashLoading"
           @openSettingsOverlay="openSettingsOverlay"
           @update:tableName="onUpdateTableName(tableName, $event)"
         />
@@ -59,6 +60,7 @@ const visualizationStore = useVisualizationStore();
 
 const showSettingsOverlay = ref(false);
 const allTables = ref<Record<string, string>>({});
+const hashLoading = ref(true);
 
 // Shared color registry for consistent side-color mapping across multiple ORA plots
 const sharedColorRegistry = new SharedColorRegistry();
@@ -119,7 +121,11 @@ function onUpdateTableName(oldTableName: string, newTableName: string) {
 // (e.g. ORA orthogroup -> GO terms on the same /o/CS path) actually take
 // effect; without it the component would be reused and stale state kept.
 async function loadStateFromIdParam(idParam: unknown) {
-  if (typeof idParam !== "string" || idParam.length !== 16) return;
+  hashLoading.value = true;
+  if (typeof idParam !== "string" || idParam.length !== 16) {
+    hashLoading.value = false;
+    return;
+  }
   try {
     const response = await axios.post(`${API_BASE_URL}/api/id`, { id: idParam });
     const data = response.data;
@@ -127,12 +133,16 @@ async function loadStateFromIdParam(idParam: unknown) {
       // Visualization state first, then filters — watchers on filters
       // would otherwise overwrite restored selections.
       visualizationStore.replaceState(data.visualizations);
-      filtersStore.replaceState(data.filters);
+      filtersStore.replaceState(
+        data.filters.filters !== undefined ? data.filters : { filters: data.filters },
+      );
     } else {
       console.warn("Invalid data received from backend for ID", idParam);
     }
   } catch (error) {
     console.error("Error fetching filter data by ID", idParam, error);
+  } finally {
+    hashLoading.value = false;
   }
 }
 

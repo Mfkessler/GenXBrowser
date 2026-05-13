@@ -97,18 +97,21 @@
     </div>
 
     <!-- Main dot plot container -->
-    <!-- Fixed-size shell while loading: prevents the surrounding divs from
-         resizing and ensures the loading bar is always visible during fetch. -->
     <div
-      v-if="loading"
-      class="border border-gray-300 rounded-md bg-white relative h-[60vh] min-h-[400px]"
+      v-if="loading || !renderReady || (rowCount <= 5000 && rowCount > 0)"
+      ref="plotShell"
+      data-testid="ora-plot-shell"
+      class="relative flex flex-col overflow-hidden"
+      :style="plotShellStyle"
     >
-      <LoadingOverlay />
-    </div>
+      <LoadingOverlay v-if="loading || !renderReady" />
 
-    <div v-else-if="rowCount <= 5000 && rowCount > 0">
-      <!-- ORA Info Banner (collapsible, default collapsed) -->
-      <div v-if="oraMetadata" class="mb-3 p-3 bg-blue-50 border border-blue-200 rounded-md text-sm">
+      <div
+        class="h-full flex flex-col"
+        :class="{ 'invisible pointer-events-none': loading || !renderReady || rowCount <= 0 || rowCount > 5000 }"
+      >
+        <!-- ORA Info Banner (collapsible, default collapsed) -->
+        <div v-if="oraMetadata" class="mb-3 p-3 bg-blue-50 border border-blue-200 rounded-md text-sm flex-shrink-0">
         <div
           class="flex items-center justify-between cursor-pointer select-none"
           @click="oraInfoOpen = !oraInfoOpen"
@@ -169,14 +172,15 @@
             </div>
           </div>
         </transition>
-      </div>
+        </div>
 
-      <div
-        ref="visualizationRoot"
-        class="border border-gray-300 rounded-md bg-white flex flex-row overflow-hidden"
-      >
-        <div class="flex-grow relative w-full overflow-hidden">
-          <div ref="dotplotContainer" class="w-full h-full"></div>
+        <div
+          ref="visualizationRoot"
+          class="flex-1 min-h-0 bg-white border border-gray-300 rounded-md flex flex-row overflow-hidden"
+        >
+          <div class="flex-grow relative w-full overflow-hidden">
+            <div ref="dotplotContainer" class="w-full h-full"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -263,6 +267,7 @@ const props = defineProps<{
   tableName: string;
   existingTables: string[];
   allTables: Record<string, string>;
+  hashLoading?: boolean;
 }>();
 
 const localTableName = ref(props.tableName);
@@ -274,7 +279,8 @@ const tableNameOptions = computed(() => {
   );
 });
 
-const loading = ref(false);
+const loading = ref(true);
+const renderReady = ref(false);
 const showShareOverlay = ref(false);
 const showOraTooltipModal = ref(false);
 const selectedTerm = ref<PValueEntry | null>(null);
@@ -295,8 +301,45 @@ const oraMetadata = ref<any>(null);
 const dotplotContainer = ref<HTMLDivElement | null>(null);
 const colorLegendContainer = ref<HTMLDivElement | null>(null);
 const sizeLegendContainer = ref<HTMLDivElement | null>(null);
+const plotShell = ref<HTMLDivElement | null>(null);
 
 const visualizationRoot = ref<HTMLDivElement | null>(null);
+let oraRequestSeq = 0;
+const availablePlotHeight = ref(600);
+const maxBubbleRadius = 15;
+const minimumBubbleGap = 4;
+const minimumOraRowHeight = maxBubbleRadius * 2 + minimumBubbleGap;
+const plotVerticalChrome = 126;
+const collapsedOraInfoHeight = 58;
+
+function updateAvailablePlotHeight() {
+  if (typeof window === "undefined") return;
+  const shellTop = plotShell.value?.getBoundingClientRect().top ?? 160;
+  const usableHeight = window.innerHeight - shellTop - 12;
+  availablePlotHeight.value = Math.max(360, Math.floor(usableHeight));
+}
+
+const finalPlotHeight = computed(() => {
+  const visibleRows = Math.max(pValueEntries.value.length, 1);
+  const minimumHeight = visualizationStore.legend ? 360 : 300;
+  const bubbleSafeHeight = visibleRows * minimumOraRowHeight + plotVerticalChrome + collapsedOraInfoHeight;
+  return Math.max(minimumHeight, availablePlotHeight.value, bubbleSafeHeight);
+});
+const hasPreparedPlotData = computed(() => pValueEntries.value.length > 0 || oraMetadata.value !== null);
+const activePlotHeight = computed(() => loading.value && !hasPreparedPlotData.value ? availablePlotHeight.value : finalPlotHeight.value);
+const plotShellStyle = computed(() => ({
+  height: `${activePlotHeight.value}px`,
+  minHeight: `${activePlotHeight.value}px`,
+}));
+
+function log2FoldEnrichment(value: number): number {
+  return Math.log2(Math.max(value, Number.EPSILON));
+}
+
+async function syncPlotHeightWithViewport() {
+  updateAvailablePlotHeight();
+  await nextTick();
+}
 
 // PValueEntry interface updated to match backend response
 interface PValueEntry {
@@ -398,9 +441,12 @@ function formatGoNamespace(namespace: string): string {
  * 7. Top-N selection by combined_score
  */
 async function fetchAndPrepareData() {
+  const requestId = ++oraRequestSeq;
   loading.value = true;
+  renderReady.value = false;
   error.value = "";
   try {
+    resetDotplot();
     // Prepare ORA request — max_subset_size replaces the separate /api/count call
     const oraRequest = {
       table_name: props.tableName,
@@ -420,6 +466,7 @@ async function fetchAndPrepareData() {
       `${API_BASE_URL}/api/ora`,
       oraRequest,
     );
+    if (requestId !== oraRequestSeq) return;
     
     console.log('ORA Response:', oraResponse);
     console.log('ORA Response type:', typeof oraResponse);
@@ -438,6 +485,11 @@ async function fetchAndPrepareData() {
     if (parsedResponse.metadata?.message || !parsedResponse.results?.length) {
       pValueEntries.value = [];
       oraMetadata.value = parsedResponse.metadata;
+      await nextTick();
+      await syncPlotHeightWithViewport();
+      await drawDotPlot();
+      publishAnalysisContext();
+      renderReady.value = true;
       return;
     }
 
@@ -504,13 +556,19 @@ async function fetchAndPrepareData() {
       }
 
       await nextTick();
-      drawDotPlot();
+      await syncPlotHeightWithViewport();
+      await drawDotPlot();
       publishAnalysisContext();
+      renderReady.value = true;
   } catch (e) {
+    if (requestId !== oraRequestSeq) return;
     console.error("Error fetching ORA data:", e);
     error.value = "Failed to load ORA data.";
+    renderReady.value = true;
   } finally {
-    loading.value = false;
+    if (requestId === oraRequestSeq) {
+      loading.value = false;
+    }
   }
 }
 
@@ -975,11 +1033,12 @@ async function drawDotPlot() {
   if (!pValueEntries.value.length) {
     const container = dotplotContainer.value;
     const containerWidth = container.clientWidth || 800;
-    const containerHeight = 400;
+    const containerHeight = container.clientHeight || finalPlotHeight.value;
     
     const svg = d3
       .select(container)
       .append("svg")
+      .attr("data-testid", "ora-dotplot-svg")
       .attr("width", containerWidth)
       .attr("height", containerHeight);
     
@@ -1020,13 +1079,7 @@ async function drawDotPlot() {
   const totalRowSideColorWidth = 20;
 
   const containerWidth = container.clientWidth || 800;
-  // Calculate dynamic height: 25px per entry + margins, minimum 600px
-  const minRowHeight = 25;
-  const calculatedHeight = Math.max(
-    600,
-    pValueEntries.value.length * minRowHeight + 150
-  );
-  const containerHeight = calculatedHeight;
+  const containerHeight = container.clientHeight || finalPlotHeight.value;
 
   const legendAreaWidth = 150; // width reserved for legend on right
   const legendSpacingVertical = 20; // vertical spacing between legends
@@ -1035,7 +1088,7 @@ async function drawDotPlot() {
   const margin = {
     top: 50,
     right: visualizationStore.legend ? legendAreaWidth + 40 : 40,
-    bottom: 50,
+    bottom: 76,
     left: 120,
   };
 
@@ -1049,6 +1102,7 @@ async function drawDotPlot() {
   const svg = d3
     .select(container)
     .append("svg")
+    .attr("data-testid", "ora-dotplot-svg")
     .attr("width", containerWidth)
     .attr("height", containerHeight);
 
@@ -1096,13 +1150,14 @@ async function drawDotPlot() {
     );
 
   // Scales
-  const maxFoldEnrichment = d3.max(sortedEntries, (d) => d.fold_enrichment) ?? 0;
+  const maxLog2FoldEnrichment = d3.max(sortedEntries, (d) => log2FoldEnrichment(d.fold_enrichment)) ?? 0;
+  const minLog2FoldEnrichment = d3.min(sortedEntries, (d) => log2FoldEnrichment(d.fold_enrichment)) ?? 0;
   const maxSubsetCount = d3.max(sortedEntries, (d) => d.subset_count) ?? 1;
   const minSubsetCount = d3.min(sortedEntries, (d) => d.subset_count) ?? 0;
 
   const xScale = d3
     .scaleLinear()
-    .domain([0, maxFoldEnrichment > 0 ? maxFoldEnrichment : 1])
+    .domain([Math.min(0, minLog2FoldEnrichment), maxLog2FoldEnrichment > 0 ? maxLog2FoldEnrichment : 1])
     .range([0, innerWidth]);
 
   const yScale = d3
@@ -1114,7 +1169,7 @@ async function drawDotPlot() {
   const sizeScale = d3
     .scaleSqrt()
     .domain([minSubsetCount, maxSubsetCount])
-    .range([3, 15]);
+    .range([6, maxBubbleRadius]);
 
   // Color scale by FDR-adjusted q-value (log scale)
   // For q-values: lower = more significant = should be brighter (yellow in VIRIDIS)
@@ -1162,7 +1217,7 @@ async function drawDotPlot() {
     .data(sortedEntries)
     .enter()
     .append("circle")
-    .attr("cx", (d) => xScale(d.fold_enrichment))
+    .attr("cx", (d) => xScale(log2FoldEnrichment(d.fold_enrichment)))
     .attr("cy", (d) => (yScale(d.attr) ?? 0) + yScale.bandwidth() / 2)
     .attr("r", (d) => sizeScale(d.subset_count))
     .style("fill", (d) => colorScale(d.q_value ?? 1))
@@ -1222,7 +1277,7 @@ async function drawDotPlot() {
         hasContent = true;
       }
       if (visibleFields.includes('fold_enrichment')) {
-        tooltipContent += `<strong>Fold Enrichment:</strong> ${d.fold_enrichment.toFixed(2)}×<br/>`;
+        tooltipContent += `<strong>log<sub>2</sub>(Fold Enrichment):</strong> ${log2FoldEnrichment(d.fold_enrichment).toFixed(2)}<br/>`;
         hasContent = true;
       }
       
@@ -1363,10 +1418,11 @@ async function drawDotPlot() {
   const yAxisGroup = plotGroup
     .append("g")
     .attr("transform", `translate(${0 - totalRowSideColorWidth},${0})`)
-    .call(d3.axisLeft(yScale));
+    .call(d3.axisLeft(yScale).tickSizeOuter(0));
   
+  const yAxisFontSize = Math.max(8, Math.min(10, yScale.bandwidth() * 0.75));
   const yAxisTexts = yAxisGroup.selectAll("text")
-    .style("font-size", "10px");
+    .style("font-size", `${yAxisFontSize}px`);
   
   // Truncate long labels and add ellipsis
   yAxisTexts.each(function() {
@@ -1436,10 +1492,17 @@ async function drawDotPlot() {
   svg
     .append("text")
     .attr("x", margin.left + innerWidth / 2)
-    .attr("y", containerHeight - 10)
+    .attr("y", containerHeight - 42)
     .attr("text-anchor", "middle")
-    .text("Fold Enrichment")
-    .attr("font-weight", "bold");
+    .attr("font-weight", "bold")
+    .call((text) => {
+      text.append("tspan").text("log");
+      text.append("tspan")
+        .attr("baseline-shift", "sub")
+        .attr("font-size", "70%")
+        .text("2");
+      text.append("tspan").text("(Fold Enrichment)");
+    });
 
   // Create legends only if enabled
   if (visualizationStore.legend && colorLegendGroup && sizeLegendGroup) {
@@ -1530,9 +1593,18 @@ const emit = defineEmits(["update:tableName", "openSettingsOverlay"]);
 watch(
   [() => visualizationStore.oraColumnName],
   async () => {
+    if (props.hashLoading) return;
     await fetchAndPrepareData();
-    await nextTick();
-    drawDotPlot();
+  },
+  { immediate: true },
+);
+
+watch(
+  () => props.hashLoading,
+  async (isLoading) => {
+    if (isLoading === false) {
+      await fetchAndPrepareData();
+    }
   },
   { immediate: true },
 );
@@ -1545,6 +1617,7 @@ watch(
     () => visualizationStore.oraTopologicalFilter,
   ],
   async () => {
+    if (props.hashLoading) return;
     // Re-fetch data when significance, topN, minCount, or topological filter change
     // (these affect backend filtering)
     await fetchAndPrepareData();
@@ -1560,8 +1633,16 @@ watch(
     () => visualizationStore.colorScale,
     () => visualizationStore.oraOrder,
   ],
-  () => {
-    drawDotPlot();
+  async () => {
+    if (props.hashLoading) return;
+    if (loading.value || !renderReady.value) return;
+    loading.value = true;
+    renderReady.value = false;
+    await nextTick();
+    await syncPlotHeightWithViewport();
+    await drawDotPlot();
+    renderReady.value = true;
+    loading.value = false;
   },
   { deep: true },
 );
@@ -1570,6 +1651,7 @@ watch(
 watch(
   [() => filters.value, () => filtersStore.datasetIdFilters],
   async () => {
+    if (props.hashLoading) return;
     await fetchAndPrepareData();
   },
   { deep: true },
@@ -1579,17 +1661,32 @@ watch(
 watch(
   () => visualizationStore.colorRange,
   async (colorRange) => {
+    if (props.hashLoading) return;
     if (!colorRange) return; // guard against unset, undefined, or empty string
-    drawDotPlot();
+    if (loading.value || !renderReady.value) return;
+    loading.value = true;
+    renderReady.value = false;
+    await nextTick();
+    await syncPlotHeightWithViewport();
+    await drawDotPlot();
+    renderReady.value = true;
+    loading.value = false;
   },
 );
 
 watch(
   [sidebarOpen, () => props.existingTables],
   async () => {
+    if (props.hashLoading) return;
+    if (loading.value || !renderReady.value) return;
+    loading.value = true;
+    renderReady.value = false;
     await nextTick();
-    setTimeout(() => {
-      drawDotPlot();
+    window.setTimeout(async () => {
+      await syncPlotHeightWithViewport();
+      await drawDotPlot();
+      renderReady.value = true;
+      loading.value = false;
     }, 300);
   },
   { deep: true },
@@ -1600,7 +1697,21 @@ let resizeObserver: ResizeObserver | null = null;
 let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
 let lastContainerWidth = 0;
 
+function handleWindowResize() {
+  updateAvailablePlotHeight();
+  if (!loading.value && renderReady.value && pValueEntries.value.length > 0) {
+    if (resizeTimeout) clearTimeout(resizeTimeout);
+    resizeTimeout = setTimeout(() => {
+      drawDotPlot();
+    }, 150);
+  }
+}
+
 onMounted(async () => {
+  await nextTick();
+  updateAvailablePlotHeight();
+  window.addEventListener("resize", handleWindowResize);
+
   // Set GO terms as default column if available and current is still default (ortho_id)
   if (visualizationStore.oraColumnName === 'ortho_id' && columnsStore.rowColumns.length > 0) {
     const goColumn = columnsStore.rowColumns.find(col => {
@@ -1617,8 +1728,6 @@ onMounted(async () => {
     }
   }
   
-  fetchAndPrepareData();
-  
   // Setup resize observer for responsive plot sizing
   if (dotplotContainer.value) {
     resizeObserver = new ResizeObserver((entries) => {
@@ -1634,7 +1743,7 @@ onMounted(async () => {
         // Debounce resize events
         if (resizeTimeout) clearTimeout(resizeTimeout);
         resizeTimeout = setTimeout(() => {
-          if (pValueEntries.value.length > 0) {
+          if (!loading.value && renderReady.value && pValueEntries.value.length > 0) {
             drawDotPlot();
           }
         }, 150);
@@ -1645,6 +1754,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  window.removeEventListener("resize", handleWindowResize);
   if (resizeObserver) {
     resizeObserver.disconnect();
     resizeObserver = null;
