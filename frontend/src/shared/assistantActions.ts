@@ -32,7 +32,7 @@ export interface VisualizationApi {
   toObject?: () => Record<string, unknown>;
   replaceState?: (state: Record<string, unknown>) => void;
   setExpressionDisplay?: (id: string, layer: string | null, transform: "raw" | "log2" | "zscore") => void;
-  setCompareState?: (state: { expression?: string }) => void;
+  setCompareState?: (state: { expression?: string; selectedSpecies?: string[] }) => void;
 }
 
 export interface CatalogApi {
@@ -299,11 +299,31 @@ function applyClearFilters(_action: AssistantAction, deps: DispatcherDeps): Disp
   return { mutated: true, summary: "all filters" };
 }
 
-function applySelectTables(action: AssistantAction, deps: DispatcherDeps): DispatchResult {
+async function applySelectTables(action: AssistantAction, deps: DispatcherDeps): Promise<DispatchResult> {
   const tables = action.spec.tables;
   if (!Array.isArray(tables)) throw new Error("spec.tables must be an array");
   const values = tables.map((value) => nonEmptyString(value, "table"));
   deps.catalogStore.selectAll?.(values);
+  const activeAnalysisRoute = activeDatasetRoutePrefix(deps.route.path);
+
+  if (activeAnalysisRoute && activeAnalysisRoute !== "p") {
+    if (activeAnalysisRoute === "c") {
+      deps.visualizationStore.setCompareState?.({ selectedSpecies: values });
+    }
+    const query = { ...deps.route.query };
+    if (activeAnalysisRoute === "c") {
+      delete query.tables;
+    }
+    await deps.router.replace({
+      name: deps.route.name ?? undefined,
+      params: {
+        ...deps.route.params,
+        table_names: values.join(","),
+      },
+      query,
+    }).catch(() => { /* ignore nav rejection */ });
+  }
+
   return { mutated: true, summary: values.join(", ") };
 }
 
@@ -321,6 +341,11 @@ function applySetExpressionDisplay(action: AssistantAction, deps: DispatcherDeps
     deps.visualizationStore.setCompareState({ expression: optionId });
   }
   return { mutated: true, summary: optionId };
+}
+
+function activeDatasetRoutePrefix(path: string): "h" | "o" | "c" | "p" | null {
+  const match = path.match(/^\/(h|o|c|p)(?:\/|$)/);
+  return match ? match[1] as "h" | "o" | "c" | "p" : null;
 }
 
 function applyDeeplink(action: AssistantAction, deps: DispatcherDeps): DispatchResult {

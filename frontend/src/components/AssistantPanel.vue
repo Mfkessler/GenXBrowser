@@ -258,7 +258,7 @@
                   v-else-if="action.status === 'error'"
                   class="inline-flex items-center gap-1 bg-red-50 border border-red-200 text-red-700 text-xs font-semibold px-3 py-1.5 rounded-full"
                   :title="action.error"
-                >⚠ {{ action.kind }} failed</span>
+                >⚠ {{ shortActionError(action) }}</span>
               </template>
             </div>
 
@@ -636,6 +636,18 @@ function applySelectTables(action: AssistantAction) {
 
 function applySetExpressionDisplay(action: AssistantAction) {
   void executeAssistantAction(action);
+}
+
+function shortActionError(action: AssistantAction): string {
+  if (action.kind === "deeplink") return "Cannot open view";
+  if (action.kind === "compute") return "Compute failed";
+  if (action.kind === "viz_update") return "Update failed";
+  if (action.kind === "add_filter") return "Filter failed";
+  if (action.kind === "remove_filter") return "Remove failed";
+  if (action.kind === "clear_filters") return "Clear failed";
+  if (action.kind === "select_tables") return "Selection failed";
+  if (action.kind === "set_expression_display") return "Expression failed";
+  return "Action failed";
 }
 
 async function autoApplyActions(msg: ChatMessage): Promise<boolean> {

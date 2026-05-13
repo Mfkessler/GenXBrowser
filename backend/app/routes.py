@@ -1287,6 +1287,7 @@ def cluster_data():
 # ============================================================================
 
 from . import assistant as assistant_module
+from . import assistant_tools as assistant_tools_module
 from .overview import build_overview as _build_overview
 
 _assistant_limiter = assistant_module.RateLimiter(max_requests=30, window_seconds=60)
@@ -1316,6 +1317,7 @@ def features():
                 "display_name": corporate.get("llm_name") or "AI Assistant",
                 "model": cfg.get("model") if assistant_on else None,
             },
+            "analysis_limits": assistant_tools_module.get_analysis_limits(cm),
             "dataset_count": len(tables),
             "project_name": cm.get_config().get("project_name", "GenXBrowser"),
             "version": cm.get_config().get("version", ""),
@@ -1327,6 +1329,16 @@ def features():
             "dataset_count": 0,
             "error": str(e),
         }), 200
+
+
+@api_bp.route('/api/analysis-limits', methods=['GET'])
+def analysis_limits():
+    """Public dynamic analysis limits used by UI and assistant guards."""
+    try:
+        return jsonify(assistant_tools_module.get_analysis_limits(current_app.config_manager)), 200
+    except Exception as e:
+        logger.error(f"/api/analysis-limits failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
 
 
 @api_bp.route('/api/overview', methods=['GET'])
@@ -1512,11 +1524,13 @@ def assistant_chat():
     if tool_calling_enabled:
         from . import assistant_tools
         service = get_service()
+        flask_app = current_app._get_current_object()
 
         def _dispatch(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
-            return assistant_tools.dispatch_tool_call(
-                name, args, service=service, config_manager=cm,
-            )
+            with flask_app.app_context():
+                return assistant_tools.dispatch_tool_call(
+                    name, args, service=service, config_manager=cm,
+                )
 
         tools_schema = assistant_tools.openai_schema()
 
@@ -1790,6 +1804,7 @@ def assistant_deeplink():
     # species without matching samples instead of failing the whole
     # request with 422.
     dropped: List[Dict[str, Any]] = []
+    guard_counts: List[Dict[str, Any]] = []
     if view in {"heatmap", "compare", "phylo", "ora"} and resolved:
         nested = filters.get("filters") if isinstance(filters, dict) else None
         flat_filters: Dict[str, List[str]] = {}
@@ -1831,6 +1846,12 @@ def assistant_deeplink():
                     cr = cr if isinstance(cr, dict) else {}
                     n_var = int(cr.get("n_var_match", 0))
                     n_obs = int(cr.get("n_obs_match", 0))
+                    guard_counts.append({
+                        "table": tn,
+                        "rows": n_var,
+                        "n_var_match": n_var,
+                        "n_obs_match": n_obs,
+                    })
                     var_ok = (not var_f) or n_var > 0
                     obs_ok = (not obs_f) or n_obs > 0
                     if var_ok and obs_ok:
@@ -1850,6 +1871,52 @@ def assistant_deeplink():
                 resolved = kept
             except Exception as e:
                 logger.warning(f"deeplink empty-table check failed: {e}", exc_info=True)
+
+    if view in {"heatmap", "compare", "phylo", "ora"} and resolved:
+        try:
+            from . import assistant_tools as _at
+            limit = _at.get_analysis_limits(current_app.config_manager).get(view, {}).get("max_rows")
+            reusable_counts = guard_counts if limit is not None and guard_counts and {
+                str(item.get("table")) for item in guard_counts
+            } == set(resolved) else []
+            if reusable_counts:
+                over_limit = [
+                    {"table": item["table"], "rows": int(item["rows"]), "max_rows": limit}
+                    for item in reusable_counts
+                    if int(item.get("rows", 0)) > int(limit)
+                ]
+                limit_check = {
+                    "ok": not over_limit,
+                    "view": view,
+                    "limit": limit,
+                    "over_limit": over_limit,
+                    "counts": [
+                        {"table": item["table"], "rows": int(item["rows"]), "max_rows": limit}
+                        for item in reusable_counts
+                    ],
+                    "suggestion": "Ask for a gene, orthogroup, TF family, GO term, tissue, or another sidebar filter to reduce the result size.",
+                }
+                if over_limit:
+                    labels = ", ".join(
+                        f"{item['table']} ({item['rows']:,}/{int(limit):,})"
+                        for item in over_limit
+                    )
+                    limit_check["error"] = (
+                        f"{view} request exceeds the dynamic {int(limit):,} transcript limit: {labels}. "
+                        "Ask the user for a narrower filter before opening this analysis."
+                    )
+            else:
+                limit_check = _at.validate_analysis_request_limits(
+                    service,
+                    current_app.config_manager,
+                    view=view,
+                    tables=resolved,
+                    filters=filters,
+                )
+            if not limit_check.get("ok", True):
+                return jsonify(limit_check), 422
+        except Exception as e:
+            logger.warning(f"deeplink limit check failed: {e}", exc_info=True)
 
     stored_payload = {
         "filters": filters or {"__placeholder": True},

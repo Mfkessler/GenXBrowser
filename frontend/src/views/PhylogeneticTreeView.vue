@@ -212,36 +212,43 @@ async function loadStateFromIdParam(idParam: unknown) {
 
 watch(
   () => route.query.id,
-  (idParam) => { loadStateFromIdParam(idParam); },
-  { immediate: true },
+  async (idParam) => {
+    hashLoading.value = true;
+    await loadStateFromIdParam(idParam);
+    hashLoading.value = false;
+  },
 );
 
 onMounted(async () => {
-  // Mark hash loading as complete — child can now fetch data
-  hashLoading.value = false;
-
   // Fetch all possible table names for dropdown options:
   const tagsParam = [...filtersStore.tags].join(",");
-  const response = await axios.get<CatalogMeta[]>(
-    `${API_BASE_URL}/api/tables`,
-    {
-      params: {
-        tags: tagsParam,
+  try {
+    await loadStateFromIdParam(route.query.id);
+
+    const response = await axios.get<CatalogMeta[]>(
+      `${API_BASE_URL}/api/tables`,
+      {
+        params: {
+          tags: tagsParam,
+        },
       },
-    },
-  );
+    );
 
-  const nextAllTables: Record<string, string> = {};
-  const nextSpeciesCodeMap: Record<string, string> = {};
+    const nextAllTables: Record<string, string> = {};
+    const nextSpeciesCodeMap: Record<string, string> = {};
 
-  response.data.forEach((t) => {
-    nextAllTables[t.table_name] = beautifyLabel(t.table_name);
-    if (t._species_code) {
-      nextSpeciesCodeMap[t.table_name] = t._species_code;
-    }
-  });
+    response.data.forEach((t) => {
+      nextAllTables[t.table_name] = beautifyLabel(t.table_name);
+      if (t._species_code) {
+        nextSpeciesCodeMap[t.table_name] = t._species_code;
+      }
+    });
 
-  allTables.value = nextAllTables;
-  speciesCodeMap.value = nextSpeciesCodeMap;
+    allTables.value = nextAllTables;
+    speciesCodeMap.value = nextSpeciesCodeMap;
+  } finally {
+    // Child fetch/render starts only after hash state and species metadata are ready.
+    hashLoading.value = false;
+  }
 });
 </script>

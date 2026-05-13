@@ -142,13 +142,146 @@ def normalize_filter_payload(filters: Any) -> Any:
     return out
 
 
+DEFAULT_ANALYSIS_LIMITS: Dict[str, Dict[str, Optional[int]]] = {
+    "heatmap": {"max_rows": 1000},
+    "compare": {"max_rows": 1000},
+    "phylo": {"max_rows": 1000},
+    "ora": {"max_rows": 5000},
+    "catalog": {"max_rows": None},
+}
+
+
+def get_analysis_limits(config_manager=None) -> Dict[str, Dict[str, Optional[int]]]:
+    """Return analysis row limits from project config with backend defaults.
+
+    Project configs may provide either::
+
+      "analysis_limits": {"heatmap": {"max_rows": 1000}}
+
+    or the shorthand::
+
+      "analysis_limits": {"heatmap": 1000}
+    """
+    limits = {view: dict(spec) for view, spec in DEFAULT_ANALYSIS_LIMITS.items()}
+    cfg_limits: Any = {}
+    try:
+        cfg = config_manager.get_config() if config_manager is not None else {}
+        cfg_limits = cfg.get("analysis_limits") or {}
+    except Exception:
+        cfg_limits = {}
+
+    if isinstance(cfg_limits, dict):
+        for view, spec in cfg_limits.items():
+            key = str(view or "").strip().lower()
+            if key not in limits:
+                continue
+            raw_max = spec.get("max_rows") if isinstance(spec, dict) else spec
+            if raw_max is None:
+                limits[key]["max_rows"] = None
+                continue
+            try:
+                value = int(raw_max)
+            except (TypeError, ValueError):
+                continue
+            limits[key]["max_rows"] = value if value > 0 else None
+    return limits
+
+
+def _deeplink_flat_filters(filters: Dict[str, Any]) -> Dict[str, Any]:
+    nested = filters.get("filters") if isinstance(filters, dict) else None
+    if not isinstance(nested, dict):
+        return {}
+    return {str(col): spec for col, spec in nested.items() if isinstance(spec, dict)}
+
+
+def validate_analysis_request_limits(
+    service,
+    config_manager,
+    *,
+    view: str,
+    tables: List[str],
+    filters: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Validate requested tables against the dynamic row limit for a view."""
+    v = str(view or "").strip().lower()
+    max_rows = get_analysis_limits(config_manager).get(v, {}).get("max_rows")
+    if max_rows is None or v == "catalog" or not tables:
+        return {"ok": True, "limit": max_rows, "over_limit": [], "counts": []}
+
+    flat_filters = _deeplink_flat_filters(filters or {})
+    counts: List[Dict[str, Any]] = []
+    over_limit: List[Dict[str, Any]] = []
+
+    for table_name in tables:
+        try:
+            code = service._normalize_table_name(table_name)
+            adata = service.registry.load(code)
+        except Exception:
+            adata = None
+            code = str(table_name)
+
+        if adata is None:
+            continue
+
+        var_cols = set(adata.var.columns)
+        obs_cols = set(adata.obs.columns)
+        var_f = {c: spec for c, spec in flat_filters.items() if c in var_cols}
+        obs_f = {c: spec for c, spec in flat_filters.items() if c in obs_cols}
+        try:
+            cr = tool_count_rows(
+                service,
+                table=code,
+                var_filters=var_f or None,
+                obs_filters=obs_f or None,
+            )
+        except Exception:
+            cr = {}
+        cr = cr if isinstance(cr, dict) else {}
+        n_rows = int(cr.get("n_var_match", cr.get("n_var_total", 0)) or 0)
+        item = {"table": str(table_name), "rows": n_rows, "max_rows": max_rows}
+        counts.append(item)
+        if n_rows > int(max_rows):
+            over_limit.append(item)
+
+    if over_limit:
+        labels = ", ".join(
+            f"{item['table']} ({item['rows']:,}/{int(max_rows):,})"
+            for item in over_limit
+        )
+        return {
+            "ok": False,
+            "error": (
+                f"{v} request exceeds the dynamic {int(max_rows):,} transcript limit: {labels}. "
+                "Ask the user for a narrower filter before opening this analysis."
+            ),
+            "view": v,
+            "limit": max_rows,
+            "over_limit": over_limit,
+            "counts": counts,
+            "suggestion": "Ask for a gene, orthogroup, TF family, GO term, tissue, or another sidebar filter to reduce the result size.",
+        }
+    return {"ok": True, "limit": max_rows, "over_limit": [], "counts": counts}
+
+
 # ---------------------------------------------------------------------------
 # Filter application — shared semantics with the HTTP API
 # ---------------------------------------------------------------------------
 
 def _infer_anndata_column_types(df) -> Dict[str, str]:
     """Map AnnData ``.var`` / ``.obs`` columns to ``parse_filters`` types."""
-    from . import filter_parser  # noqa: WPS433
+    try:
+        from . import filter_parser  # noqa: WPS433
+    except ImportError:  # pragma: no cover — tests use spec loader
+        import importlib.util as _ilu
+        from pathlib import Path as _Path
+        _spec = _ilu.spec_from_file_location(
+            "_gx_filter_parser_fallback",
+            _Path(__file__).resolve().parent / "filter_parser.py",
+        )
+        if not (_spec and _spec.loader):
+            return {}
+        filter_parser = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(filter_parser)  # type: ignore[union-attr]
     return filter_parser.infer_dataframe_column_types(df)
 
 
@@ -158,6 +291,8 @@ def apply_assistant_filters(
     *,
     var_filters: Optional[Dict[str, Any]] = None,
     obs_filters: Optional[Dict[str, Any]] = None,
+    var_column_types: Optional[Dict[str, str]] = None,
+    obs_column_types: Optional[Dict[str, str]] = None,
 ):
     """Apply rich filter specs to an AnnData's ``.var`` / ``.obs`` frames.
 
@@ -191,18 +326,18 @@ def apply_assistant_filters(
 
     if var_filters:
         try:
-            allowed = filter_parser.infer_dataframe_column_types(var_df)
+            allowed = var_column_types or filter_parser.infer_dataframe_column_types(var_df)
             var_query = filter_parser.parse_filter_query(var_filters, allowed)
             if var_query:
-                var_df = filter_parser.apply_filter_query(var_df.copy(), var_query)
+                var_df = filter_parser.apply_filter_query(var_df, var_query)
         except Exception as e:
             logger.warning("apply_assistant_filters(var) failed: %s", e, exc_info=True)
     if obs_filters:
         try:
-            allowed = filter_parser.infer_dataframe_column_types(obs_df)
+            allowed = obs_column_types or filter_parser.infer_dataframe_column_types(obs_df)
             obs_query = filter_parser.parse_filter_query(obs_filters, allowed)
             if obs_query:
-                obs_df = filter_parser.apply_filter_query(obs_df.copy(), obs_query)
+                obs_df = filter_parser.apply_filter_query(obs_df, obs_query)
         except Exception as e:
             logger.warning("apply_assistant_filters(obs) failed: %s", e, exc_info=True)
     return var_df, obs_df
@@ -223,6 +358,13 @@ _SCHEMA_CACHE: Dict[Tuple[str, float], Dict[str, Any]] = {}
 # rebuilding it on every invocation routinely hit the 20s tool-timeout
 # on instances with high-cardinality array columns (go_terms, ipr_desc).
 _VALUE_COUNTER_CACHE: Dict[Tuple[str, float, str], List[Tuple[str, "Counter"]]] = {}
+
+# (species_code, h5ad_mtime, namespace, columns) → inferred filter-parser column types.
+# Deeplink validation can count the same filters several times; inferring
+# column types by sampling columns is avoidable work once a dataset is loaded
+# and unchanged. The columns tuple lets exact assistant filters avoid scanning
+# unrelated high-cardinality annotation columns on the cold path.
+_FILTER_COLUMN_TYPE_CACHE: Dict[Tuple[str, float, str, Tuple[str, ...]], Dict[str, str]] = {}
 
 # Columns that are pointless to scan with substring-match for resolve_value
 # (gene IDs, free-text descriptions). They drown the result list and
@@ -308,6 +450,31 @@ def _h5ad_mtime_for(service, code: str) -> float:
     except Exception:
         pass
     return 0.0
+
+
+def _cached_filter_column_types(
+    service,
+    adata,
+    code: str,
+    namespace: str,
+    columns: Optional[List[str]] = None,
+) -> Dict[str, str]:
+    df = adata.var if namespace == "var" else adata.obs
+    selected = tuple(sorted(str(c) for c in (columns or []) if str(c) in df.columns))
+    if not selected:
+        selected = tuple(str(c) for c in df.columns)
+    key = (code, round(float(_h5ad_mtime_for(service, code)), 3), namespace, selected)
+    cached = _FILTER_COLUMN_TYPE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    inferred = _infer_anndata_column_types(df.loc[:, list(selected)])
+    _FILTER_COLUMN_TYPE_CACHE[key] = inferred
+    if len(_FILTER_COLUMN_TYPE_CACHE) > 256:
+        try:
+            _FILTER_COLUMN_TYPE_CACHE.pop(next(iter(_FILTER_COLUMN_TYPE_CACHE)))
+        except StopIteration:
+            pass
+    return inferred
 
 
 def tool_list_schema(service, cm, *, max_values_per_col: int = 0) -> Dict[str, Any]:
@@ -902,6 +1069,8 @@ def tool_count_rows(
             service, adata,
             var_filters=var_filters or {},
             obs_filters=obs_filters or {},
+            var_column_types=_cached_filter_column_types(service, adata, code, "var", list(var_filters.keys())) if var_filters else None,
+            obs_column_types=_cached_filter_column_types(service, adata, code, "obs", list(obs_filters.keys())) if obs_filters else None,
         )
         n_var = int(len(var_f))
         n_obs = int(len(obs_f))
@@ -1250,6 +1419,7 @@ def tool_summary_stats(
 
 def tool_build_deeplink(
     service,
+    config_manager=None,
     *,
     view: str,
     tables: List[str],
@@ -1358,6 +1528,7 @@ def tool_build_deeplink(
                 flat_filters[col] = vals
 
         kept: List[str] = []
+        guard_counts: List[Dict[str, Any]] = []
         for code in codes:
             if not flat_filters:
                 kept.append(code)
@@ -1385,6 +1556,12 @@ def tool_build_deeplink(
             cr = cr if isinstance(cr, dict) else {}
             n_var = int(cr.get("n_var_match", 0))
             n_obs = int(cr.get("n_obs_match", 0))
+            guard_counts.append({
+                "table": code,
+                "rows": n_var,
+                "n_var_match": n_var,
+                "n_obs_match": n_obs,
+            })
             var_ok = (not var_f) or n_var > 0
             obs_ok = (not obs_f) or n_obs > 0
             if var_ok and obs_ok:
@@ -1402,6 +1579,50 @@ def tool_build_deeplink(
                 "view": v,
             }
         codes = kept
+    else:
+        guard_counts = []
+
+    limit = get_analysis_limits(config_manager).get(v, {}).get("max_rows")
+    reusable_counts = guard_counts if limit is not None and guard_counts and {
+        str(item.get("table")) for item in guard_counts
+    } == set(codes) else []
+    if reusable_counts:
+        over_limit = [
+            {"table": item["table"], "rows": int(item["rows"]), "max_rows": limit}
+            for item in reusable_counts
+            if int(item.get("rows", 0)) > int(limit)
+        ]
+        limit_check = {
+            "ok": not over_limit,
+            "view": v,
+            "limit": limit,
+            "over_limit": over_limit,
+            "counts": [
+                {"table": item["table"], "rows": int(item["rows"]), "max_rows": limit}
+                for item in reusable_counts
+            ],
+            "suggestion": "Ask for a gene, orthogroup, TF family, GO term, tissue, or another sidebar filter to reduce the result size.",
+        }
+        if over_limit:
+            labels = ", ".join(
+                f"{item['table']} ({item['rows']:,}/{int(limit):,})"
+                for item in over_limit
+            )
+            limit_check["error"] = (
+                f"{v} request exceeds the dynamic {int(limit):,} transcript limit: {labels}. "
+                "Ask the user for a narrower filter before opening this analysis."
+            )
+    else:
+        limit_check = validate_analysis_request_limits(
+            service,
+            config_manager,
+            view=v,
+            tables=codes,
+            filters=filters,
+        )
+    if not limit_check.get("ok", True):
+        return limit_check
+
     try:
         size = len(json.dumps({"f": filters, "v": visualizations}))
     except Exception:
@@ -1793,7 +2014,9 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
             "description": (
                 "Persist a view state and return a shareable URL path. "
                 "Views: heatmap | compare | phylo | ora | catalog. `filters` "
-                "and `visualizations` use the frontend store shape."
+                "and `visualizations` use the frontend store shape. The tool "
+                "validates dynamic per-view row limits and returns an error "
+                "with `over_limit` instead of a URL when filters are required."
             ),
             "parameters": {
                 "type": "object",
@@ -1828,7 +2051,7 @@ def _get_dispatch():
         "top_groups": lambda service, cm, **kw: tool_top_groups(service, **kw),
         "summary_stats": lambda service, cm, **kw: tool_summary_stats(service, **kw),
         "common_values": lambda service, cm, **kw: tool_common_values(service, **kw),
-        "build_deeplink": lambda service, cm, **kw: tool_build_deeplink(service, **kw),
+        "build_deeplink": lambda service, cm, **kw: tool_build_deeplink(service, cm, **kw),
     }
 
 

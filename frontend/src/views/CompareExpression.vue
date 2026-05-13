@@ -142,6 +142,19 @@ watch(
   { immediate: true },
 );
 
+watch(
+  tableNamesFromRoute,
+  (routeTableNames) => {
+    if (routeTableNames.length === 0) return;
+    if (hashLoadedSpecies.value === null) return;
+    const current = hashLoadedSpecies.value.join(",");
+    const next = routeTableNames.join(",");
+    if (current === next) return;
+    hashLoadedSpecies.value = [...routeTableNames];
+    visualizationStore.setCompareState({ selectedSpecies: routeTableNames });
+  },
+);
+
 onMounted(async () => {
   // Fetch all possible table names for dropdown options:
   const tagsParam = [...filtersStore.tags].join(",");

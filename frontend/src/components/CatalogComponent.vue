@@ -156,12 +156,9 @@ import { useCatalogStore } from "@/stores/catalog";
 import { type OverlayConfig } from "@/shared/OverlayConfig";
 import OverlayTable from "@/components/OverlayTable.vue";
 import { jsonToTsv, beautifyLabel } from "@/shared/utils";
+import { fetchAnalysisLimits } from "@/shared/landingApi";
 
-// ── Row-count limits per analysis type ────────────────────────────
-const LIMIT_HEATMAP = 1000;
-const LIMIT_PHYLO = 1000;
-const LIMIT_ORA = 5000;
-const LIMIT_COMPARE = 1000;
+type AnalysisLimitView = "heatmap" | "phylo" | "ora" | "compare";
 
 const OVERLAY_CONFIG: Record<"metadata" | "data", OverlayConfig> = {
   metadata: {
@@ -185,6 +182,7 @@ const catalogStore = useCatalogStore();
 const catalog = ref<Array<CatalogMeta>>([]);
 const isLoading = ref(false);
 const highlightedTag = ref<string | null>(null);
+const analysisLimits = ref<Record<string, { max_rows: number | null }>>({});
 
 const showOverlay = ref(false);
 const overlayTitle = ref("");
@@ -269,10 +267,14 @@ function computeAnalysisState(limit: number | null): { enabled: boolean; reason:
   return { enabled: true, reason: null, eligibleCount: eligible.length, eligibleTableNames: eligible };
 }
 
-const heatmapState = computed(() => computeAnalysisState(LIMIT_HEATMAP));
-const phyloState = computed(() => computeAnalysisState(LIMIT_PHYLO));
-const oraState = computed(() => computeAnalysisState(LIMIT_ORA));
-const compareState = computed(() => computeAnalysisState(LIMIT_COMPARE));
+function analysisLimit(view: AnalysisLimitView): number | null {
+  return analysisLimits.value[view]?.max_rows ?? null;
+}
+
+const heatmapState = computed(() => computeAnalysisState(analysisLimit("heatmap")));
+const phyloState = computed(() => computeAnalysisState(analysisLimit("phylo")));
+const oraState = computed(() => computeAnalysisState(analysisLimit("ora")));
+const compareState = computed(() => computeAnalysisState(analysisLimit("compare")));
 
 // ── Shared orthogroup fetching for Compare & Phylo ────────────────
 // ── Overlay / download (unchanged logic) ──────────────────────────
@@ -367,6 +369,13 @@ watch(
 );
 
 onMounted(() => {
+  fetchAnalysisLimits()
+    .then((limits) => {
+      analysisLimits.value = limits || {};
+    })
+    .catch(() => {
+      analysisLimits.value = {};
+    });
   fetchTables();
 });
 </script>

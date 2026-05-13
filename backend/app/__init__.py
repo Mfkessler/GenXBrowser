@@ -303,6 +303,64 @@ def _seed_llm_config_from_env(config_manager) -> None:
         logger.warning(f"LLM config seeding failed: {e}")
 
 
+def _prewarm_ai_assistant(app) -> None:
+    """Best-effort warmup for assistant examples and tool caches."""
+    if os.environ.get('ASSISTANT_WARMUP', 'true').lower() in {'0', 'false', 'no', 'off'}:
+        logger.info("AI assistant warmup disabled by ASSISTANT_WARMUP")
+        return
+
+    import time
+
+    started = time.perf_counter()
+    try:
+        with app.app_context():
+            from . import assistant_tools
+            from .suggestions import build_suggestion_pool, generate_suggestions
+
+            service = app.h5ad_service
+            cm = app.config_manager
+
+            pool = build_suggestion_pool(service, cm)
+            for seed in (0, 1, 2):
+                generate_suggestions(service, cm, n=10, seed=seed)
+
+            schema = assistant_tools.tool_list_schema(service, cm, max_values_per_col=0)
+            species = [str(s) for s in (pool.get("species") or []) if s]
+            if not species:
+                species = [
+                    str(t.get("code") or t.get("table_name"))
+                    for t in schema.get("tables", [])
+                    if t.get("code") or t.get("table_name")
+                ]
+
+            sample_filters = []
+            if pool.get("tf_family"):
+                sample_filters.append(("var_filters", "tf_family", pool["tf_family"][0]))
+            if pool.get("ortho_id"):
+                sample_filters.append(("var_filters", "ortho_id", pool["ortho_id"][0]))
+            if pool.get("tissue"):
+                sample_filters.append(("obs_filters", "tissue", pool["tissue"][0]))
+
+            # One resolve_value call builds the reusable per-table value counters.
+            for _axis, _column, value in sample_filters[:1]:
+                assistant_tools.tool_resolve_value(service, query=str(value), tables=species, max_hits=3)
+
+            # These calls warm the filtered count path used by deeplink guards.
+            for axis, column, value in sample_filters:
+                kwargs = {axis: {column: {"value": str(value), "match_mode": "or", "exact": True}}}
+                assistant_tools.tool_count_rows(service, tables=species, **kwargs)
+
+            elapsed = time.perf_counter() - started
+            logger.info(
+                "AI assistant warmup complete in %.2fs (species=%d, filters=%d)",
+                elapsed,
+                len(species),
+                len(sample_filters),
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("AI assistant warmup failed: %s", exc, exc_info=True)
+
+
 def create_app():
     """Create and configure the Flask application."""
     app = Flask(__name__)
@@ -381,6 +439,9 @@ def create_app():
     import threading
     threading.Thread(target=app.h5ad_service.precompute_global_bins, daemon=True).start()
     logger.info("Started background global bin precomputation")
+
+    threading.Thread(target=_prewarm_ai_assistant, args=(app,), daemon=True).start()
+    logger.info("Started AI assistant warmup")
 
     # Register routes
     register_routes(app)

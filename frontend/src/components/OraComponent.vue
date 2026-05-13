@@ -680,11 +680,11 @@ async function createSideColorMapping(column_name: string, colType: string) {
     } else if (colType === "boolean") {
       const terms = [true, false, null];
       const range = ["#36a2eb", "#e74c3c", "#ccc"];
-      const scale = d3.scaleOrdinal().domain(terms).range(range);
+      const scale = d3.scaleOrdinal<boolean | null, string>().domain(terms).range(range);
 
-      const mapping = {};
+      const mapping: Record<string, string> = {};
       terms.forEach((term) => {
-        mapping[term] = scale(term);
+        mapping[String(term)] = scale(term);
       });
 
       return mapping;
@@ -692,11 +692,11 @@ async function createSideColorMapping(column_name: string, colType: string) {
       const response = await axios.get(`${API_BASE_URL}/api/col`, {
         params: { column_name },
       });
-      const terms = response.data.terms;
+      const terms = (response.data.terms || []).map((term: unknown) => String(term));
       const colors = getCategoricalColors(terms.length);
-      const scale = d3.scaleOrdinal().domain(terms).range(colors);
+      const scale = d3.scaleOrdinal<string, string>().domain(terms).range(colors);
 
-      const mapping = {};
+      const mapping: Record<string, string> = {};
       terms.forEach((term) => {
         mapping[term] = scale(term);
       });
@@ -789,11 +789,11 @@ async function renderDotplotRowSideColors({
       return "#eeeeee";
     });
 
-  // Tooltip setup, create div if it doesn't exist
-  let tooltip = d3.select("#sideColorTooltip");
-
-  tooltip = d3
-    .select(svg.node().parentNode)
+  // Tooltip setup for the row-side rectangles.
+  const svgParent = svg.node()?.parentNode as HTMLElement | null;
+  if (!svgParent) return;
+  const tooltip = d3
+    .select(svgParent)
     .append("div")
     .attr("id", "sideColorTooltip")
     .style("position", "absolute")
@@ -813,34 +813,13 @@ async function renderDotplotRowSideColors({
   rects
     .on("mouseover", function (event, d) {
       d3.select(this).attr("stroke", "white").style("stroke-width", 2);
-
-      let tooltipText = "";
-
-      if (
-        (colType === "double precision" || colType === "bigint") &&
-        d !== null &&
-        d !== undefined &&
-        colorMap.bins
-      ) {
-        // Find the bin that includes d
-        const bin = colorMap.bins.find(
-          (b) => d >= b.bucket_lower && d <= b.bucket_upper,
-        );
-        if (bin) {
-          tooltipText = `<strong>${column_name} bucket:</strong> [${bin.bucket_lower.toFixed(0)}, ${bin.bucket_upper.toFixed(0)}]`;
-        } else {
-          tooltipText = `<strong>${column_name}:</strong> ${d}`;
-        }
-      } else {
-        tooltipText = `<strong>${column_name}:</strong> ${d}`;
-      }
-      tooltip.html(tooltipText);
+      const entry = pValueEntries.value.find((item) => item.attr === d);
+      tooltip.html(entry ? buildOraTooltipContent(entry) : String(d ?? ""));
       tooltip.style("visibility", "visible");
     })
     .on("mousemove", function (event) {
-      if (!svg.node()?.parentNode) return;
-      const containerRect = svg.node()!.parentNode!.getBoundingClientRect();
-      const tooltipNode = tooltip.node();
+      const containerRect = svgParent.getBoundingClientRect();
+      const tooltipNode = tooltip.node() as HTMLDivElement | null;
       if (!tooltipNode) return;
       const tooltipRect = tooltipNode.getBoundingClientRect();
 
@@ -867,6 +846,14 @@ async function renderDotplotRowSideColors({
       d3.select(this).attr("stroke", "none");
       tooltip.style("visibility", "hidden");
     })
+    .on("contextmenu", function (event, d) {
+      const entry = pValueEntries.value.find((item) => item.attr === d);
+      if (!entry) return;
+      event.preventDefault();
+      selectedTerm.value = entry;
+      showOraTooltipModal.value = true;
+      tooltip.style("visibility", "hidden");
+    })
     .on("click", function (event, d) {
       if (
         (colType === "double precision" || colType === "bigint") &&
@@ -880,7 +867,7 @@ async function renderDotplotRowSideColors({
         );
         if (bin) {
           filtersStore.setFilter(column_name, {
-            value: [bin.bucket_lower, bin.bucket_upper],
+            value: [bin.bucket_lower, bin.bucket_upper] as any,
           });
         } else {
           filtersStore.setFilter(column_name, { value: d });
@@ -892,9 +879,92 @@ async function renderDotplotRowSideColors({
     });
 }
 
+function buildOraTooltipContent(d: PValueEntry): string {
+  let tooltipContent = '';
+
+  const hasGoInfo = isGoTermEnrichment.value && (d.go_name || goTermInfoCache.value[d.attr]?.name);
+  const goName = d.go_name || goTermInfoCache.value[d.attr]?.name || '';
+  const visibleFields = visualizationStore.oraTooltipFields;
+  let hasContent = false;
+
+  if (visibleFields.includes('go_name') && isGoTermEnrichment.value && hasGoInfo) {
+    tooltipContent += `<strong>${goName}</strong><br/>`;
+    hasContent = true;
+  }
+
+  if (visibleFields.includes('attribute_name')) {
+    if (isGoTermEnrichment.value && hasGoInfo && visibleFields.includes('go_name')) {
+      tooltipContent += `<strong>GO ID:</strong> ${d.attr}<br/>`;
+    } else {
+      tooltipContent += `<strong>${d.attr}</strong><br/>`;
+    }
+    hasContent = true;
+  }
+
+  if (hasContent && visibleFields.some(f => !['attribute_name', 'go_name'].includes(f))) {
+    tooltipContent += `<hr style="margin:4px 0; border-color:#888"/>`;
+  }
+
+  if (visibleFields.includes('subset_count')) {
+    tooltipContent += `<strong>Observed Count:</strong> ${d.subset_count}<br/>`;
+    hasContent = true;
+  }
+  if (visibleFields.includes('expected_count')) {
+    tooltipContent += `<strong>Expected Count:</strong> ${d.expected_count.toFixed(2)}<br/>`;
+    hasContent = true;
+  }
+  if (visibleFields.includes('background_count')) {
+    tooltipContent += `<strong>Background Count:</strong> ${d.background_count}<br/>`;
+    hasContent = true;
+  }
+  if (visibleFields.includes('fold_enrichment')) {
+    tooltipContent += `<strong>log<sub>2</sub>(Fold Enrichment):</strong> ${log2FoldEnrichment(d.fold_enrichment).toFixed(2)}<br/>`;
+    hasContent = true;
+  }
+  if (visibleFields.includes('gene_ratio')) {
+    tooltipContent += `<strong>Gene Ratio:</strong> ${(d.gene_ratio * 100).toFixed(1)}%<br/>`;
+    hasContent = true;
+  }
+  if (visibleFields.includes('p_value')) {
+    tooltipContent += `<strong>P-Value:</strong> ${d.p_value.toExponential(2)}<br/>`;
+    hasContent = true;
+  }
+  if (visibleFields.includes('q_value')) {
+    tooltipContent += `<strong>Q-Value:</strong> ${d.q_value.toExponential(2)}<br/>`;
+    hasContent = true;
+  }
+  if (visibleFields.includes('combined_score')) {
+    tooltipContent += `<strong>Combined Score:</strong> ${d.combined_score.toFixed(2)}<br/>`;
+    hasContent = true;
+  }
+  if (visibleFields.includes('odds_ratio') && d.odds_ratio !== undefined) {
+    tooltipContent += `<strong>Odds Ratio:</strong> ${d.odds_ratio.toFixed(2)}<br/>`;
+    hasContent = true;
+  }
+  if (isGoTermEnrichment.value) {
+    if (visibleFields.includes('go_namespace') && d.go_namespace) {
+      const namespaceLabel = d.go_namespace === 'biological_process' ? 'BP' : 
+                             d.go_namespace === 'molecular_function' ? 'MF' : 
+                             d.go_namespace === 'cellular_component' ? 'CC' : d.go_namespace;
+      tooltipContent += `<strong>GO Category:</strong> ${namespaceLabel}<br/>`;
+      hasContent = true;
+    }
+    if (visibleFields.includes('go_depth') && d.go_depth !== undefined) {
+      tooltipContent += `<strong>GO Depth:</strong> ${d.go_depth}<br/>`;
+      hasContent = true;
+    }
+  }
+
+  if (hasContent) {
+    tooltipContent += `<hr style="margin:4px 0; border-color:#888"/>`;
+  }
+  tooltipContent += `<div style="text-align:center; font-size:0.7rem; color:#6b7280;">Right-click for full details</div>`;
+  return tooltipContent;
+}
+
 function createSizeLegend(
   svg: d3.Selection<SVGGElement, unknown, null, undefined>,
-  sizeScale: d3.ScaleSqrt<number, number>,
+  sizeScale: d3.ScalePower<number, number>,
   values: number[],
   circleSpacing = 50,
   leftMargin = 0,
@@ -902,7 +972,7 @@ function createSizeLegend(
   title = "Observed Count",
 ) {
   values = values.slice().sort((a, b) => a - b);
-  const maxRadius = Math.max(...values.map(sizeScale));
+  const maxRadius = Math.max(...values.map((value) => sizeScale(value)));
   const labelOffset = 8;
 
   // Create a group inside parentG and position it according to margins
@@ -1229,100 +1299,7 @@ async function drawDotPlot() {
         .style("stroke-width", 3);
     })
     .on("mousemove", (event, d) => {
-      // Build tooltip based on user-configured visible fields
-      let tooltipContent = '';
-      
-      // Check if this is GO term enrichment AND we have GO info for this term
-      const hasGoInfo = isGoTermEnrichment.value && (d.go_name || goTermInfoCache.value[d.attr]?.name);
-      const goName = d.go_name || goTermInfoCache.value[d.attr]?.name || '';
-      
-      // Get configured fields from store
-      const visibleFields = visualizationStore.oraTooltipFields;
-      
-      // Build content based on selected fields only
-      let hasContent = false;
-      
-      // Show GO name if selected and available (GO enrichment only)
-      if (visibleFields.includes('go_name') && isGoTermEnrichment.value && hasGoInfo) {
-        tooltipContent += `<strong>${goName}</strong><br/>`;
-        hasContent = true;
-      }
-      
-      // Show attribute name if selected
-      if (visibleFields.includes('attribute_name')) {
-        if (isGoTermEnrichment.value && hasGoInfo && visibleFields.includes('go_name')) {
-          tooltipContent += `<strong>GO ID:</strong> ${d.attr}<br/>`;
-        } else {
-          tooltipContent += `<strong>${d.attr}</strong><br/>`;
-        }
-        hasContent = true;
-      }
-      
-      // Add separator if we have header content and will add metrics
-      if (hasContent && visibleFields.some(f => !['attribute_name', 'go_name'].includes(f))) {
-        tooltipContent += `<hr style="margin:4px 0; border-color:#888"/>`;
-      }
-      
-      // Add core enrichment metrics
-      if (visibleFields.includes('subset_count')) {
-        tooltipContent += `<strong>Observed Count:</strong> ${d.subset_count}<br/>`;
-        hasContent = true;
-      }
-      if (visibleFields.includes('expected_count')) {
-        tooltipContent += `<strong>Expected Count:</strong> ${d.expected_count.toFixed(2)}<br/>`;
-        hasContent = true;
-      }
-      if (visibleFields.includes('background_count')) {
-        tooltipContent += `<strong>Background Count:</strong> ${d.background_count}<br/>`;
-        hasContent = true;
-      }
-      if (visibleFields.includes('fold_enrichment')) {
-        tooltipContent += `<strong>log<sub>2</sub>(Fold Enrichment):</strong> ${log2FoldEnrichment(d.fold_enrichment).toFixed(2)}<br/>`;
-        hasContent = true;
-      }
-      
-      // Add statistical details metrics
-      if (visibleFields.includes('gene_ratio')) {
-        tooltipContent += `<strong>Gene Ratio:</strong> ${(d.gene_ratio * 100).toFixed(1)}%<br/>`;
-        hasContent = true;
-      }
-      if (visibleFields.includes('p_value')) {
-        tooltipContent += `<strong>P-Value:</strong> ${d.p_value.toExponential(2)}<br/>`;
-        hasContent = true;
-      }
-      if (visibleFields.includes('q_value')) {
-        tooltipContent += `<strong>Q-Value:</strong> ${d.q_value.toExponential(2)}<br/>`;
-        hasContent = true;
-      }
-      if (visibleFields.includes('combined_score')) {
-        tooltipContent += `<strong>Combined Score:</strong> ${d.combined_score.toFixed(2)}<br/>`;
-        hasContent = true;
-      }
-      if (visibleFields.includes('odds_ratio') && d.odds_ratio !== undefined) {
-        tooltipContent += `<strong>Odds Ratio:</strong> ${d.odds_ratio.toFixed(2)}<br/>`;
-        hasContent = true;
-      }
-      // GO-specific fields (only show for GO enrichment)
-      if (isGoTermEnrichment.value) {
-        if (visibleFields.includes('go_namespace') && d.go_namespace) {
-          const namespaceLabel = d.go_namespace === 'biological_process' ? 'BP' : 
-                                 d.go_namespace === 'molecular_function' ? 'MF' : 
-                                 d.go_namespace === 'cellular_component' ? 'CC' : d.go_namespace;
-          tooltipContent += `<strong>GO Category:</strong> ${namespaceLabel}<br/>`;
-          hasContent = true;
-        }
-        if (visibleFields.includes('go_depth') && d.go_depth !== undefined) {
-          tooltipContent += `<strong>GO Depth:</strong> ${d.go_depth}<br/>`;
-          hasContent = true;
-        }
-      }
-      
-      // Add call-to-action
-      if (hasContent) {
-        tooltipContent += `<hr style="margin:4px 0; border-color:#888"/>`;
-      }
-      tooltipContent += `<div style="text-align:center; font-size:0.7rem; color:#6b7280;">Right-click for full details</div>`;
-      
+      const tooltipContent = buildOraTooltipContent(d);
 
       const containerRect = container.getBoundingClientRect();
       const tooltipNode = tooltip.node();
@@ -1655,23 +1632,6 @@ watch(
     await fetchAndPrepareData();
   },
   { deep: true },
-);
-
-// Watch for color range changes (separate watch)
-watch(
-  () => visualizationStore.colorRange,
-  async (colorRange) => {
-    if (props.hashLoading) return;
-    if (!colorRange) return; // guard against unset, undefined, or empty string
-    if (loading.value || !renderReady.value) return;
-    loading.value = true;
-    renderReady.value = false;
-    await nextTick();
-    await syncPlotHeightWithViewport();
-    await drawDotPlot();
-    renderReady.value = true;
-    loading.value = false;
-  },
 );
 
 watch(

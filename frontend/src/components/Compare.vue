@@ -425,12 +425,7 @@ async function onExpressionDisplayChange(newValue?: string) {
 // ============================================================================
 function updateUrlFromState() {
   const newQuery: Record<string, string> = { ...route.query } as Record<string, string>;
-
-  if (selectedTables.value.length > 0) {
-    newQuery.tables = JSON.stringify(selectedTables.value);
-  } else {
-    delete newQuery.tables;
-  }
+  delete newQuery.tables;
 
   if (selectedOrthogroup.value) {
     newQuery.orthogroup = selectedOrthogroup.value;
@@ -1549,9 +1544,9 @@ onMounted(async () => {
       });
     }
     
-    // Parse URL state (legacy support for direct URL parameters)
+    // Parse URL state (legacy support for old direct URLs without route tables).
     const rawTables = route.query.tables;
-    if (rawTables) {
+    if (rawTables && props.existingTables.length === 0) {
       try {
         const parsed = JSON.parse(String(rawTables));
         if (Array.isArray(parsed)) {
@@ -1629,6 +1624,24 @@ onMounted(async () => {
   await nextTick();
   renderPlot();
 });
+
+watch(
+  () => props.existingTables,
+  async (nextTables) => {
+    if (initialUrlParsing.value) return;
+    const nextSelection = nextTables && nextTables.length > 0
+      ? [...nextTables]
+      : [props.tableName];
+    if (selectedTables.value.join(",") === nextSelection.join(",")) return;
+
+    selectedTables.value = nextSelection;
+    visualizationStore.setCompareState({ selectedSpecies: nextSelection });
+    await fetchAllSelected();
+    await nextTick();
+    renderPlot();
+  },
+  { deep: true },
+);
 
 onUnmounted(() => {
   document.removeEventListener("click", handleClickOutside);

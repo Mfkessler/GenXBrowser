@@ -165,6 +165,18 @@
         }
       }
     },
+    "analysis_limits": {
+      "type": "object",
+      "description": "Dynamic per-analysis frontend/backend guard limits. Set max_rows to null to disable a row limit for a view.",
+      "additionalProperties": false,
+      "properties": {
+        "heatmap": { "$ref": "#/definitions/analysisLimitSetting" },
+        "compare": { "$ref": "#/definitions/analysisLimitSetting" },
+        "phylo": { "$ref": "#/definitions/analysisLimitSetting" },
+        "ora": { "$ref": "#/definitions/analysisLimitSetting" },
+        "catalog": { "$ref": "#/definitions/analysisLimitSetting" }
+      }
+    },
     "data_paths": {
       "type": "object",
       "description": "Data file paths (usually overridden by environment variables)",
@@ -191,6 +203,26 @@
         "max_tool_iterations": {"type": "integer", "minimum": 1, "maximum": 20, "default": 6, "description": "Hard cap on tool-call rounds per user turn."},
         "tool_deadline_s": {"type": "integer", "minimum": 10, "maximum": 600, "default": 90, "description": "Wall-clock deadline for the whole tool-calling loop (seconds)."}
       }
+    }
+  },
+  "definitions": {
+    "analysisLimitSetting": {
+      "oneOf": [
+        { "$ref": "#/definitions/analysisLimit" },
+        { "type": "integer", "minimum": 1 },
+        { "type": "null" }
+      ]
+    },
+    "analysisLimit": {
+      "type": "object",
+      "properties": {
+        "max_rows": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "Maximum matching transcript rows per selected dataset before opening this analysis. Null disables the limit."
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

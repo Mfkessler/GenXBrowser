@@ -11,7 +11,10 @@ export interface FeatureFlags {
   dataset_count: number;
   project_name: string;
   version: string;
+  analysis_limits?: Record<string, { max_rows: number | null }>;
 }
+
+export type AnalysisLimits = Record<string, { max_rows: number | null }>;
 
 export interface ColumnSummary {
   name: string;
@@ -66,6 +69,11 @@ export interface OverviewPayload {
 
 export async function fetchFeatures(): Promise<FeatureFlags> {
   const { data } = await axios.get<FeatureFlags>(`${API_BASE_URL}/api/features`);
+  return data;
+}
+
+export async function fetchAnalysisLimits(): Promise<AnalysisLimits> {
+  const { data } = await axios.get<AnalysisLimits>(`${API_BASE_URL}/api/analysis-limits`);
   return data;
 }
 

@@ -310,7 +310,11 @@ export const useAssistantStore = defineStore("assistant", () => {
           if (!msg.deeplink) msg.deeplink = { view: data.view, url_path: data.url_path };
         } catch (e) {
           action.status = "error";
-          action.error = (e as Error).message || "deeplink failed";
+          const guardMessage = formatDeeplinkGuardError(e);
+          action.error = guardMessage || (e as Error).message || "deeplink failed";
+          if (guardMessage && !msg.content.includes(guardMessage)) {
+            msg.content = `${msg.content.trim()}\n\n${guardMessage}`;
+          }
         }
       } else if (kind === "compute") {
         try {
@@ -330,6 +334,26 @@ export const useAssistantStore = defineStore("assistant", () => {
       }
       // viz_update / add_filter stay "pending" and are applied from the UI via applyAction().
     }
+  }
+
+  function formatDeeplinkGuardError(error: unknown): string | null {
+    if (!axios.isAxiosError(error)) return null;
+    const data = error.response?.data as Record<string, unknown> | undefined;
+    if (!data || !Array.isArray(data.over_limit)) return null;
+    const limit = typeof data.limit === "number" ? data.limit : null;
+    const overLimit = data.over_limit as Array<Record<string, unknown>>;
+    const tableSummary = overLimit
+      .map((item) => {
+        const table = String(item.table || "dataset");
+        const rows = typeof item.rows === "number" ? item.rows.toLocaleString() : String(item.rows || "too many");
+        return `${table} (${rows}${limit ? `/${limit.toLocaleString()}` : ""})`;
+      })
+      .join(", ");
+    const view = String(data.view || "analysis");
+    const suggestion = typeof data.suggestion === "string"
+      ? data.suggestion
+      : "Please add a gene, orthogroup, TF family, GO term, tissue, or another sidebar filter to reduce the result size.";
+    return `I can't open the ${view} yet because the requested data exceeds the current ${limit?.toLocaleString() || "configured"} transcript limit: ${tableSummary}. ${suggestion}`;
   }
 
   function setAnalysisContext(key: string, payload: unknown | null) {
