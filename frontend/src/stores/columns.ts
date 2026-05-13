@@ -13,6 +13,9 @@ export interface ColumnsState {
   orderableColColumns: MetaFormat[];
   // Cached distinct values for specific columns (e.g., tissue types)
   distinctValues: Record<string, string[]>;
+  // Currently loaded sample metadata rows from active visualizations
+  sampleMetadata: Record<string, unknown>[];
+  sampleMetadataByTable: Record<string, Record<string, unknown>[]>;
 }
 
 // Columns to hide from sample-metadata column selectors
@@ -25,6 +28,8 @@ export const useColumnsStore = defineStore("columns", {
     filterableColColumns: [],
     orderableColColumns: [],
     distinctValues: {},
+    sampleMetadata: [],
+    sampleMetadataByTable: {},
   }),
   actions: {
     setRowColumns(columns: MetaFormat[]) {
@@ -52,30 +57,41 @@ export const useColumnsStore = defineStore("columns", {
           ...nonTissueColumns,
         ];
 
-        // For ordering: include the tissue column by name + tissue_types pseudo-column
+        // For ordering: use only the tissue_types pseudo-column so the Tissue option
+        // matches the ColSideColors/SampleColor option and does not appear twice.
         this.orderableColColumns = [
-          { column_name: tissueColEntry.column_name, type: "string", display_name: tissueDisplayName, is_tissue: true },
           ...nonTissueColumns,
-          { column_name: "tissue_types", type: "string", display_name: tissueDisplayName },
+          { column_name: "tissue_types", type: "text", display_name: tissueDisplayName },
         ];
 
         // colColumns for ColSideColors: tissue_types pseudo-column carries the admin display name
         this.colColumns = [
           ...nonTissueColumns,
-          { column_name: "tissue_types", type: "string", display_name: tissueDisplayName },
+          { column_name: "tissue_types", type: "text", display_name: tissueDisplayName },
         ];
       } else {
         // No tissue column configured — keep original columns as-is
         this.filterableColColumns = cleaned;
         this.orderableColColumns = [
           ...cleaned,
-          { column_name: "tissue_types", type: "string" },
+          { column_name: "tissue_types", type: "text" },
         ];
         this.colColumns = [
           ...cleaned,
-          { column_name: "tissue_types", type: "string" },
+          { column_name: "tissue_types", type: "text" },
         ];
       }
+    },
+    setSampleMetadata(records: Record<string, unknown>[], tableName = "__default") {
+      this.sampleMetadataByTable[tableName] = records;
+      const bySample = new Map<string, Record<string, unknown>>();
+      for (const tableRecords of Object.values(this.sampleMetadataByTable)) {
+        for (const record of tableRecords) {
+          const sampleName = String(record.column_name ?? "");
+          if (sampleName) bySample.set(sampleName, record);
+        }
+      }
+      this.sampleMetadata = [...bySample.values()];
     },
     // Set distinct values for a column
     setDistinctValues(columnName: string, values: string[]) {

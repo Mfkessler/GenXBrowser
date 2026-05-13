@@ -141,6 +141,7 @@ import { API_BASE_URL } from "@/shared/Config";
 import { getCategoricalColors } from "@/shared/Colorscales";
 import { getExpressionOption, EXPRESSION_OPTIONS } from "@/shared/ExpressionDisplay";
 import { useFiltersStore } from "@/stores/filters";
+import { useColumnsStore } from "@/stores/columns";
 import { useVisualizationStore } from "@/stores/visualization";
 import { useFilterSeparation } from "@/shared/useFilterSeparation";
 import { beautifyLabel } from "@/shared/utils";
@@ -194,6 +195,7 @@ const props = defineProps<{
 const route = useRoute();
 const router = useRouter();
 const filtersStore = useFiltersStore();
+const columnsStore = useColumnsStore();
 const visualizationStore = useVisualizationStore();
 const { filters, geneFilters, sampleFilters, getMergedGeneFilters } = useFilterSeparation();
 
@@ -495,6 +497,7 @@ async function fetchData(tableName: string) {
     const columns = (Array.isArray(colData) ? colData : []).filter((meta: RowType) =>
       dataColumnNames.includes(meta.column_name as string)
     );
+    columnsStore.setSampleMetadata(columns as Record<string, unknown>[], tableName);
 
     // Create tissue mapping
     // Backend returns obs column names directly (h5ad standard: 'tissue')
@@ -918,9 +921,37 @@ function processDataForPlotting(og: string): ProcessedData | null {
 
   return {
     transcripts,
-    tissues: [...tissueSet].sort(),
+    tissues: orderTissueCategories([...tissueSet]),
     species: [...speciesSet].sort(),
   };
+}
+
+function orderTissueCategories(tissues: string[]): string[] {
+  const customOrder = visualizationStore.customColOrder;
+  if (customOrder.enabled && customOrder.metadataValues.length > 0) {
+    const tissueRank = getTissueRankFromAxis(customOrder.metadataValues);
+    return [...tissues].sort((a, b) => {
+      const aRank = tissueRank.get(a.toLowerCase()) ?? Number.MAX_SAFE_INTEGER;
+      const bRank = tissueRank.get(b.toLowerCase()) ?? Number.MAX_SAFE_INTEGER;
+      if (aRank !== bRank) return aRank - bRank;
+      return a.localeCompare(b);
+    });
+  }
+  if (visualizationStore.colOrder.name && visualizationStore.colOrder.name !== "OLO") {
+    return orderAxisCategories(tissues, visualizationStore.colOrder.order);
+  }
+  return orderAxisCategories(tissues, "asc");
+}
+
+function getTissueRankFromAxis(orderedValues: string[]): Map<string, number> {
+  return new Map(orderedValues.map((value, index) => [value.toLowerCase(), index]));
+}
+
+function orderAxisCategories(tissues: string[], direction: "asc" | "desc"): string[] {
+  return [...tissues].sort((a, b) => {
+    const comparison = a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+    return direction === "desc" ? -comparison : comparison;
+  });
 }
 
 // ============================================================================
@@ -1473,6 +1504,23 @@ watch(
     await renderPlot();
     console.log('[AllTranscripts Toggle] Render complete. Transcript count:', processedData.value?.transcripts.length || 0);
   }
+);
+
+watch(
+  [
+    () => visualizationStore.colOrder.name,
+    () => visualizationStore.colOrder.order,
+    () => visualizationStore.customColOrder.enabled,
+    () => visualizationStore.customColOrder.mode,
+    () => visualizationStore.customColOrder.metadataColumn,
+    () => visualizationStore.customColOrder.metadataValues.join("\u0000"),
+    () => visualizationStore.customColOrder.sampleNames.join("\u0000"),
+  ],
+  async () => {
+    if (initialUrlParsing.value) return;
+    await nextTick();
+    await renderPlot();
+  },
 );
 
 // Watch for window resize

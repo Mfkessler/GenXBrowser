@@ -274,6 +274,7 @@
             </h3>
             <ToggleSwitch v-model="store.legend" />
           </div>
+
         </CollapseWrapper>
 
         <!-- Clustering -->
@@ -432,14 +433,14 @@
         </CollapseWrapper>
         <!-- Cols -->
         <CollapseWrapper
-          v-if="context === null || context === 'heatmap'"
+          v-if="context !== 'ora'"
           v-model="colIsOpen"
           :disabled="false"
           :deletable="false"
           title="Samples"
           class="mb-2"
         >
-          <div class="flex items-center gap-2 mb-2">
+          <div v-if="context === null || context === 'heatmap'" class="flex items-center gap-2 mb-2">
             <h3 class="text-md font-semibold cursor-default text-primary-900">
               Column Labels
             </h3>
@@ -464,7 +465,77 @@
             </div>
           </div>
 
-          <div>
+          <div class="mb-4">
+            <h3
+              class="text-md font-semibold mb-2 cursor-default text-primary-900"
+            >
+              {{ axisOnlyCustomOrder ? 'Custom X-Axis Order' : 'Custom Order' }}
+            </h3>
+            <div class="border border-gray-200 rounded-md p-3 bg-gray-50 space-y-3">
+              <div class="flex items-center justify-between">
+                <span class="text-sm font-medium text-gray-700">Enable custom order</span>
+                <ToggleSwitch v-model="customOrderEnabled" />
+              </div>
+              <template v-if="store.customColOrder.enabled">
+                <div v-if="!axisOnlyCustomOrder" class="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    class="px-2 py-1 text-xs rounded border"
+                    :class="store.customColOrder.mode === 'metadata' ? 'bg-primary-500 text-white border-primary-500' : 'bg-white text-gray-700 border-gray-300'"
+                    @click="setCustomOrderMode('metadata')"
+                  >By metadata</button>
+                  <button
+                    type="button"
+                    class="px-2 py-1 text-xs rounded border"
+                    :class="store.customColOrder.mode === 'samples' ? 'bg-primary-500 text-white border-primary-500' : 'bg-white text-gray-700 border-gray-300'"
+                    @click="setCustomOrderMode('samples')"
+                  >Sample by sample</button>
+                </div>
+                <div v-if="axisOnlyCustomOrder || store.customColOrder.mode === 'metadata'" class="space-y-2">
+                  <DropdownMenu
+                    v-if="!axisOnlyCustomOrder"
+                    v-model="customOrderMetadataColumn"
+                    :options="customOrderMetadataOptions"
+                    class="w-full"
+                  />
+                  <Draggable
+                    v-model="customMetadataValueOrder"
+                    :item-key="identityKey"
+                    handle=".custom-order-handle"
+                    ghost-class="bg-primary-100"
+                    class="max-h-48 overflow-y-auto space-y-1"
+                  >
+                    <template #item="{ element }">
+                      <div class="flex items-center gap-2 px-2 py-1 bg-white border border-gray-200 rounded text-sm">
+                        <span class="custom-order-handle cursor-grab text-gray-400">::</span>
+                        <span class="truncate">{{ element }}</span>
+                      </div>
+                    </template>
+                  </Draggable>
+                </div>
+                <Draggable
+                  v-else-if="!axisOnlyCustomOrder"
+                  v-model="customSampleOrder"
+                  :item-key="identityKey"
+                  handle=".custom-order-handle"
+                  ghost-class="bg-primary-100"
+                  class="max-h-56 overflow-y-auto space-y-1"
+                >
+                  <template #item="{ element }">
+                    <div class="flex items-center gap-2 px-2 py-1 bg-white border border-gray-200 rounded text-sm">
+                      <span class="custom-order-handle cursor-grab text-gray-400">::</span>
+                      <span class="truncate">{{ element }}</span>
+                    </div>
+                  </template>
+                </Draggable>
+                <button type="button" class="text-xs text-accent1-700 hover:underline" @click="resetCustomOrder">
+                  Reset custom order
+                </button>
+              </template>
+            </div>
+          </div>
+
+          <div v-if="context === null || context === 'heatmap'">
             <h3
               class="text-md font-semibold mb-2 cursor-default text-primary-900"
             >
@@ -773,6 +844,9 @@
 
 <script setup lang="ts">
 import { computed, defineProps, defineEmits, inject, ref, watch } from "vue";
+import Draggable from "vuedraggable";
+import axios from "axios";
+import { useRoute } from "vue-router";
 
 import { useVisualizationStore } from "@/stores/visualization";
 
@@ -781,7 +855,9 @@ import CollapseWrapper from "./CollapseWrapper.vue";
 import InfoTooltip from "./InfoTooltip.vue";
 import { COLORSCALES } from "@/shared/Colorscales";
 import { useColumnsStore } from "@/stores/columns";
-import { type Config } from "@/shared/Config";
+import { API_BASE_URL, type Config } from "@/shared/Config";
+import type { MetaFormat } from "@/shared/MetaFormat";
+import type { RowType } from "@/shared/RowType";
 import DropdownMenu from "./DropdownMenu.vue";
 import SortToggleButton from "./SortToggleButton.vue";
 import ToggleSwitch from "./ToggleSwitch.vue";
@@ -795,6 +871,7 @@ import { getDisplayName, sequenceFields } from "@/shared/metadataDisplayNames";
 import { getEntityLabelPlural, getMinimumCountLabel, getEntityLabelPluralLower } from "@/shared/dataTypeLabels";
 
 const columnsStore = useColumnsStore();
+const route = useRoute();
 
 //TODO
 // * Update reset settings to support base column_id (create configStore)
@@ -828,6 +905,9 @@ const clusterDistanceOptions = {
   euclidean: "Euclidean",
 };
 
+const identityKey = (value: string) => value;
+const axisOnlyCustomOrder = computed(() => props.context === "compare" || props.context === "phylogeneticTree");
+
 // Compare plot type options
 const plotTypeOptions = {
   line: "Line Plot",
@@ -859,6 +939,7 @@ const colIsOpen = ref(false);
 const tooltipIsOpen = ref(false);
 const oraIsOpen = ref(true); //DEBUG
 const oraTooltipIsOpen = ref(false);
+const loadingSampleMetadataTables = new Set<string>();
 
 // Local reactive values for ORA sliders with debouncing
 const localOraTopN = ref(store.oraTopN);
@@ -1069,6 +1150,9 @@ const rowSideColorDisplayNames = computed<Record<string, string>>(() => {
 
 // Col order options derived from attribute keys, mapped to beautified labels
 const colOrderOptions = computed<Record<string, string>>(() => {
+  if (axisOnlyCustomOrder.value) {
+    return { tissue_types: metadataDisplayName({ column_name: "tissue_types" }) };
+  }
   // Use orderableColColumns for Column Order dropdown (includes tissue_types)
   return toOptionsRecord(columnsStore.orderableColColumns);
 });
@@ -1085,6 +1169,167 @@ const colSideColorDisplayNames = computed<Record<string, string>>(() => {
     displayNames[col.column_name] = metadataDisplayName(col);
   }
   return displayNames;
+});
+
+const customOrderMetadataOptions = computed<Record<string, string>>(() => toOptionsRecord(columnsStore.colColumns));
+
+const customOrderEnabled = computed({
+  get: () => store.customColOrder.enabled,
+  set: (enabled: boolean) => {
+    store.setCustomColOrderState(axisOnlyCustomOrder.value
+      ? { enabled, mode: "metadata", metadataColumn: "tissue_types" }
+      : { enabled });
+    ensureCustomOrderLists();
+  },
+});
+
+const customOrderMetadataColumn = computed({
+  get: () => store.customColOrder.metadataColumn || "tissue_types",
+  set: (metadataColumn: string) => {
+    store.setCustomColOrderState({ metadataColumn, metadataValues: getMetadataValues(metadataColumn) });
+  },
+});
+
+const customMetadataValueOrder = computed({
+  get: () => store.customColOrder.metadataValues,
+  set: (metadataValues: string[]) => store.setCustomColOrderState({ metadataValues }),
+});
+
+const customSampleOrder = computed({
+  get: () => store.customColOrder.sampleNames,
+  set: (sampleNamesValue: string[]) => store.setCustomColOrderState({ sampleNames: sampleNamesValue }),
+});
+
+const sampleNames = computed(() =>
+  columnsStore.sampleMetadata
+    .map((record) => String(record.column_name ?? ""))
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b)),
+);
+
+function withMissingValues(current: string[], available: string[]): string[] {
+  const availableSet = new Set(available);
+  const kept = current.filter((value) => availableSet.has(value));
+  const keptSet = new Set(kept);
+  return [...kept, ...available.filter((value) => !keptSet.has(value))];
+}
+
+function arraysEqual(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+function getMetadataValues(columnName: string): string[] {
+  const metadataColumn = columnName || "tissue_types";
+  const lookupKey = metadataColumn === "tissue_types" ? (columnsStore.tissueColumnName ?? "tissue") : metadataColumn;
+  const values = new Set<string>();
+  for (const record of columnsStore.sampleMetadata) {
+    const value = record[lookupKey];
+    if (Array.isArray(value)) {
+      for (const item of value) values.add(String(item));
+    } else if (value !== null && value !== undefined && String(value) !== "") {
+      values.add(String(value));
+    }
+  }
+  return [...values].sort((a, b) => a.localeCompare(b));
+}
+
+function getAxisValues(): string[] {
+  return getMetadataValues("tissue_types");
+}
+
+async function loadSampleMetadataForVisibleTables() {
+  const tableNamesParam = route.params.table_names;
+  const tableNames = typeof tableNamesParam === "string"
+    ? tableNamesParam.split(",").filter(Boolean)
+    : [];
+
+  await Promise.all(tableNames.map(async (tableName) => {
+    if (columnsStore.sampleMetadataByTable[tableName] || loadingSampleMetadataTables.has(tableName)) return;
+    loadingSampleMetadataTables.add(tableName);
+    try {
+      const [columnRes, metaRes] = await Promise.all([
+        axios.get<MetaFormat[]>(`${API_BASE_URL}/api/columns`, {
+          params: { table_name: tableName, meta: false },
+        }),
+        axios.post(`${API_BASE_URL}/api/data`, {
+          table_name: `${tableName}_meta`,
+          filters: {},
+        }),
+      ]);
+      const dataColumnNames = new Set(columnRes.data.map((column) => column.column_name));
+      const colData = metaRes.data.data || metaRes.data;
+      const records = (Array.isArray(colData) ? colData : []).filter((meta: RowType) =>
+        dataColumnNames.has(String(meta.column_name ?? "")),
+      );
+      columnsStore.setSampleMetadata(records as Record<string, unknown>[], tableName);
+    } catch (error) {
+      console.warn("Could not load sample metadata for custom order", tableName, error);
+    } finally {
+      loadingSampleMetadataTables.delete(tableName);
+    }
+  }));
+}
+
+function ensureCustomOrderLists() {
+  const metadataColumn = axisOnlyCustomOrder.value ? "tissue_types" : store.customColOrder.metadataColumn || "tissue_types";
+  const metadataValues = withMissingValues(
+    store.customColOrder.metadataValues,
+    axisOnlyCustomOrder.value ? getAxisValues() : getMetadataValues(metadataColumn),
+  );
+  const orderedSampleNames = withMissingValues(store.customColOrder.sampleNames, sampleNames.value);
+  const update: Partial<typeof store.customColOrder> = {};
+  if (axisOnlyCustomOrder.value && store.customColOrder.mode !== "metadata") update.mode = "metadata";
+  if (store.customColOrder.metadataColumn !== metadataColumn) update.metadataColumn = metadataColumn;
+  if (!arraysEqual(store.customColOrder.metadataValues, metadataValues)) update.metadataValues = metadataValues;
+  if (!arraysEqual(store.customColOrder.sampleNames, orderedSampleNames)) update.sampleNames = orderedSampleNames;
+  if (Object.keys(update).length > 0) store.setCustomColOrderState(update);
+}
+
+function ensureAxisOnlyColumnOrder() {
+  if (!axisOnlyCustomOrder.value) return;
+  if (store.colOrder.name !== "tissue_types") store.setColOrderName("tissue_types");
+}
+
+function setCustomOrderMode(mode: "metadata" | "samples") {
+  if (axisOnlyCustomOrder.value && mode === "samples") return;
+  store.setCustomColOrderState({ mode });
+  ensureCustomOrderLists();
+}
+
+function resetCustomOrder() {
+  store.setCustomColOrderState({
+    enabled: false,
+    mode: "metadata",
+    metadataColumn: "tissue_types",
+    metadataValues: axisOnlyCustomOrder.value ? getAxisValues() : getMetadataValues("tissue_types"),
+    sampleNames: sampleNames.value,
+  });
+}
+
+watch(
+  [() => columnsStore.sampleMetadata, () => store.customColOrder.metadataColumn],
+  () => {
+    if (store.customColOrder.enabled) ensureCustomOrderLists();
+  },
+  { deep: true },
+);
+
+watch(
+  () => props.showSettingsOverlay,
+  async (show) => {
+    if (!show || props.context === "ora") return;
+    ensureAxisOnlyColumnOrder();
+    await loadSampleMetadataForVisibleTables();
+    if (store.customColOrder.enabled) ensureCustomOrderLists();
+  },
+);
+
+watch(axisOnlyCustomOrder, () => {
+  ensureAxisOnlyColumnOrder();
+  if (axisOnlyCustomOrder.value && store.customColOrder.enabled) {
+    store.setCustomColOrderState({ mode: "metadata", metadataColumn: "tissue_types" });
+    ensureCustomOrderLists();
+  }
 });
 
 // Close overlay handler

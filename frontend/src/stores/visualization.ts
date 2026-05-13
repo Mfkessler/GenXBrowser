@@ -45,6 +45,13 @@ export interface VisualizationState {
   colSideColors: string[];
   rowOrder: { name: string; order: "asc" | "desc" };
   colOrder: { name: string; order: "asc" | "desc" };
+  customColOrder: {
+    enabled: boolean;
+    mode: "metadata" | "samples";
+    metadataColumn: string;
+    metadataValues: string[];
+    sampleNames: string[];
+  };
   colorScale: string;
   expressionDisplay: ExpressionDisplayState;
   hideEmpty: boolean;
@@ -109,6 +116,13 @@ function getDefaultState(): VisualizationState {
     colSideColors: [],  // Will be initialized with ['tissue_types'] if available
     rowOrder: { name: "", order: "asc" },
     colOrder: { name: "", order: "asc" },
+    customColOrder: {
+      enabled: false,
+      mode: "metadata",
+      metadataColumn: "tissue_types",
+      metadataValues: [],
+      sampleNames: [],
+    },
     colorScale: "VIRIDIS",
     expressionDisplay: {
       optionId: "tpm",  // Must match EXPRESSION_OPTIONS id - TPM as default for heatmap
@@ -202,6 +216,14 @@ export const useVisualizationStore = defineStore("visualization", {
     },
     setColOrderName(name: string) {
       this.colOrder.name = name;
+    },
+    setCustomColOrderState(state: Partial<VisualizationState["customColOrder"]>) {
+      this.customColOrder = {
+        ...this.customColOrder,
+        ...state,
+        metadataValues: state.metadataValues ? [...state.metadataValues] : this.customColOrder.metadataValues,
+        sampleNames: state.sampleNames ? [...state.sampleNames] : this.customColOrder.sampleNames,
+      };
     },
     toggleColOrder() {
       if (this.colOrder.order === "asc") {
@@ -373,6 +395,11 @@ export const useVisualizationStore = defineStore("visualization", {
         colSideColors: [...this.colSideColors],
         rowOrder: { ...this.rowOrder }, // shallow copy object
         colOrder: { ...this.colOrder },
+        customColOrder: {
+          ...this.customColOrder,
+          metadataValues: [...this.customColOrder.metadataValues],
+          sampleNames: [...this.customColOrder.sampleNames],
+        },
         colorScale: this.colorScale,
         expressionDisplay: { ...this.expressionDisplay },
         hideEmpty: this.hideEmpty,

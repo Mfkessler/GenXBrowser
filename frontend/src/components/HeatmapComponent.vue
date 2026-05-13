@@ -371,6 +371,7 @@ async function fetchAndPrepareData() {
       columns.value = (Array.isArray(colData) ? colData : []).filter((meta: RowType) =>
         dataColumnNames.value.includes(meta.column_name as string),
       );
+      columnStore.setSampleMetadata(columns.value as Record<string, unknown>[], props.tableName);
 
       processedRows.value = calculateProcessedRows();
 
@@ -495,6 +496,37 @@ function calculateSortedColumns(metaData: RowType[]): RowType[] {
   if (clusterCols && clusterColOrder && clusterColOrder.length === metaData.length) {
     // Apply cluster ordering
     return clusterColOrder.map(index => metaData[index]);
+  }
+
+  const customOrder = visualizationStore.customColOrder;
+  if (customOrder.enabled) {
+    const tissueKey = columnStore.tissueColumnName ?? 'tissue';
+    if (customOrder.mode === "samples" && customOrder.sampleNames.length > 0) {
+      const sampleRank = new Map(customOrder.sampleNames.map((sampleName, index) => [sampleName, index]));
+      return [...metaData].sort((a, b) => {
+        const aName = String(a.column_name ?? "");
+        const bName = String(b.column_name ?? "");
+        const aRank = sampleRank.get(aName) ?? Number.MAX_SAFE_INTEGER;
+        const bRank = sampleRank.get(bName) ?? Number.MAX_SAFE_INTEGER;
+        if (aRank !== bRank) return aRank - bRank;
+        return aName.localeCompare(bName);
+      });
+    }
+
+    if (customOrder.mode === "metadata" && customOrder.metadataValues.length > 0) {
+      const metadataKey = customOrder.metadataColumn === "tissue_types" ? tissueKey : customOrder.metadataColumn;
+      const valueRank = new Map(customOrder.metadataValues.map((value, index) => [value, index]));
+      return [...metaData].sort((a, b) => {
+        const aValue = String(a[metadataKey] ?? "");
+        const bValue = String(b[metadataKey] ?? "");
+        const aRank = valueRank.get(aValue) ?? Number.MAX_SAFE_INTEGER;
+        const bRank = valueRank.get(bValue) ?? Number.MAX_SAFE_INTEGER;
+        if (aRank !== bRank) return aRank - bRank;
+        const valueComparison = compareValues(aValue, bValue, "asc");
+        if (valueComparison !== 0) return valueComparison;
+        return String(a.column_name ?? "").localeCompare(String(b.column_name ?? ""));
+      });
+    }
   }
   
   // Fall back to standard sorting
@@ -762,12 +794,19 @@ async function renderSideColors({
   loading.value = true;
 
   try {
-    // Register values with shared registry for cross-plot consistency, then get mapping
-    if (sharedColorRegistry) {
+    const isNumericSideColor = colType === "double precision" || colType === "bigint";
+    const useSharedMapping = !(orientation === "col" && isNumericSideColor);
+
+    // Categorical/list side colors share a registry for stable colors across plots.
+    // Numeric column side colors intentionally use a local domain per heatmap and
+    // per metadata column, so each visible row has its own independent gradient.
+    if (sharedColorRegistry && useSharedMapping) {
       sharedColorRegistry.registerValues(column_name, colType, attributeValues);
     }
-    const colorMap = (sharedColorRegistry && sharedColorRegistry.getMapping(column_name))
-      ?? createVisibleColorMapping(column_name, colType, attributeValues);
+    const sharedColorMap = sharedColorRegistry && useSharedMapping
+      ? sharedColorRegistry.getMapping(column_name)
+      : null;
+    const colorMap = sharedColorMap ?? createVisibleColorMapping(column_name, colType, attributeValues);
 
     // Dimension calculations
     const colorSize = dimensionSize * 0.75;
@@ -815,7 +854,7 @@ async function renderSideColors({
             d !== null &&
             d !== undefined
           ) {
-            return colorMap.getColor(d) ?? "#eeeeee";
+            return typeof colorMap.getColor === "function" ? colorMap.getColor(d) ?? "#eeeeee" : "#eeeeee";
           }
           return colorMap[getSideColorDataValue(d, colType)] ?? "#eeeeee";
         });
@@ -833,7 +872,7 @@ async function renderSideColors({
             d !== null &&
             d !== undefined
           ) {
-            return colorMap.getColor(d) ?? "#eeeeee";
+            return typeof colorMap.getColor === "function" ? colorMap.getColor(d) ?? "#eeeeee" : "#eeeeee";
           }
           return colorMap[getSideColorDataValue(d, colType)] ?? "#eeeeee";
         });
@@ -1660,6 +1699,11 @@ watch(
     () => visualizationStore.rowOrder.order,
     () => visualizationStore.colOrder.name,
     () => visualizationStore.colOrder.order,
+    () => visualizationStore.customColOrder.enabled,
+    () => visualizationStore.customColOrder.mode,
+    () => visualizationStore.customColOrder.metadataColumn,
+    () => visualizationStore.customColOrder.metadataValues.join("\u0000"),
+    () => visualizationStore.customColOrder.sampleNames.join("\u0000"),
     () => visualizationStore.colorScale,
     () => visualizationStore.rowLabel,
     () => visualizationStore.colLabel,

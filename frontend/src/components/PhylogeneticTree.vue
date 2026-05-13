@@ -122,6 +122,7 @@ import type {RowType} from "@/shared/RowType.ts";
 import {assign} from "lodash-es";
 import {useFiltersStore} from "@/stores/filters.ts";
 import {useVisualizationStore} from "@/stores/visualization.ts";
+import {useColumnsStore} from "@/stores/columns.ts";
 import {getExpressionOption} from "@/shared/ExpressionDisplay.ts";
 import ShareOverlay from "@/components/ShareOverlay.vue";
 import LoadingOverlay from "@/components/LoadingOverlay.vue";
@@ -145,6 +146,7 @@ const phylotreeContainer = ref<HTMLDivElement | null>(null);
 const showShareOverlay = ref(false);
 const filtersStore = useFiltersStore();
 const visualizationStore = useVisualizationStore();
+const columnStore = useColumnsStore();
 const {filters} = storeToRefs(filtersStore);
 const tableData = ref<Record<string, any[]>>({});
 
@@ -345,6 +347,7 @@ async function fetchData(
       columns.value = (Array.isArray(colData) ? colData : []).filter((meta: RowType) =>
         dataColumnNames.value.includes(meta.column_name as string),
       );
+      columnStore.setSampleMetadata(columns.value as Record<string, unknown>[], tableName);
 
       Object.entries(data).map(([_, v]) => {
         // Store newick with lowercase OG key to match getAllOGs() filtering
@@ -779,9 +782,10 @@ async function initPhylotree(newick_str: string, metrics: any) {
       for (const t of Object.keys(norm)) tissueSet.add(t)
     }
   }
-  let tissues = Array.from(tissueSet)
+  let tissues = orderTissueCategories(Array.from(tissueSet))
 
-  if (visualizationStore.clustering.clusterCols && tissues.length > 2) {
+  const hasExplicitAxisOrder = visualizationStore.customColOrder.enabled || Boolean(visualizationStore.colOrder.name);
+  if (!hasExplicitAxisOrder && visualizationStore.clustering.clusterCols && tissues.length > 2) {
     try {
       const allGenes: { geneId: string; values: number[] }[] = []
       for (const [, genesObj] of Object.entries(metrics)) {
@@ -1318,6 +1322,34 @@ async function initPhylotree(newick_str: string, metrics: any) {
   loading.value = false
 }
 
+function orderTissueCategories(tissues: string[]): string[] {
+  const customOrder = visualizationStore.customColOrder;
+  if (customOrder.enabled && customOrder.metadataValues.length > 0) {
+    const tissueRank = getTissueRankFromAxis(customOrder.metadataValues);
+    return [...tissues].sort((a, b) => {
+      const aRank = tissueRank.get(a.toLowerCase()) ?? Number.MAX_SAFE_INTEGER;
+      const bRank = tissueRank.get(b.toLowerCase()) ?? Number.MAX_SAFE_INTEGER;
+      if (aRank !== bRank) return aRank - bRank;
+      return a.localeCompare(b);
+    });
+  }
+  if (visualizationStore.colOrder.name && visualizationStore.colOrder.name !== "OLO") {
+    return orderAxisCategories(tissues, visualizationStore.colOrder.order);
+  }
+  return orderAxisCategories(tissues, "asc");
+}
+
+function getTissueRankFromAxis(orderedValues: string[]): Map<string, number> {
+  return new Map(orderedValues.map((value, index) => [value.toLowerCase(), index]));
+}
+
+function orderAxisCategories(tissues: string[], direction: "asc" | "desc"): string[] {
+  return [...tissues].sort((a, b) => {
+    const comparison = a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+    return direction === "desc" ? -comparison : comparison;
+  });
+}
+
 // Context menu for leaf nodes (hide / show species)
 function showNodeContextMenu(event: MouseEvent, container: HTMLElement, speciesTableName: string, metrics: any) {
   d3.selectAll('.node-context-menu').remove()
@@ -1685,6 +1717,24 @@ watch(
     await renderTreeForSelectedOG();
   },
   { deep: true }
+);
+
+watch(
+  [
+    () => visualizationStore.colOrder.name,
+    () => visualizationStore.colOrder.order,
+    () => visualizationStore.customColOrder.enabled,
+    () => visualizationStore.customColOrder.mode,
+    () => visualizationStore.customColOrder.metadataColumn,
+    () => visualizationStore.customColOrder.metadataValues.join("\u0000"),
+    () => visualizationStore.customColOrder.sampleNames.join("\u0000"),
+  ],
+  async () => {
+    if (props.hashLoading) return;
+    if (!newickstr.value || !lastMetrics.value) return;
+    await nextTick();
+    initPhylotree(newickstr.value, lastMetrics.value);
+  },
 );
 
 
