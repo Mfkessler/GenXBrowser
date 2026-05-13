@@ -308,7 +308,7 @@ def build_overview(service, config_manager) -> Dict[str, Any]:
 
     gene_tree_count = 0
     try:
-        gts = getattr(service, "gene_tree_store", None)
+        gts = getattr(service, "gene_trees", None) or getattr(service, "gene_tree_store", None)
         if gts is not None and hasattr(gts, "count"):
             gene_tree_count = int(gts.count())
         elif gts is not None and hasattr(gts, "_trees"):

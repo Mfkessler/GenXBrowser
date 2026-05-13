@@ -808,11 +808,14 @@ def get_gene_tree(og_id: str):
     """Get Newick tree for an orthogroup."""
     service = get_service()
     tree = service.get_gene_tree(og_id)
+    allow_missing = str(request.args.get('allow_missing', '')).lower() in {'1', 'true', 'yes'}
     
     if tree is None:
+        if allow_missing:
+            return jsonify({'og_id': og_id, 'newick': None, 'available': False}), 200
         return jsonify({'error': 'Gene tree not found'}), 404
     
-    return jsonify({'og_id': og_id, 'newick': tree}), 200
+    return jsonify({'og_id': og_id, 'newick': tree, 'available': True}), 200
 
 
 # ============================================================================

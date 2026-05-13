@@ -69,6 +69,38 @@ export interface VisualizationState {
   compare: CompareState;
 }
 
+function normalizePhyloTreeState(state?: Partial<PhyloTreeState> | null): PhyloTreeState {
+  const defaults = getDefaultState().phyloTree;
+  const zoom = state?.zoomTransform ?? defaults.zoomTransform;
+
+  return {
+    ...defaults,
+    ...state,
+    collapsedNodes: Array.isArray(state?.collapsedNodes) ? [...state.collapsedNodes] : defaults.collapsedNodes,
+    zoomTransform: {
+      k: typeof zoom.k === 'number' && Number.isFinite(zoom.k) ? zoom.k : defaults.zoomTransform.k,
+      x: typeof zoom.x === 'number' && Number.isFinite(zoom.x) ? zoom.x : defaults.zoomTransform.x,
+      y: typeof zoom.y === 'number' && Number.isFinite(zoom.y) ? zoom.y : defaults.zoomTransform.y,
+    },
+    selectedOrthogroup: typeof state?.selectedOrthogroup === 'string' ? state.selectedOrthogroup : defaults.selectedOrthogroup,
+    branchLengthMode: state?.branchLengthMode === 'phylogram' || state?.branchLengthMode === 'cladogram'
+      ? state.branchLengthMode
+      : defaults.branchLengthMode,
+    resetCounter: typeof state?.resetCounter === 'number' ? state.resetCounter : defaults.resetCounter,
+  };
+}
+
+function normalizeCompareState(state?: Partial<CompareState> | null): CompareState {
+  const defaults = getDefaultState().compare;
+
+  return {
+    ...defaults,
+    ...state,
+    selectedSpecies: Array.isArray(state?.selectedSpecies) ? [...state.selectedSpecies] : defaults.selectedSpecies,
+    selectedOrthogroup: typeof state?.selectedOrthogroup === 'string' ? state.selectedOrthogroup : defaults.selectedOrthogroup,
+  };
+}
+
 function getDefaultState(): VisualizationState {
   return {
     rowLabel: true,
@@ -258,7 +290,7 @@ export const useVisualizationStore = defineStore("visualization", {
       }
     },
     setPhyloTreeZoom(transform: { k: number; x: number; y: number }) {
-      this.phyloTree.zoomTransform = transform;
+      this.phyloTree.zoomTransform = normalizePhyloTreeState({ zoomTransform: transform }).zoomTransform;
     },
     resetPhyloTreeState() {
       this.phyloTree.collapsedNodes = [];
@@ -273,7 +305,7 @@ export const useVisualizationStore = defineStore("visualization", {
     },
     // PhyloTree state setter (like setCompareState)
     setPhyloTreeState(state: Partial<PhyloTreeState>) {
-      Object.assign(this.phyloTree, state);
+      this.phyloTree = normalizePhyloTreeState({ ...this.phyloTree, ...state });
     },
     // Compare actions
     setCompareState(state: Partial<CompareState>) {
@@ -323,7 +355,13 @@ export const useVisualizationStore = defineStore("visualization", {
     replaceState(newState: Partial<VisualizationState>) {
       Object.entries(newState).forEach(([key, value]) => {
         if (key in this) {
-          this[key] = value;
+          if (key === 'phyloTree') {
+            this.phyloTree = normalizePhyloTreeState({ ...this.phyloTree, ...(value as Partial<PhyloTreeState>) });
+          } else if (key === 'compare') {
+            this.compare = normalizeCompareState({ ...this.compare, ...(value as Partial<CompareState>) });
+          } else {
+            this[key] = value;
+          }
         }
       });
     },

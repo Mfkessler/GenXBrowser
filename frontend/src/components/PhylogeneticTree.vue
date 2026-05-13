@@ -86,7 +86,12 @@
     />
 
     <div v-if="newickstr===null" class="flex-grow relative h-[90vh] w-full">
-      <NoNewickComponent :og="og" :show-full-tree="true" @show-full-tree="loadFullNewickForOG" />
+      <NoNewickComponent
+        :og="og"
+        :show-full-tree="fullTreeAvailable"
+        :message="noNewickMessage"
+        @show-full-tree="loadFullNewickForOG"
+      />
     </div>
 
 
@@ -192,6 +197,8 @@ const orthogroupCaseMap = ref<Record<string, string>>({});
 const highlightedGeneIds = ref<Record<string, Set<string>>>({});
 const newickstr = ref("");
 const loading = ref(false);
+const fullTreeAvailable = ref(false);
+const noNewickMessage = ref("");
 // Holds the full (unfiltered) Newick loaded via the "Show full tree" button.
 // Acts as fallback in renderTreeForSelectedOG so watchers don't wipe it out.
 const fullNewick = ref<string | null>(null);
@@ -204,6 +211,10 @@ const selectedOrthogroup = computed({
 
 // Alias for template compatibility
 const og = computed(() => selectedOrthogroup.value);
+
+function selectedOrthogroupKey(): string {
+  return selectedOrthogroup.value.trim().toLowerCase();
+}
 
 // Convert array to Record for DropdownMenu compatibility
 const commonOGs_options = computed(() => {
@@ -339,7 +350,10 @@ async function fetchData(
         // Store newick with lowercase OG key to match getAllOGs() filtering
         const ogKey = String(v["ortho_id"]).trim().toLowerCase();
         orthogroupCaseMap.value[ogKey] = String(v["ortho_id"]).trim();
-        newicks.value[ogKey] = v["newick_str"];
+        const newickValue = typeof v["newick_str"] === "string" ? v["newick_str"].trim() : "";
+        if (newickValue || !(ogKey in newicks.value)) {
+          newicks.value[ogKey] = newickValue;
+        }
       })
 
       const filteredColumns = Object.values(columns.value).reduce((acc, item) => {
@@ -546,7 +560,7 @@ async function fetchOrthogroupDataForAllSpecies() {
 
   const allDatasets = Object.keys(props.allTables);
   if (allDatasets.length === 0) return false;
-  const originalCaseOrthogroup = orthogroupCaseMap.value[selectedOrthogroup.value] || selectedOrthogroup.value;
+  const originalCaseOrthogroup = orthogroupCaseMap.value[selectedOrthogroupKey()] || selectedOrthogroup.value;
 
   const entries = await Promise.all(
     allDatasets.map(async (tableName) => {
@@ -590,7 +604,7 @@ async function fetchHighlightedGenesForAllSpecies() {
     return;
   }
 
-  const originalCaseOrthogroup = orthogroupCaseMap.value[selectedOrthogroup.value] || selectedOrthogroup.value;
+  const originalCaseOrthogroup = orthogroupCaseMap.value[selectedOrthogroupKey()] || selectedOrthogroup.value;
 
   const entries = await Promise.all(
     allDatasets.map(async (tableName) => {
@@ -622,6 +636,25 @@ async function fetchHighlightedGenesForAllSpecies() {
   highlightedGeneIds.value = Object.fromEntries(
     entries.map(({ tableName, geneIds }) => [tableName, geneIds]),
   );
+}
+
+async function fetchFullNewickForSelectedOG(): Promise<string | null> {
+  if (!selectedOrthogroup.value) return null;
+
+  const originalCaseOrthogroup = orthogroupCaseMap.value[selectedOrthogroupKey()] || selectedOrthogroup.value;
+  try {
+    const response = await axios.get<{ og_id: string; newick?: string | null; available?: boolean }>(
+      `${API_BASE_URL}/api/gene_tree/${originalCaseOrthogroup}`,
+      { params: { allow_missing: 1 } }
+    );
+    const newick = response.data.newick;
+    return typeof newick === "string" && newick.trim() ? newick : null;
+  } catch (error: any) {
+    if (error?.response?.status !== 404) {
+      console.error("Failed to check full gene tree:", error);
+    }
+    return null;
+  }
 }
 
 function mean(arr: number[]): number {
@@ -1433,9 +1466,12 @@ function collapseToSpecies() {
 
 // Helper function to render tree for currently selected orthogroup
 async function renderTreeForSelectedOG() {
-  if (!selectedOrthogroup.value || !newicks.value[selectedOrthogroup.value]) {
+  const ogKey = selectedOrthogroupKey();
+  if (!selectedOrthogroup.value || !newicks.value[ogKey]) {
     // Fall back to the directly-loaded full Newick (button was clicked)
     if (fullNewick.value) {
+      fullTreeAvailable.value = true;
+      noNewickMessage.value = "The selected filters or species do not contain this orthogroup.";
       await Promise.all([
         fetchOrthogroupDataForAllSpecies(),
         fetchHighlightedGenesForAllSpecies(),
@@ -1447,9 +1483,34 @@ async function renderTreeForSelectedOG() {
       initPhylotree(newickstr.value, metrics);
       return;
     }
+
+    const availableFullNewick = await fetchFullNewickForSelectedOG();
+    if (availableFullNewick) {
+      fullNewick.value = availableFullNewick;
+      fullTreeAvailable.value = false;
+      noNewickMessage.value = "";
+
+      await Promise.all([
+        fetchOrthogroupDataForAllSpecies(),
+        fetchHighlightedGenesForAllSpecies(),
+      ]);
+
+      const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
+      lastMetrics.value = metrics;
+      newickstr.value = availableFullNewick;
+      await nextTick();
+      initPhylotree(newickstr.value, metrics);
+      return;
+    }
+
+    fullTreeAvailable.value = false;
+    noNewickMessage.value = "No phylogenetic tree is available for this orthogroup.";
     newickstr.value = null as any;
     return;
   }
+
+  fullTreeAvailable.value = false;
+  noNewickMessage.value = "";
 
   await Promise.all([
     fetchOrthogroupDataForAllSpecies(),
@@ -1458,7 +1519,7 @@ async function renderTreeForSelectedOG() {
   
   const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
   lastMetrics.value = metrics;
-  newickstr.value = newicks.value[selectedOrthogroup.value];
+  newickstr.value = newicks.value[ogKey];
   if (newickstr.value !== null) {
     await nextTick();
     initPhylotree(newickstr.value, metrics);
@@ -1471,14 +1532,13 @@ async function renderTreeForSelectedOG() {
 async function loadFullNewickForOG() {
   if (!selectedOrthogroup.value) return;
   try {
-    const response = await axios.get<{ og_id: string; newick: string }>(
-      `${API_BASE_URL}/api/gene_tree/${orthogroupCaseMap.value[selectedOrthogroup.value] || selectedOrthogroup.value}`
-    );
-    const newick = response.data.newick;
+    const newick = await fetchFullNewickForSelectedOG();
     if (!newick) return;
 
     fullNewick.value = newick;  // persist so watchers can't wipe it
     newickstr.value = newick;
+    fullTreeAvailable.value = true;
+    noNewickMessage.value = "";
 
     await Promise.all([
       fetchOrthogroupDataForAllSpecies(),
