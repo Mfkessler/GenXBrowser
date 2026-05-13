@@ -46,4 +46,14 @@ describe('list metadata color mapping', () => {
 
     expect(first).toBe(second);
   });
+
+  it('preserves numeric values in the shared registry for continuous color scales', () => {
+    const registry = new SharedColorRegistry();
+    registry.registerValues('assigned', 'bigint', [10, 20, 30]);
+
+    const mapping = registry.getMapping('assigned');
+
+    expect(mapping?.getColor?.(20)).not.toBe('#eeeeee');
+    expect(mapping?.getColor?.(20)).toMatch(/^rgb\(/);
+  });
 });

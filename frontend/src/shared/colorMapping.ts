@@ -170,7 +170,7 @@ export function createUnifiedColorMapping(
  * provides a consistent mapping across all plots.
  */
 export class SharedColorRegistry {
-  private registeredValues: Map<string, Set<string>> = new Map();
+  private registeredValues: Map<string, Map<string, SideColorValue>> = new Map();
   private cachedMappings: Map<string, ColorMapping> = new Map();
   private colTypes: Map<string, string> = new Map();
 
@@ -182,13 +182,13 @@ export class SharedColorRegistry {
     this.colTypes.set(columnName, colType);
 
     if (!this.registeredValues.has(columnName)) {
-      this.registeredValues.set(columnName, new Set());
+      this.registeredValues.set(columnName, new Map());
     }
     const existing = this.registeredValues.get(columnName)!;
     values.forEach((v) => {
       const valueKey = colType === "array" ? getListMetadataKey(v) : String(v ?? "");
       if (valueKey) {
-        existing.add(valueKey);
+        existing.set(valueKey, v);
       }
     });
 
@@ -209,7 +209,7 @@ export class SharedColorRegistry {
     const colType = this.colTypes.get(columnName);
     if (!values || !colType) return null;
 
-    const allValues = [...values] as SideColorValue[];
+    const allValues = [...values.values()] as SideColorValue[];
     const mapping = createUnifiedColorMapping(columnName, colType, allValues);
     this.cachedMappings.set(columnName, mapping);
     return mapping;
