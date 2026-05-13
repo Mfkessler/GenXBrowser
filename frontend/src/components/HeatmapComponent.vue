@@ -187,7 +187,14 @@ import TooltipModal from "./TooltipModal.vue";
 import { getDisplayName, sequenceFields, verboseFields } from "@/shared/metadataDisplayNames";
 import { getEntityCountLabel } from "@/shared/dataTypeLabels";
 import { useClustering } from "@/shared/useClustering";
-import { createVisibleColorMapping, type SharedColorRegistry } from "@/shared/colorMapping";
+import {
+  type ColorMapping,
+  createVisibleColorMapping,
+  getListMetadataKey,
+  normalizeMetadataList,
+  type SharedColorRegistry,
+  type SideColorValue,
+} from "@/shared/colorMapping";
 
 // TODO: Add gene detail view
 
@@ -242,7 +249,7 @@ const columnNames = ref<string[]>([]);
 const dataColumnNames = ref<string[]>([]);
 const columns = ref<RowType[]>([]);
 const sortedColumns = ref<RowType[]>([]);
-const sideColorCache: Record<string, Record<string, string>> = {};
+const sideColorCache: Record<string, ColorMapping> = {};
 
 const heatmapContainer = ref<HTMLDivElement | null>(null);
 const heatmapInstanceId = `heatmap-${Math.random().toString(36).slice(2, 10)}`;
@@ -266,7 +273,7 @@ const MAX_RENDER_RETRIES = 18;
 // geneFilters and sampleFilters are now provided by useFilterSeparation composable
 
 const sortedColsKeys = computed(() =>
-  sortedColumns.value.map((col) => col.column_name ?? "").filter(Boolean),
+  sortedColumns.value.map((col) => String(col.column_name ?? "")).filter(Boolean),
 );
 
 const visibleColumns = computed(() => {
@@ -649,11 +656,11 @@ async function getOrCreateSideColorMapping(
     } else if (colType === "boolean") {
       const terms = [true, false, null];
       const range = ["#36a2eb", "#e74c3c", "#ccc"];
-      const scale = d3.scaleOrdinal().domain(terms).range(range);
+      const scale = d3.scaleOrdinal<boolean | null, string>().domain(terms).range(range);
 
-      const mapping = {};
+      const mapping: ColorMapping = {} as ColorMapping;
       terms.forEach((term) => {
-        mapping[term] = scale(term);
+        mapping[String(term)] = scale(term);
       });
 
       sideColorCache[column_name] = mapping;
@@ -661,14 +668,14 @@ async function getOrCreateSideColorMapping(
     } else if (column_name === "tissue_types") {
       // Get unique tissue values from column metadata
       const tissueKey = columnStore.tissueColumnName ?? 'tissue';
-      const tissueValues = sortedColumns.value.map((meta) => meta[tissueKey] ?? meta.column_name);
+      const tissueValues = sortedColumns.value.map((meta) => String(meta[tissueKey] ?? meta.column_name ?? ""));
       const uniqueTissues = [...new Set(tissueValues)].filter(Boolean);
       
       // Use dynamic color palette that scales to any number of tissues
       const colors = getCategoricalColors(uniqueTissues.length);
-      const scale = d3.scaleOrdinal().domain(uniqueTissues).range(colors);
+      const scale = d3.scaleOrdinal<string, string>().domain(uniqueTissues).range(colors);
 
-      const mapping = {};
+      const mapping: ColorMapping = {} as ColorMapping;
       uniqueTissues.forEach((term) => {
         mapping[term] = scale(term);
       });
@@ -679,13 +686,13 @@ async function getOrCreateSideColorMapping(
       const response = await axios.get(`${API_BASE_URL}/api/col`, {
         params: {column_name},
       });
-      const terms = response.data.terms;
+      const terms = (response.data.terms ?? []).map((term: unknown) => String(term));
       
       // Use dynamic color palette
       const colors = getCategoricalColors(terms.length);
-      const scale = d3.scaleOrdinal().domain(terms).range(colors);
+      const scale = d3.scaleOrdinal<string, string>().domain(terms).range(colors);
 
-      const mapping = {};
+      const mapping: ColorMapping = {} as ColorMapping;
       terms.forEach((term) => {
         mapping[term] = scale(term);
       });
@@ -702,20 +709,11 @@ async function getOrCreateSideColorMapping(
   }
 }
 
-function getSideColorAttributeValues(dataSource, colName, colType) {
+function getSideColorAttributeValues(dataSource: Record<string, unknown>[], colName: string, colType: string): SideColorValue[] {
   return dataSource.map((entry) => {
     const val = entry[colName];
     if (colType === "array") {
-      if (Array.isArray(val) && val.length > 0) {
-        // For array columns, return the first valid non-empty term
-        // The backend already split these properly via get_unique_values()
-        const validTerms = val.filter(v => v && String(v).trim());
-        if (validTerms.length > 0) {
-          // Return first term - it will match with the unique values from /api/col
-          return String(validTerms[0]);
-        }
-      }
-      return "";
+      return getListMetadataKey(val);
     }
     if (colType === "boolean") {
       if (typeof val === "boolean") return val;
@@ -727,6 +725,18 @@ function getSideColorAttributeValues(dataSource, colName, colType) {
     // Fallback for other types
     return String(val ?? "");
   });
+}
+
+function getSideColorDisplayValue(value: SideColorValue, colType: string): string {
+  if (colType === "array") {
+    const terms = normalizeMetadataList(value);
+    return terms.length > 0 ? terms.join("<br>") : "None";
+  }
+  return String(value ?? "");
+}
+
+function getSideColorDataValue(value: SideColorValue, colType: string): string {
+  return colType === "array" ? getListMetadataKey(value) : String(value ?? "");
 }
 
 // Generalized function for both row and column side color rendering
@@ -798,7 +808,7 @@ async function renderSideColors({
         .attr("width", colorSize)
         .attr("height", scale.bandwidth())
         .attr("data-color-col", column_name)
-        .attr("data-color-val", (d) => (d === null || d === undefined ? "" : String(d)))
+        .attr("data-color-val", (d) => getSideColorDataValue(d, colType))
         .attr("fill", (d) => {
           if (
             (colType === "double precision" || colType === "bigint") &&
@@ -807,7 +817,7 @@ async function renderSideColors({
           ) {
             return colorMap.getColor(d) ?? "#eeeeee";
           }
-          return colorMap[d] ?? "#eeeeee";
+          return colorMap[getSideColorDataValue(d, colType)] ?? "#eeeeee";
         });
     } else {
       rects
@@ -816,7 +826,7 @@ async function renderSideColors({
         .attr("width", scale.bandwidth())
         .attr("height", colorSize)
         .attr("data-color-col", column_name)
-        .attr("data-color-val", (d) => (d === null || d === undefined ? "" : String(d)))
+        .attr("data-color-val", (d) => getSideColorDataValue(d, colType))
         .attr("fill", (d) => {
           if (
             (colType === "double precision" || colType === "bigint") &&
@@ -825,7 +835,7 @@ async function renderSideColors({
           ) {
             return colorMap.getColor(d) ?? "#eeeeee";
           }
-          return colorMap[d] ?? "#eeeeee";
+          return colorMap[getSideColorDataValue(d, colType)] ?? "#eeeeee";
         });
     }
 
@@ -856,7 +866,7 @@ async function renderSideColors({
     }
 
     rects
-      .on("mouseover", function (event, d) {
+      .on("mouseover", function (this: SVGRectElement, event, d) {
         d3.select(this).attr("stroke", "white").style("stroke-width", 2);
 
         let tooltipText = "";
@@ -871,7 +881,7 @@ async function renderSideColors({
           const formattedValue = Number.isInteger(d) ? d.toLocaleString() : d.toFixed(2);
           tooltipText = `<strong>${beautifyLabel(column_name)}:</strong> ${formattedValue}`;
         } else {
-          tooltipText = `<strong>${beautifyLabel(column_name)}:</strong> ${d}`;
+          tooltipText = `<strong>${beautifyLabel(column_name)}:</strong><br>${getSideColorDisplayValue(d, colType)}`;
         }
 
         tooltip.html(tooltipText);
@@ -914,7 +924,7 @@ async function renderSideColors({
         yPos = Math.max(0, yPos);
         tooltip.style("left", xPos + "px").style("top", yPos + "px");
       })
-      .on("mouseout", function () {
+      .on("mouseout", function (this: SVGRectElement) {
         d3.select(this).attr("stroke", "none");
         tooltip.style("visibility", "hidden");
       })
@@ -936,15 +946,22 @@ async function renderSideColors({
           );
           if (bin) {
             filtersStore.setFilter(column_name, {
-              value: [bin.bucket_lower, bin.bucket_upper],
+              value: [bin.bucket_lower, bin.bucket_upper] as any,
             });
           } else {
             // Fallback if no bin found, set raw value
-            filtersStore.setFilter(column_name, {value: d});
+            filtersStore.setFilter(column_name, {value: d as any});
           }
         } else {
           // For non-numeric or other types, keep existing behavior
-          filtersStore.setFilter(column_name, {value: d});
+          const filterValue = colType === "array" ? normalizeMetadataList(d).join("|") : d;
+          if (filterValue !== undefined && filterValue !== null && filterValue !== "") {
+            filtersStore.setFilter(column_name, {
+              value: filterValue as string,
+              match_mode: "or",
+              exact: true,
+            });
+          }
         }
       });
 
@@ -1425,7 +1442,7 @@ async function renderHeatmap(): Promise<boolean> {
       // Open the tooltip modal with full data
       selectedRowData.value = row;
       selectedColumnValue.value = d.col;
-      selectedCellValue.value = d.value;
+      selectedCellValue.value = typeof d.value === "number" || typeof d.value === "string" ? d.value : String(d.value ?? "");
       showTooltipModal.value = true;
       
       // Hide the hover tooltip
@@ -1545,14 +1562,14 @@ async function renderHeatmap(): Promise<boolean> {
         // Get actual tissue values from column metadata using configured tissue column
         const tissueKey = columnStore.tissueColumnName ?? 'tissue';
         const filteredColMeta = sortedColumns.value.filter((meta) =>
-          visibleColumns.value.includes(meta.column_name),
+          visibleColumns.value.includes(String(meta.column_name ?? "")),
         );
         attributeValues = filteredColMeta.map((meta) => meta[tissueKey] ?? meta.column_name);
       } else {
         xLabelsForColoring = heatmapCols; // already filtered by visibleColumns
         // Filter metadata to only visible columns
         const filteredColMeta = sortedColumns.value.filter((meta) =>
-          visibleColumns.value.includes(meta.column_name),
+          visibleColumns.value.includes(String(meta.column_name ?? "")),
         );
         const colMeta = columnStore.colColumns.find(
           (c) => c.column_name === col,

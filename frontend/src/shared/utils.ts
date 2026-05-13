@@ -87,9 +87,13 @@ export function compareValues(
   b: any,
   order: "asc" | "desc" = "asc",
 ): number {
-  // Handle arrays (use last string element)
-  if (Array.isArray(a)) a = a.length ? a[a.length - 1] : "";
-  if (Array.isArray(b)) b = b.length ? b[b.length - 1] : "";
+  // Handle list metadata by comparing the same normalized set key used for colors.
+  if (Array.isArray(a)) {
+    a = a.map((entry) => String(entry).trim()).filter(Boolean).sort((x, y) => x.localeCompare(y)).join("|");
+  }
+  if (Array.isArray(b)) {
+    b = b.map((entry) => String(entry).trim()).filter(Boolean).sort((x, y) => x.localeCompare(y)).join("|");
+  }
 
   // Handle booleans with specified rules
   if (typeof a === "boolean" && typeof b === "boolean") {

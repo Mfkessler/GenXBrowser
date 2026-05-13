@@ -1,7 +1,80 @@
 import * as d3 from "d3";
 import { getCategoricalColors } from "@/shared/Colorscales";
 
+export type SideColorValue = string | number | boolean | string[] | null;
 export type ColorMapping = Record<string, any> & { getColor?: (value: number) => string; colorScale?: d3.ScaleSequential<string>; bins?: any[] };
+
+export const EMPTY_LIST_METADATA_COLOR = "#e0e0e0";
+
+function componentToHex(component: number): string {
+  return Math.round(component).toString(16).padStart(2, "0");
+}
+
+function hslToHex(hue: number, saturationPercent: number, lightnessPercent: number): string {
+  const saturation = saturationPercent / 100;
+  const lightness = lightnessPercent / 100;
+  const chroma = (1 - Math.abs(2 * lightness - 1)) * saturation;
+  const huePrime = hue / 60;
+  const x = chroma * (1 - Math.abs((huePrime % 2) - 1));
+
+  let red = 0;
+  let green = 0;
+  let blue = 0;
+
+  if (huePrime >= 0 && huePrime < 1) {
+    red = chroma;
+    green = x;
+  } else if (huePrime >= 1 && huePrime < 2) {
+    red = x;
+    green = chroma;
+  } else if (huePrime >= 2 && huePrime < 3) {
+    green = chroma;
+    blue = x;
+  } else if (huePrime >= 3 && huePrime < 4) {
+    green = x;
+    blue = chroma;
+  } else if (huePrime >= 4 && huePrime < 5) {
+    red = x;
+    blue = chroma;
+  } else if (huePrime >= 5 && huePrime < 6) {
+    red = chroma;
+    blue = x;
+  }
+
+  const match = lightness - chroma / 2;
+  return `#${componentToHex((red + match) * 255)}${componentToHex((green + match) * 255)}${componentToHex((blue + match) * 255)}`;
+}
+
+export function normalizeMetadataList(value: unknown): string[] {
+  const values = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(value.includes("|") ? "|" : ",")
+      : [];
+
+  return values
+    .map((entry) => String(entry).trim())
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+}
+
+export function getListMetadataKey(value: unknown): string {
+  return normalizeMetadataList(value).join("|");
+}
+
+export function getListMetadataColor(value: unknown): string {
+  const sortedString = getListMetadataKey(value);
+  if (!sortedString) return EMPTY_LIST_METADATA_COLOR;
+
+  let hash = 0;
+  for (let i = 0; i < sortedString.length; i++) {
+    hash = sortedString.charCodeAt(i) + ((hash << 5) - hash);
+    hash |= 0;
+  }
+
+  const hue = Math.abs(hash % 360);
+  return hslToHex(hue, 65, 50);
+}
 
 /**
  * Create color mapping for side colors based on visible unique values.
@@ -10,7 +83,7 @@ export type ColorMapping = Record<string, any> & { getColor?: (value: number) =>
 export function createVisibleColorMapping(
   column_name: string,
   colType: string,
-  visibleUniqueValues: (string | number | boolean | null)[],
+  visibleUniqueValues: SideColorValue[],
 ): ColorMapping {
   if (colType === "double precision" || colType === "bigint") {
     const numericValues = visibleUniqueValues
@@ -44,6 +117,20 @@ export function createVisibleColorMapping(
       mapping[String(term)] = scale(term);
     });
     return mapping;
+  } else if (colType === "array") {
+    const uniqueListKeys = [
+      ...new Set(
+        visibleUniqueValues
+          .map((value) => getListMetadataKey(value))
+          .filter(Boolean),
+      ),
+    ].sort();
+
+    const mapping: ColorMapping = {} as ColorMapping;
+    uniqueListKeys.forEach((key) => {
+      mapping[key] = getListMetadataColor(key);
+    });
+    return mapping;
   } else {
     const uniqueTerms = [
       ...new Set(
@@ -72,7 +159,7 @@ export function createVisibleColorMapping(
 export function createUnifiedColorMapping(
   columnName: string,
   colType: string,
-  allValuesAcrossPlots: (string | number | boolean | null)[],
+  allValuesAcrossPlots: SideColorValue[],
 ): ColorMapping {
   return createVisibleColorMapping(columnName, colType, allValuesAcrossPlots);
 }
@@ -91,7 +178,7 @@ export class SharedColorRegistry {
    * Register values from a specific plot for a given column.
    * Call this from each plot instance with its own attribute values.
    */
-  registerValues(columnName: string, colType: string, values: (string | number | boolean | null)[]): void {
+  registerValues(columnName: string, colType: string, values: SideColorValue[]): void {
     this.colTypes.set(columnName, colType);
 
     if (!this.registeredValues.has(columnName)) {
@@ -99,8 +186,9 @@ export class SharedColorRegistry {
     }
     const existing = this.registeredValues.get(columnName)!;
     values.forEach((v) => {
-      if (v !== null && v !== undefined && v !== "") {
-        existing.add(String(v));
+      const valueKey = colType === "array" ? getListMetadataKey(v) : String(v ?? "");
+      if (valueKey) {
+        existing.add(valueKey);
       }
     });
 
@@ -121,7 +209,7 @@ export class SharedColorRegistry {
     const colType = this.colTypes.get(columnName);
     if (!values || !colType) return null;
 
-    const allValues = [...values] as (string | number | boolean | null)[];
+    const allValues = [...values] as SideColorValue[];
     const mapping = createUnifiedColorMapping(columnName, colType, allValues);
     this.cachedMappings.set(columnName, mapping);
     return mapping;
@@ -141,7 +229,7 @@ export class SharedColorRegistry {
   // Using a plain function list instead of an EventTarget to keep this
   // tree-shakeable and to allow synchronous fanout.
   private clickSubscribers: Array<
-    (event: { column: string; value: string | number | boolean | null }) => void
+    (event: { column: string; value: SideColorValue }) => void
   > = [];
 
   /**
@@ -150,7 +238,7 @@ export class SharedColorRegistry {
    * synchronously every time `broadcastClick` is invoked.
    */
   subscribeClick(
-    fn: (event: { column: string; value: string | number | boolean | null }) => void,
+    fn: (event: { column: string; value: SideColorValue }) => void,
   ): () => void {
     this.clickSubscribers.push(fn);
     return () => {
@@ -162,7 +250,7 @@ export class SharedColorRegistry {
   /** Notify every subscriber that a row-color cell was clicked. */
   broadcastClick(
     column: string,
-    value: string | number | boolean | null,
+    value: SideColorValue,
   ): void {
     const evt = { column, value };
     for (const fn of [...this.clickSubscribers]) {

@@ -1023,56 +1023,66 @@ const colorScaleDropdownOptions = Object.keys(COLORSCALES).reduce(
 
 // Remove old COLORRANGES definition (now replaced by Expression)
 
+function metadataDisplayName(col: { column_name: string; display_name?: string }): string {
+  return col.display_name || getDisplayName(col.column_name);
+}
+
+function sortMetadataColumns<T extends { column_name: string; display_name?: string }>(columns: T[]): T[] {
+  return [...columns].sort((a, b) => {
+    const displayComparison = metadataDisplayName(a).localeCompare(metadataDisplayName(b), undefined, { sensitivity: "base" });
+    if (displayComparison !== 0) return displayComparison;
+    return a.column_name.localeCompare(b.column_name);
+  });
+}
+
+function toOptionsRecord(columns: { column_name: string; display_name?: string }[]): Record<string, string> {
+  const options: Record<string, string> = {};
+  for (const col of sortMetadataColumns(columns)) {
+    options[col.column_name] = metadataDisplayName(col);
+  }
+  return options;
+}
+
 // Row order options derived from attribute keys, mapped to beautified labels
 const rowOrderOptions = computed<Record<string, string>>(() => {
   const hiddenCols = new Set(config.visualization.hide_columns || []);
-  const options: Record<string, string> = {};
-  for (const col of columnsStore.rowColumns) {
-    if (!hiddenCols.has(col.column_name)) {
-      options[col.column_name] = col.display_name || getDisplayName(col.column_name);
-    }
-  }
-  return options;
+  return toOptionsRecord(columnsStore.rowColumns.filter((col) => !hiddenCols.has(col.column_name)));
 });
 
 const rowSideColorOptions = computed<string[]>(() => {
   const hiddenCols = new Set(config.visualization.hide_columns || []);
   // Also exclude gene_id/transcript ID columns from row side colors - they're unique per row
   const idColumns = new Set(['gene_id', 'transcript_id', 'id']);
-  return columnsStore.rowColumns
-    .map((c) => c.column_name)
-    .filter((name) => !hiddenCols.has(name) && !idColumns.has(name));
+  return sortMetadataColumns(
+    columnsStore.rowColumns.filter((col) => !hiddenCols.has(col.column_name) && !idColumns.has(col.column_name)),
+  ).map((col) => col.column_name);
 });
 
 // Display names for RowSideColors (uses backend display_name from Admin Panel)
 const rowSideColorDisplayNames = computed<Record<string, string>>(() => {
   const displayNames: Record<string, string> = {};
-  for (const col of columnsStore.rowColumns) {
-    displayNames[col.column_name] = col.display_name || getDisplayName(col.column_name);
+  for (const col of sortMetadataColumns(columnsStore.rowColumns)) {
+    displayNames[col.column_name] = metadataDisplayName(col);
   }
   return displayNames;
 });
 
 // Col order options derived from attribute keys, mapped to beautified labels
 const colOrderOptions = computed<Record<string, string>>(() => {
-  const options: Record<string, string> = {};
   // Use orderableColColumns for Column Order dropdown (includes tissue_types)
-  for (const col of columnsStore.orderableColColumns) {
-    options[col.column_name] = col.display_name || getDisplayName(col.column_name);
-  }
-  return options;
+  return toOptionsRecord(columnsStore.orderableColColumns);
 });
 
 const colSideColorOptions = computed<string[]>(() =>
   // Use colColumns for ColSideColors (only tissue_types, not individual tissue columns)
-  columnsStore.colColumns.map((c) => c.column_name),
+  sortMetadataColumns(columnsStore.colColumns).map((c) => c.column_name),
 );
 
 // Display names for ColSideColors (uses backend display_name from Admin Panel)
 const colSideColorDisplayNames = computed<Record<string, string>>(() => {
   const displayNames: Record<string, string> = {};
-  for (const col of columnsStore.colColumns) {
-    displayNames[col.column_name] = col.display_name || getDisplayName(col.column_name);
+  for (const col of sortMetadataColumns(columnsStore.colColumns)) {
+    displayNames[col.column_name] = metadataDisplayName(col);
   }
   return displayNames;
 });
