@@ -85,7 +85,7 @@
       @close="closeTooltipModal"
     />
 
-    <div v-if="newickstr===null" class="flex-grow relative h-[90vh] w-full">
+    <div v-if="!loading && newickstr===null" class="flex-grow relative h-[90vh] w-full">
       <NoNewickComponent
         :og="og"
         :show-full-tree="fullTreeAvailable"
@@ -430,7 +430,7 @@ function getAllOGs(dataRef: Record<string, any>, newicksRef: Record<string, stri
 }
 
 
-async function fetchAllSelected() {
+async function fetchAllSelected(options: { keepLoading?: boolean } = {}) {
   loading.value = true
   
   // Use catalog-selected datasets from existingTables prop
@@ -495,7 +495,9 @@ async function fetchAllSelected() {
     // and loadFullNewickForOG doesn't bail out on the empty-string guard.
   }
 
-  loading.value = false
+  if (!options.keepLoading) {
+    loading.value = false
+  }
 }
 
 function computeMetrics(dataRef: any, calcOption: string, codeMap?: Record<string, string>) {
@@ -1466,12 +1468,13 @@ function collapseToSpecies() {
 
 // Helper function to render tree for currently selected orthogroup
 async function renderTreeForSelectedOG() {
+  loading.value = true;
   const ogKey = selectedOrthogroupKey();
   if (!selectedOrthogroup.value || !newicks.value[ogKey]) {
     // Fall back to the directly-loaded full Newick (button was clicked)
     if (fullNewick.value) {
-      fullTreeAvailable.value = true;
-      noNewickMessage.value = "The selected filters or species do not contain this orthogroup.";
+      fullTreeAvailable.value = false;
+      noNewickMessage.value = "";
       await Promise.all([
         fetchOrthogroupDataForAllSpecies(),
         fetchHighlightedGenesForAllSpecies(),
@@ -1506,6 +1509,7 @@ async function renderTreeForSelectedOG() {
     fullTreeAvailable.value = false;
     noNewickMessage.value = "No phylogenetic tree is available for this orthogroup.";
     newickstr.value = null as any;
+    loading.value = false;
     return;
   }
 
@@ -1531,9 +1535,13 @@ async function renderTreeForSelectedOG() {
 // no entry in the selected orthogroup).
 async function loadFullNewickForOG() {
   if (!selectedOrthogroup.value) return;
+  loading.value = true;
   try {
     const newick = await fetchFullNewickForSelectedOG();
-    if (!newick) return;
+    if (!newick) {
+      loading.value = false;
+      return;
+    }
 
     fullNewick.value = newick;  // persist so watchers can't wipe it
     newickstr.value = newick;
@@ -1551,6 +1559,7 @@ async function loadFullNewickForOG() {
     initPhylotree(newickstr.value, metrics);
   } catch (e) {
     console.error("Failed to load full gene tree:", e);
+    loading.value = false;
   }
 }
 
@@ -1587,7 +1596,7 @@ watch(
   async (isLoading) => {
     // When hash loading completes (false), trigger initial data fetch
     if (isLoading === false) {
-      await fetchAllSelected();
+      await fetchAllSelected({ keepLoading: true });
       await renderTreeForSelectedOG();
     }
   },
@@ -1613,7 +1622,7 @@ watch(
   async () => {
     // Don't fetch while hash is still loading
     if (props.hashLoading) return;
-    await fetchAllSelected();
+    await fetchAllSelected({ keepLoading: true });
     await renderTreeForSelectedOG();
   },
   {deep: true}
@@ -1639,7 +1648,7 @@ watch(
     if (props.hashLoading) return;
     console.log('[PhylogeneticTree] Expression display changed:', visualizationStore.expressionDisplay)
     // Fetch new data with updated layer/transform parameters
-    await fetchAllSelected();
+    await fetchAllSelected({ keepLoading: true });
     await renderTreeForSelectedOG();
   },
   { deep: true }
