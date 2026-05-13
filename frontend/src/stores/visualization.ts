@@ -381,6 +381,30 @@ export const useVisualizationStore = defineStore("visualization", {
             this.phyloTree = normalizePhyloTreeState({ ...this.phyloTree, ...(value as Partial<PhyloTreeState>) });
           } else if (key === 'compare') {
             this.compare = normalizeCompareState({ ...this.compare, ...(value as Partial<CompareState>) });
+          } else if (key === 'customColOrder') {
+            const customOrder = value as Partial<VisualizationState["customColOrder"]>;
+            this.customColOrder = {
+              ...this.customColOrder,
+              ...customOrder,
+              metadataValues: Array.isArray(customOrder.metadataValues) ? [...customOrder.metadataValues] : this.customColOrder.metadataValues,
+              sampleNames: Array.isArray(customOrder.sampleNames) ? [...customOrder.sampleNames] : this.customColOrder.sampleNames,
+            };
+          } else if (key === 'clustering') {
+            const clustering = value as Partial<ClusteringState>;
+            this.clustering = {
+              ...this.clustering,
+              ...clustering,
+              rowOrder: Array.isArray(clustering.rowOrder)
+                ? [...clustering.rowOrder]
+                : clustering.rowOrder === null
+                  ? null
+                  : this.clustering.rowOrder,
+              colOrder: Array.isArray(clustering.colOrder)
+                ? [...clustering.colOrder]
+                : clustering.colOrder === null
+                  ? null
+                  : this.clustering.colOrder,
+            };
           } else {
             this[key] = value;
           }
@@ -410,13 +434,19 @@ export const useVisualizationStore = defineStore("visualization", {
         significance: this.significance,
         oraTopN: this.oraTopN,
         oraMinCount: this.oraMinCount,
-        tooltipFields: this.tooltipFields !== null ? [...this.tooltipFields] : null,
+        oraTooltipFields: [...this.oraTooltipFields],
+        ...(this.tooltipFields !== null ? { tooltipFields: [...this.tooltipFields] } : {}),
         showSequencesInTooltip: this.showSequencesInTooltip,
         sequencePreviewLength: this.sequencePreviewLength,
-        clustering: { ...this.clustering },
+        clustering: {
+          ...this.clustering,
+          rowOrder: this.clustering.rowOrder ? [...this.clustering.rowOrder] : null,
+          colOrder: this.clustering.colOrder ? [...this.clustering.colOrder] : null,
+        },
         phyloTree: {
           collapsedNodes: [...this.phyloTree.collapsedNodes],
           zoomTransform: { ...this.phyloTree.zoomTransform },
+          resetCounter: this.phyloTree.resetCounter,
           selectedOrthogroup: this.phyloTree.selectedOrthogroup,
           branchLengthMode: this.phyloTree.branchLengthMode,
         },

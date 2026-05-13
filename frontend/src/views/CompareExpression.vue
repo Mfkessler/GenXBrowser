@@ -138,8 +138,12 @@ async function loadStateFromIdParam(idParam: unknown) {
 
 watch(
   () => route.query.id,
-  (idParam) => { loadStateFromIdParam(idParam); },
-  { immediate: true },
+  async (idParam) => {
+    if (typeof idParam !== "string" || idParam.length !== 16) return;
+    isDataLoaded.value = false;
+    await loadStateFromIdParam(idParam);
+    isDataLoaded.value = allTables.value && Object.keys(allTables.value).length > 0;
+  },
 );
 
 watch(
@@ -156,6 +160,8 @@ watch(
 );
 
 onMounted(async () => {
+  await loadStateFromIdParam(route.query.id);
+
   // Fetch all possible table names for dropdown options:
   const tagsParam = [...filtersStore.tags].join(",");
   const response = await axios.get<CatalogMeta[]>(

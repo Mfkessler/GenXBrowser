@@ -1208,10 +1208,14 @@ const sampleNames = computed(() =>
 );
 
 function withMissingValues(current: string[], available: string[]): string[] {
-  const availableSet = new Set(available);
-  const kept = current.filter((value) => availableSet.has(value));
-  const keptSet = new Set(kept);
-  return [...kept, ...available.filter((value) => !keptSet.has(value))];
+  const kept: string[] = [];
+  const keptSet = new Set<string>();
+  for (const value of current) {
+    if (!value || keptSet.has(value)) continue;
+    kept.push(value);
+    keptSet.add(value);
+  }
+  return [...kept, ...available.filter((value) => value && !keptSet.has(value))];
 }
 
 function arraysEqual(a: string[], b: string[]): boolean {

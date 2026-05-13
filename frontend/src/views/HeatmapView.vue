@@ -5,6 +5,7 @@
       :style="heatmapGridStyle"
     >
       <div
+        v-if="hashStateLoaded"
         v-for="tableName in visibleTableNames"
         :key="tableName"
         class="min-w-0 h-full flex flex-col min-h-0"
@@ -66,6 +67,7 @@ const visualizationStore = useVisualizationStore();
 
 const showSettingsOverlay = ref(false);
 const allTables = ref<Record<string, string>>({});
+const hashStateLoaded = ref(false);
 
 // Shared color registry for consistent side-color mapping across multiple Heatmap plots
 const sharedColorRegistry = new SharedColorRegistry();
@@ -133,7 +135,11 @@ function onUpdateTableName(oldTableName: string, newTableName: string) {
 // allows assistant-driven re-navigations within the same heatmap path
 // (different filter/viz hash) to refresh the view automatically.
 async function loadStateFromIdParam(idParam: unknown) {
-  if (typeof idParam !== "string" || idParam.length !== 16) return;
+  if (typeof idParam !== "string" || idParam.length !== 16) {
+    hashStateLoaded.value = true;
+    return;
+  }
+  hashStateLoaded.value = false;
   try {
     const response = await axios.post(`${API_BASE_URL}/api/id`, { id: idParam });
     const data = response.data;
@@ -145,6 +151,8 @@ async function loadStateFromIdParam(idParam: unknown) {
     }
   } catch (error) {
     console.error("Error fetching filter data by ID", idParam, error);
+  } finally {
+    hashStateLoaded.value = true;
   }
 }
 
