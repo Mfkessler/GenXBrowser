@@ -267,6 +267,8 @@ const PlotlyChart = defineComponent({
   setup(props) {
     const el = ref<HTMLDivElement | null>(null);
     let plotlyRef: typeof import("plotly.js-dist-min") | null = null;
+    let resizeObserver: ResizeObserver | null = null;
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
 
     async function draw() {
       if (!el.value) return;
@@ -300,8 +302,26 @@ const PlotlyChart = defineComponent({
     }
 
     watch(() => [props.data, props.layout], draw, { deep: true });
-    onMounted(draw);
+    onMounted(async () => {
+      await draw();
+      if (!el.value) return;
+      resizeObserver = new ResizeObserver(() => {
+        if (resizeTimer) clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+          if (plotlyRef && el.value) void plotlyRef.Plots.resize(el.value);
+        }, 80);
+      });
+      resizeObserver.observe(el.value);
+    });
     onBeforeUnmount(async () => {
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+        resizeObserver = null;
+      }
+      if (resizeTimer) {
+        clearTimeout(resizeTimer);
+        resizeTimer = null;
+      }
       if (plotlyRef && el.value) plotlyRef.purge(el.value);
     });
     return () => h("div", { ref: el, style: { width: "100%", height: `${props.height}px` } });

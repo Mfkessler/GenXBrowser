@@ -1,7 +1,7 @@
 <template>
-  <main class="flex flex-col h-full overflow-hidden">
-    <div class="flex justify-between px-2 items-center mb-2 flex-shrink-0">
-      <div class="text-gray-500 font-medium flex items-center space-x-2">
+  <main class="flex flex-col h-full min-h-0 overflow-hidden">
+    <div class="flex justify-between gap-2 px-2 items-start mb-2 flex-shrink-0 flex-wrap">
+      <div class="text-gray-500 font-medium flex items-center gap-2 min-w-0 flex-wrap">
         <DropdownMenu
           :modelValue="localTableName"
           :options="tableNameOptions"
@@ -16,7 +16,7 @@
         >({{ getEntityCountLabel() }}: {{ rowCount }})</span
         >
       </div>
-      <div class="flex space-x-2">
+      <div class="flex gap-2 flex-wrap justify-end">
         <span v-tooltip="props.existingTables.length === Object.keys(props.allTables).length ? 'All heatmaps already shown' : 'Add another heatmap'">
         <button
           aria-label="Add another heatmap"
@@ -72,6 +72,7 @@
         </span>
 
         <button
+          v-if="showSharedActions"
           aria-label="Share the heatmap"
           @click="showShareOverlay = true"
           class="p-2 rounded-md text-primary-500 border border-primary-500 hover:bg-primary-500 hover:text-white"
@@ -90,6 +91,7 @@
         </button>
 
         <button
+          v-if="showSharedActions"
           aria-label="Configure the visuals of the heatmap"
           @click="openSettingsOverlay"
           class="p-2 rounded-md text-white bg-accent1-900 border border-accent1-900 hover:bg-white hover:text-accent1-900"
@@ -167,6 +169,7 @@ import {
   onMounted,
   ref,
   type Ref,
+  withDefaults,
   watch,
 } from "vue";
 
@@ -211,11 +214,14 @@ const mergedGeneFilters = computed(() => getMergedGeneFilters(props.tableName).v
 
 const sidebarOpen = inject("sidebarOpen") as Ref<boolean> | undefined; //Provided by App.vue
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   tableName: string;
   existingTables: string[];
   allTables: Record<string, string>;
-}>();
+  showSharedActions?: boolean;
+}>(), {
+  showSharedActions: true,
+});
 
 const localTableName = ref(props.tableName);
 const tableNameOptions = computed(() => {

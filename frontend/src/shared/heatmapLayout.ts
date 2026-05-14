@@ -3,9 +3,11 @@ export function getHeatmapGridTemplate(columnCount: number): string {
     return 'minmax(0, 1fr)';
   }
 
-  return 'repeat(auto-fit, minmax(min(100%, 30rem), 1fr))';
+  return 'repeat(auto-fit, minmax(min(100%, 36rem), 1fr))';
 }
 
 export function getHeatmapCardMinHeight(columnCount: number): string {
-  return columnCount <= 2 ? '0' : '28rem';
+  if (columnCount <= 1) return 'clamp(30rem, 74vh, 52rem)';
+  if (columnCount === 2) return 'clamp(30rem, 68vh, 46rem)';
+  return '34rem';
 }

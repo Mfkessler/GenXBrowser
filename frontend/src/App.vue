@@ -1,6 +1,6 @@
 <template>
   <div class="min-h-screen flex flex-col bg-gray-50">
-    <main class="flex flex-1 overflow-hidden relative">
+    <main class="flex flex-1 overflow-visible relative items-stretch">
       <!-- Open Sidebar Button (appears when sidebar is closed) -->
       <button
         v-show="!sidebarOpen"
@@ -26,13 +26,13 @@
       </button>
       <!-- Sidebar -->
       <div
-        class="transition-all duration-300 relative flex-shrink-0"
+        class="app-sidebar transition-all duration-300 relative flex-shrink-0 bg-gray-50"
         :style="{
           width: sidebarOpen ? '320px' : '0',
           overflow: 'hidden'
         }"
       >
-          <div class="h-full" style="width: 320px; overflow-y: auto; overflow-x: hidden;">
+          <div class="app-sidebar-inner w-[320px]">
           <SidebarComponent
             v-show="sidebarOpen"
             :disable-controls="disableControls"
@@ -44,9 +44,9 @@
       <!-- Main content area -->
       <div
         ref="mainScroll"
-        class="transition-all duration-300 flex-1 overflow-auto"
+        class="transition-all duration-300 flex-1 min-w-0 overflow-visible"
       >
-        <div class="p-4 min-h-full flex items-center flex-col">
+        <div class="p-4 min-h-full flex items-center flex-col overflow-visible">
           <RouterView class="mx-auto w-full" />
         </div>
       </div>
@@ -115,5 +115,19 @@ onMounted(() => {
 
 .sidebar-hint-pulse {
   animation: sidebar-hint 1.5s ease-out infinite;
+}
+
+@media (max-width: 767px) {
+  .app-sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 45;
+    max-width: min(320px, 88vw);
+    box-shadow: 8px 0 24px rgba(15, 23, 42, 0.18);
+  }
+
+  .app-sidebar-inner {
+    width: min(320px, 88vw);
+  }
 }
 </style>

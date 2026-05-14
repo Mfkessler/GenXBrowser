@@ -5,7 +5,7 @@
     style="background-color: rgba(0, 0, 0, 0.5)"
   >
     <div
-      class="bg-white p-6 rounded-lg shadow-lg w-[30%] max-h-[90vh] flex flex-col"
+      class="bg-white p-4 sm:p-6 rounded-lg shadow-lg w-[94vw] sm:w-[32rem] max-w-[96vw] max-h-[90vh] flex flex-col"
     >
       <!-- Title & Close Button -->
       <div class="flex justify-between items-center mb-4">

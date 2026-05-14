@@ -1,8 +1,8 @@
 <template>
   <footer class="border-t border-gray-400 bg-gray-50 text-gray-400 py-4">
-    <div class="mx-auto flex items-center justify-between gap-8">
+    <div class="mx-auto flex flex-wrap items-center justify-center sm:justify-between gap-x-8 gap-y-3 px-4 text-center sm:text-left">
       <!-- Left: Logo -->
-      <div class="flex items-center pl-4">
+      <div class="flex items-center min-w-0">
         <img v-if="config.corporate_identity.logo" :src="logoUrl" alt="Logo" class="h-8 mr-2 object-contain" />
         <span class="text-lg">{{ companyName }}</span>
       </div>
@@ -34,7 +34,7 @@
       </div>
 
       <!-- Right: Last Update -->
-      <div class="text-sm pr-4">
+      <div class="text-sm">
         Last update: <span class="font-mono">{{ lastUpdate }}</span>
       </div>
     </div>

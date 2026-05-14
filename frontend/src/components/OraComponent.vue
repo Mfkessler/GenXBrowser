@@ -1,8 +1,8 @@
 <template>
-  <main>
+  <main class="min-w-0">
     <!-- Top control bar -->
-    <div class="flex justify-between px-2 items-center mb-2">
-      <div class="text-gray-500 font-medium flex items-center space-x-2">
+    <div class="flex justify-between gap-2 px-2 items-start mb-2 flex-wrap">
+      <div class="text-gray-500 font-medium flex items-center gap-2 min-w-0 flex-wrap">
         <DropdownMenu
           :modelValue="localTableName"
           :options="tableNameOptions"
@@ -12,7 +12,7 @@
           >({{ getEntityCountLabel() }}: {{ rowCount }})</span
         >
       </div>
-      <div class="flex space-x-2">
+      <div class="flex gap-2 flex-wrap justify-end">
         <button
           aria-label="Add another dot plot"
           @click="addDotplot"
@@ -54,6 +54,7 @@
         </button>
 
         <button
+          v-if="showSharedActions"
           aria-label="Share the visualization"
           @click="showShareOverlay = true"
           class="p-2 rounded-md text-primary-500 border border-primary-500 hover:bg-primary-500 hover:text-white"
@@ -72,6 +73,7 @@
         </button>
 
         <button
+          v-if="showSharedActions"
           aria-label="Open settings"
           @click="openSettingsOverlay"
           class="p-2 rounded-md text-white bg-accent1-900 border border-accent1-900 hover:bg-white hover:text-accent1-900"
@@ -229,6 +231,7 @@ import {
   onUnmounted,
   ref,
   type Ref,
+  withDefaults,
   watch,
 } from "vue";
 
@@ -263,12 +266,16 @@ const mergedFilters = computed(() => filtersStore.getMergedFilters(props.tableNa
 const sidebarOpen = inject("sidebarOpen") as Ref<boolean> | undefined; //Provided by App.vue
 const sharedColorRegistry = inject<SharedColorRegistry>('sharedColorRegistry', undefined) as SharedColorRegistry | undefined;
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   tableName: string;
   existingTables: string[];
   allTables: Record<string, string>;
   hashLoading?: boolean;
-}>();
+  showSharedActions?: boolean;
+}>(), {
+  hashLoading: false,
+  showSharedActions: true,
+});
 
 const localTableName = ref(props.tableName);
 const tableNameOptions = computed(() => {
