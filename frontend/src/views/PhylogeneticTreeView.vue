@@ -1,5 +1,9 @@
 <template>
-  <div class="h-[100vh] flex flex-col">
+  <div class="h-[100vh] flex flex-col relative">
+    <div v-if="hashLoading" class="absolute inset-0 z-50">
+      <LoadingOverlay />
+    </div>
+
     <!-- PhyloTree Controls Bar -->
     <div class="flex items-center gap-2 p-2 bg-gray-50 border-b border-gray-200">
       <!-- Reset View Button -->
@@ -51,11 +55,12 @@
 
     <!-- Gallery container: flex wrap and gap for nice grid layout -->
     <div
+      v-if="!hashLoading"
       class="flex gap-4 flex-grow p-2 overflow-x-auto overflow-y-hidden whitespace-nowrap"
     >
       <div
         v-for="tableName in tableNames"
-        :key="tableName"
+        :key="phyloInstanceKey(tableName)"
         class="flex-grow min-w-[42rem] h-[90vh] flex flex-col"
       >
         <PhylogeneticTree
@@ -89,6 +94,7 @@ import { useRoute, useRouter } from "vue-router";
 
 import { type CatalogMeta } from "@/shared/CatalogMeta";
 import PhylogeneticTree from "@/components/PhylogeneticTree.vue";
+import LoadingOverlay from "@/components/LoadingOverlay.vue";
 import { useFiltersStore } from "@/stores/filters";
 import { useVisualizationStore } from "@/stores/visualization";
 import VisualizationSettings from "@/components/VisualizationSettings.vue";
@@ -156,6 +162,17 @@ const tableNames = computed(() => {
   return all;
 });
 
+const analysisInstanceKey = computed(() => {
+  const tables = typeof route.params.table_names === "string" ? route.params.table_names : "";
+  const id = typeof route.query.id === "string" ? route.query.id : "";
+  const filters = typeof route.query.filters === "string" ? route.query.filters : "";
+  return `${tables}|${id}|${filters}`;
+});
+
+function phyloInstanceKey(tableName: string) {
+  return `${tableName}|${analysisInstanceKey.value}`;
+}
+
 function onUpdateTableName(oldTableName: string, newTableName: string) {
   if (oldTableName === newTableName) return;
 
@@ -211,12 +228,13 @@ async function loadStateFromIdParam(idParam: unknown) {
 }
 
 watch(
-  () => route.query.id,
+  () => [route.query.id, route.query.filters, route.params.table_names],
   async (idParam) => {
     hashLoading.value = true;
-    await loadStateFromIdParam(idParam);
+    await loadStateFromIdParam(Array.isArray(idParam) ? idParam[0] : idParam);
     hashLoading.value = false;
   },
+  { flush: "sync" },
 );
 
 onMounted(async () => {

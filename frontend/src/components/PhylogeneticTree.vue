@@ -1,11 +1,11 @@
 <template>
-  <main>
+  <main class="relative min-h-[90vh]">
 
-    <div v-if="loading" class="flex-grow relative h-[90vh] w-full">
+    <div v-if="loading" class="absolute inset-0 z-50">
       <LoadingOverlay v-if="loading"/>
     </div>
 
-    <div v-if="!loading && newickstr !== null" class="flex-grow relative h-[90vh] w-full flex flex-col min-h-0">
+    <div v-if="newickstr !== null" class="flex-grow relative h-[90vh] w-full flex flex-col min-h-0">
       <!-- Phylogenetic Tree Title + Buttons in same row -->
       <div v-if="commonOGs_array.length > 0" class="flex flex-wrap items-center gap-3 mb-1 p-3 bg-gray-50 rounded-lg border border-gray-200 flex-shrink-0">
         <!-- Orthogroup Selector - same styling as Compare view -->
@@ -85,7 +85,7 @@
       @close="closeTooltipModal"
     />
 
-    <div v-if="!loading && newickstr===null" class="flex-grow relative h-[90vh] w-full">
+    <div v-if="!loading && noNewickResolved && newickstr===null" class="flex-grow relative h-[90vh] w-full">
       <NoNewickComponent
         :og="og"
         :show-full-tree="fullTreeAvailable"
@@ -197,9 +197,10 @@ const columns = ref<RowType[]>([]);
 const newicks = ref<Record<string, string>>({});
 const orthogroupCaseMap = ref<Record<string, string>>({});
 const highlightedGeneIds = ref<Record<string, Set<string>>>({});
-const newickstr = ref("");
-const loading = ref(false);
+const newickstr = ref<string | null>(null);
+const loading = ref(true);
 const fullTreeAvailable = ref(false);
+const noNewickResolved = ref(false);
 const noNewickMessage = ref("");
 // Holds the full (unfiltered) Newick loaded via the "Show full tree" button.
 // Acts as fallback in renderTreeForSelectedOG so watchers don't wipe it out.
@@ -287,6 +288,19 @@ const colorSchemes: Record<string, string[]> = {
 
 const selectedCount = ref(0);
 selectedCount.value = Object.keys(props.tableName[0]).length;
+
+function waitForPaint(): Promise<void> {
+  if (typeof requestAnimationFrame === "undefined") return Promise.resolve();
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+async function showLoadingFrame() {
+  loading.value = true;
+  noNewickResolved.value = false;
+  noNewickMessage.value = "";
+  await nextTick();
+  await waitForPaint();
+}
 
 const tableNameOptions = computed(() => {
   return Object.fromEntries(
@@ -434,7 +448,7 @@ function getAllOGs(dataRef: Record<string, any>, newicksRef: Record<string, stri
 
 
 async function fetchAllSelected(options: { keepLoading?: boolean } = {}) {
-  loading.value = true
+  await showLoadingFrame();
   
   // Use catalog-selected datasets from existingTables prop
   const selectedDatasets = props.existingTables && props.existingTables.length > 0 
@@ -1500,7 +1514,7 @@ function collapseToSpecies() {
 
 // Helper function to render tree for currently selected orthogroup
 async function renderTreeForSelectedOG() {
-  loading.value = true;
+  await showLoadingFrame();
   const ogKey = selectedOrthogroupKey();
   if (!selectedOrthogroup.value || !newicks.value[ogKey]) {
     // Fall back to the directly-loaded full Newick (button was clicked)
@@ -1540,7 +1554,8 @@ async function renderTreeForSelectedOG() {
 
     fullTreeAvailable.value = false;
     noNewickMessage.value = "No phylogenetic tree is available for this orthogroup.";
-    newickstr.value = null as any;
+    newickstr.value = null;
+    noNewickResolved.value = true;
     loading.value = false;
     return;
   }
@@ -1567,10 +1582,11 @@ async function renderTreeForSelectedOG() {
 // no entry in the selected orthogroup).
 async function loadFullNewickForOG() {
   if (!selectedOrthogroup.value) return;
-  loading.value = true;
+  await showLoadingFrame();
   try {
     const newick = await fetchFullNewickForSelectedOG();
     if (!newick) {
+      noNewickResolved.value = true;
       loading.value = false;
       return;
     }
@@ -1667,6 +1683,7 @@ watch(
   async () => {
     if (initialUrlParsing.value) return;
     if (props.hashLoading) return;
+    await showLoadingFrame();
     fullNewick.value = null;  // clear full-tree override when user picks a new OG
     updateUrlFromState();
     await renderTreeForSelectedOG();

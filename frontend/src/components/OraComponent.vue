@@ -326,6 +326,19 @@ function updateAvailablePlotHeight() {
   availablePlotHeight.value = Math.max(360, Math.floor(usableHeight));
 }
 
+function waitForPaint(): Promise<void> {
+  if (typeof requestAnimationFrame === "undefined") return Promise.resolve();
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+async function showLoadingFrame() {
+  loading.value = true;
+  renderReady.value = false;
+  error.value = "";
+  await nextTick();
+  await waitForPaint();
+}
+
 const finalPlotHeight = computed(() => {
   const visibleRows = Math.max(pValueEntries.value.length, 1);
   const minimumHeight = visualizationStore.legend ? 360 : 300;
@@ -449,9 +462,8 @@ function formatGoNamespace(namespace: string): string {
  */
 async function fetchAndPrepareData() {
   const requestId = ++oraRequestSeq;
-  loading.value = true;
-  renderReady.value = false;
-  error.value = "";
+  await showLoadingFrame();
+  if (requestId !== oraRequestSeq) return;
   try {
     resetDotplot();
     // Prepare ORA request — max_subset_size replaces the separate /api/count call
@@ -1620,9 +1632,7 @@ watch(
   async () => {
     if (props.hashLoading) return;
     if (loading.value || !renderReady.value) return;
-    loading.value = true;
-    renderReady.value = false;
-    await nextTick();
+    await showLoadingFrame();
     await syncPlotHeightWithViewport();
     await drawDotPlot();
     renderReady.value = true;
@@ -1646,9 +1656,7 @@ watch(
   async () => {
     if (props.hashLoading) return;
     if (loading.value || !renderReady.value) return;
-    loading.value = true;
-    renderReady.value = false;
-    await nextTick();
+    await showLoadingFrame();
     window.setTimeout(async () => {
       await syncPlotHeightWithViewport();
       await drawDotPlot();
