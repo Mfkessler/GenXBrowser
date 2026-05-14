@@ -1,16 +1,16 @@
 <template>
-  <div class="h-[100vh] flex flex-col relative">
+  <div class="min-h-[100vh] flex flex-col relative">
     <div v-if="hashLoading" class="absolute inset-0 z-50">
       <LoadingOverlay />
     </div>
 
     <!-- PhyloTree Controls Bar -->
-    <div class="flex items-center gap-2 p-2 bg-gray-50 border-b border-gray-200">
+    <div class="flex flex-wrap items-center gap-2 p-2 bg-gray-50 border-b border-gray-200">
       <!-- Reset View Button -->
       <button
         @click="resetPhyloTreeView"
-        class="flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-100 transition-colors"
-        title="Reset zoom and expand all collapsed nodes"
+        class="flex items-center justify-center gap-1 px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-100 transition-colors min-h-11"
+        aria-label="Reset zoom and expand all collapsed nodes"
       >
         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
           <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -21,22 +21,22 @@
       <!-- Quick-collapse actions -->
       <button
         @click="callOnAllTrees('expandAll')"
-        class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-100 transition-colors"
-        title="Expand every collapsed clade"
+        class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-100 transition-colors min-h-11"
+        aria-label="Expand every collapsed clade"
       >Expand all</button>
       <button
         @click="callOnAllTrees('collapseAll')"
-        class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-100 transition-colors"
-        title="Collapse every internal clade (top-level only stays visible)"
+        class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-100 transition-colors min-h-11"
+        aria-label="Collapse every internal clade"
       >Collapse all</button>
       <button
         @click="callOnAllTrees('collapseToSpecies')"
-        class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-100 transition-colors"
-        title="Collapse every monophyletic species clade"
+        class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-100 transition-colors min-h-11"
+        aria-label="Collapse every monophyletic species clade"
       >Collapse to species</button>
 
       <!-- Zoom level indicator -->
-      <span class="text-sm text-gray-500 ml-2">
+      <span class="text-sm text-gray-500 ml-0 sm:ml-2 whitespace-nowrap">
         Zoom: {{ Math.round(zoomLevel * 100) }}%
       </span>
       
@@ -45,10 +45,10 @@
         {{ collapsedNodesCount }} node(s) collapsed
       </span>
       
-      <div class="flex-grow"></div>
+      <div class="hidden sm:block flex-grow"></div>
       
       <!-- Hint -->
-      <span class="text-xs text-gray-400">
+      <span class="hidden lg:inline text-xs text-gray-400">
         Scroll to zoom • Drag to pan • Click internal nodes to collapse • Right-click for more
       </span>
     </div>
@@ -56,12 +56,12 @@
     <!-- Gallery container: flex wrap and gap for nice grid layout -->
     <div
       v-if="!hashLoading"
-      class="flex gap-4 flex-grow p-2 overflow-x-auto overflow-y-hidden whitespace-nowrap"
+      class="flex gap-4 flex-grow p-2 overflow-visible min-w-0"
     >
       <div
         v-for="tableName in tableNames"
         :key="phyloInstanceKey(tableName)"
-        class="flex-grow min-w-[42rem] h-[90vh] flex flex-col"
+        class="flex-grow min-w-0 min-h-[34rem] sm:min-h-[calc(100vh-5rem)] flex flex-col"
       >
         <PhylogeneticTree
           ref="phyloTreeRefs"

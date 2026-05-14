@@ -1,15 +1,15 @@
 <template>
-  <main class="relative min-h-[90vh]">
+  <main class="relative flex flex-col flex-1 min-h-[34rem] w-full min-w-0">
 
     <div v-if="loading" class="absolute inset-0 z-50">
       <LoadingOverlay v-if="loading"/>
     </div>
 
-    <div v-if="newickstr !== null" class="flex-grow relative h-[90vh] w-full flex flex-col min-h-0">
+    <div v-if="newickstr !== null" class="flex-grow relative w-full flex flex-col min-h-0">
       <!-- Phylogenetic Tree Title + Buttons in same row -->
-      <div v-if="commonOGs_array.length > 0" class="flex flex-wrap items-center gap-3 mb-1 p-3 bg-gray-50 rounded-lg border border-gray-200 flex-shrink-0">
+      <div v-if="commonOGs_array.length > 0" class="flex flex-wrap items-center gap-3 mb-1 p-3 bg-gray-50 rounded-lg border border-gray-200 flex-shrink-0 min-w-0">
         <!-- Orthogroup Selector - same styling as Compare view -->
-        <div class="flex-grow min-w-48">
+        <div class="flex-grow min-w-0 sm:min-w-48">
           <DropdownMenu
             placeholder="Select orthogroup"
             v-model="selectedOrthogroup"
@@ -18,7 +18,7 @@
         </div>
 
         <!-- Action Buttons -->
-        <div class="flex gap-2 ml-auto">
+        <div class="flex gap-2 ml-auto flex-shrink-0">
           <button
             aria-label="Share the phylogenetic tree"
             @click="showShareOverlay = true"
@@ -60,7 +60,7 @@
       <div
         ref="phylotreeContainer"
         id="phylotreeContainer"
-        class="border border-gray-300 rounded-2xl bg-white p-1 w-full shadow-sm min-w-0 overflow-hidden flex-1 min-h-0 relative"
+        class="border border-gray-300 rounded-lg sm:rounded-2xl bg-white p-1 w-full shadow-sm min-w-0 overflow-hidden flex-1 min-h-[28rem] relative"
       ></div>
     </div>
 
@@ -85,7 +85,7 @@
       @close="closeTooltipModal"
     />
 
-    <div v-if="!loading && noNewickResolved && newickstr===null" class="flex-grow relative h-[90vh] w-full">
+    <div v-if="!loading && noNewickResolved && newickstr===null" class="flex-grow relative min-h-[34rem] w-full">
       <NoNewickComponent
         :og="og"
         :show-full-tree="fullTreeAvailable"

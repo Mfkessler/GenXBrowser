@@ -36,12 +36,20 @@ interface TooltipState {
   onMouseLeave: () => void;
   onFocus: () => void;
   onBlur: () => void;
+  onTouchStart: () => void;
+  onTouchEnd: () => void;
+  onTouchCancel: () => void;
   cleanup: (() => void) | null;
+  touchTimer: ReturnType<typeof setTimeout> | null;
+  touchTooltipShown: boolean;
+  suppressFocusUntil: number;
 }
 
 const TOOLTIP_STATES = new WeakMap<HTMLElement, TooltipState>();
 const SHOW_DELAY = 150;
 const HIDE_DELAY = 50;
+const LONG_TOUCH_DELAY = 550;
+const TOUCH_FOCUS_SUPPRESS_MS = 800;
 
 function createTooltipEl(): { tooltipEl: HTMLElement; arrowEl: HTMLElement } {
   const tooltipEl = document.createElement("div");
@@ -222,8 +230,38 @@ export const vTooltip: Directive<HTMLElement> = {
 
     const onMouseEnter = () => showTooltip(el);
     const onMouseLeave = () => hideTooltip(el);
-    const onFocus = () => showTooltip(el);
+    const onFocus = () => {
+      const state = TOOLTIP_STATES.get(el);
+      if (state && Date.now() < state.suppressFocusUntil) return;
+      showTooltip(el);
+    };
     const onBlur = () => hideTooltip(el);
+    const onTouchStart = () => {
+      const state = TOOLTIP_STATES.get(el);
+      if (!state) return;
+      state.suppressFocusUntil = Date.now() + TOUCH_FOCUS_SUPPRESS_MS;
+      state.touchTooltipShown = false;
+      if (state.touchTimer) clearTimeout(state.touchTimer);
+      state.touchTimer = setTimeout(() => {
+        state.touchTimer = null;
+        state.touchTooltipShown = true;
+        showTooltip(el);
+      }, LONG_TOUCH_DELAY);
+    };
+    const onTouchEnd = () => {
+      const state = TOOLTIP_STATES.get(el);
+      if (!state) return;
+      state.suppressFocusUntil = Date.now() + TOUCH_FOCUS_SUPPRESS_MS;
+      if (state.touchTimer) {
+        clearTimeout(state.touchTimer);
+        state.touchTimer = null;
+      }
+      if (state.touchTooltipShown) {
+        hideTooltip(el);
+      }
+      state.touchTooltipShown = false;
+    };
+    const onTouchCancel = onTouchEnd;
 
     const state: TooltipState = {
       tooltipEl: null,
@@ -236,7 +274,13 @@ export const vTooltip: Directive<HTMLElement> = {
       onMouseLeave,
       onFocus,
       onBlur,
+      onTouchStart,
+      onTouchEnd,
+      onTouchCancel,
       cleanup: null,
+      touchTimer: null,
+      touchTooltipShown: false,
+      suppressFocusUntil: 0,
     };
 
     TOOLTIP_STATES.set(el, state);
@@ -245,6 +289,9 @@ export const vTooltip: Directive<HTMLElement> = {
     el.addEventListener("mouseleave", onMouseLeave);
     el.addEventListener("focus", onFocus);
     el.addEventListener("blur", onBlur);
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchend", onTouchEnd, { passive: true });
+    el.addEventListener("touchcancel", onTouchCancel, { passive: true });
   },
 
   updated(el, binding) {
@@ -272,12 +319,16 @@ export const vTooltip: Directive<HTMLElement> = {
     // Clear timers
     if (state.showTimer) clearTimeout(state.showTimer);
     if (state.hideTimer) clearTimeout(state.hideTimer);
+    if (state.touchTimer) clearTimeout(state.touchTimer);
 
     // Remove event listeners
     el.removeEventListener("mouseenter", state.onMouseEnter);
     el.removeEventListener("mouseleave", state.onMouseLeave);
     el.removeEventListener("focus", state.onFocus);
     el.removeEventListener("blur", state.onBlur);
+    el.removeEventListener("touchstart", state.onTouchStart);
+    el.removeEventListener("touchend", state.onTouchEnd);
+    el.removeEventListener("touchcancel", state.onTouchCancel);
 
     // Remove tooltip element
     if (state.tooltipEl?.parentNode) {
