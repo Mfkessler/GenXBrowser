@@ -1,6 +1,6 @@
 <template>
-  <main>
-    <div class="border border-gray-300 rounded-2xl bg-white p-3 w-full shadow-sm min-w-0">
+  <main class="flex flex-col flex-1 min-w-0 w-full">
+    <div class="border border-gray-300 rounded-lg sm:rounded-2xl bg-white p-2 sm:p-3 w-full shadow-sm min-w-0">
       <!-- Loading States -->
       <div v-if="loading || loadingMount" class="flex-grow relative h-[90vh] w-full">
         <LoadingOverlay />
@@ -13,9 +13,9 @@
       <!-- Main Compare View -->
       <div v-if="selectedTables.length >= 1 && commonOGs_array.length > 0 && !loading && !loadingMount">
         <!-- Control Bar - Compact version with settings in modal -->
-        <div class="flex flex-wrap items-center gap-3 mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
+        <div class="flex flex-wrap items-center gap-3 mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200 min-w-0">
           <!-- Orthogroup Selector -->
-          <div class="flex-grow min-w-48">
+          <div class="flex-grow min-w-0 sm:min-w-48">
             <DropdownMenu
               placeholder="Select orthogroup"
               v-model="selectedOrthogroup"
@@ -24,12 +24,12 @@
           </div>
 
           <!-- Summary Info -->
-          <div class="text-sm text-gray-500">
+          <div class="text-sm text-gray-500 whitespace-nowrap">
             (Transcript Count: {{ processedData?.transcripts.length || 0 }})
           </div>
 
           <!-- Action Buttons -->
-          <div class="flex gap-2 ml-auto">
+          <div class="flex gap-2 ml-auto flex-shrink-0">
             <button
               aria-label="Share visualization"
               @click="openShareOverlay"
@@ -64,22 +64,26 @@
           </div>
         </div>
 
+        <h2 class="px-2 pb-2 text-sm sm:text-base font-semibold text-gray-700 leading-snug break-words">
+          {{ plotTitle }}
+        </h2>
+
         <!-- Plotly Chart Container -->
         <div ref="cardWrapper" class="w-full overflow-hidden">
-          <div ref="plotContainer" class="w-full bg-white rounded-lg border border-gray-200"></div>
+          <div ref="plotContainer" class="w-full min-h-[30rem] bg-white rounded-lg border border-gray-200"></div>
         </div>
 
         <!-- Legend (only show for line plots) -->
-        <div v-if="plotType === 'line'" class="mt-4 px-3 py-2 text-sm text-gray-600 border-t border-gray-200">
+        <div v-if="plotType === 'line'" class="mt-4 px-3 py-2 text-sm text-gray-600 border-t border-gray-200 flex flex-wrap gap-x-2 gap-y-1">
           <span class="font-medium">Legend:</span>
-          <span class="ml-2">thin lines = individual transcripts,</span>
-          <span class="ml-2">thick bold lines = species mean of all transcripts</span>
-          <span v-if="visualizationStore.compare.showAllTranscripts" class="ml-2">| dotted lines (30% opacity) = unfiltered transcripts from same orthogroup</span>
+          <span>thin lines = individual transcripts,</span>
+          <span>thick bold lines = species mean of all transcripts</span>
+          <span v-if="visualizationStore.compare.showAllTranscripts">| dotted lines (30% opacity) = unfiltered transcripts from same orthogroup</span>
         </div>
-        <div v-else class="mt-4 px-3 py-2 text-sm text-gray-600 border-t border-gray-200">
+        <div v-else class="mt-4 px-3 py-2 text-sm text-gray-600 border-t border-gray-200 flex flex-wrap gap-x-2 gap-y-1">
           <span class="font-medium">Legend:</span>
-          <span class="ml-2">{{ plotType === 'box' ? 'Box plots' : 'Violin plots' }} grouped by tissue, colored by species</span>
-          <span v-if="visualizationStore.compare.showAllTranscripts" class="ml-2">| 30% opacity = unfiltered transcripts from same orthogroup</span>
+          <span>{{ plotType === 'box' ? 'Box plots' : 'Violin plots' }} grouped by tissue, colored by species</span>
+          <span v-if="visualizationStore.compare.showAllTranscripts">| 30% opacity = unfiltered transcripts from same orthogroup</span>
         </div>
       </div>
 
@@ -266,6 +270,19 @@ const selectedOrthogroupLabel = computed(() => {
   return commonOGs_array.value.includes(selectedOrthogroup.value)
     ? selectedOrthogroup.value
     : "";
+});
+
+const plotTypeLabels: Record<string, string> = {
+  line: "Line Plot",
+  box: "Box Plot",
+  violin: "Violin Plot",
+};
+
+const plotTitle = computed(() => {
+  const orthogroup = selectedOrthogroupLabel.value
+    ? selectedOrthogroupLabel.value.toUpperCase()
+    : "";
+  return `Orthogroup Expression: ${orthogroup} (${plotTypeLabels[plotType.value]})`;
 });
 
 // Convert array to Record for DropdownMenu compatibility
@@ -1303,33 +1320,38 @@ async function renderPlot() {
     raw: "Raw Counts",
   };
 
-  // Plot type specific title
-  const plotTypeLabels: Record<string, string> = {
-    line: "Line Plot",
-    box: "Box Plot",
-    violin: "Violin Plot",
-  };
+  const containerWidth = plotContainer.value.clientWidth || cardWrapper.value?.clientWidth || 800;
+  const isMobilePlot = containerWidth < 520;
+  const responsiveHeight = isMobilePlot
+    ? Math.max(520, Math.min(680, plotHeight.value + 80))
+    : plotHeight.value;
+  const topMargin = isMobilePlot ? 180 : 90;
+  const bottomMargin = isMobilePlot ? 150 : 120;
 
   const layout: Partial<Plotly.Layout> = {
     autosize: true,
-    height: plotHeight.value,
-    margin: { l: 70, r: 30, t: 100, b: 120 },
-    title: {
-      text: `Orthogroup Expression: ${selectedOrthogroupLabel.value.toUpperCase()} (${plotTypeLabels[plotType.value]})`,
-      font: { size: 16 },
-      y: 0.99,
-      yanchor: "top",
+    height: responsiveHeight,
+    margin: {
+      l: isMobilePlot ? 58 : 70,
+      r: isMobilePlot ? 12 : 30,
+      t: topMargin,
+      b: bottomMargin,
     },
     xaxis: {
       title: { text: "Tissue", standoff: 15 },
       type: "category",
       tickangle: -45,
-      tickfont: { size: 11 },
+      tickfont: { size: isMobilePlot ? 10 : 11 },
       categoryorder: "array",
       categoryarray: filteredTissues,
+      automargin: true,
     },
     yaxis: {
-      title: { text: yAxisTitles[expressionDisplayOption.value] || "Expression Value" },
+      title: {
+        text: yAxisTitles[expressionDisplayOption.value] || "Expression Value",
+        standoff: isMobilePlot ? 6 : 12,
+      },
+      automargin: true,
       zeroline: true,
       zerolinecolor: "#e0e0e0",
       gridcolor: "#f0f0f0",
@@ -1343,7 +1365,8 @@ async function renderPlot() {
       bgcolor: "rgba(255,255,255,0.9)",
       bordercolor: "#e0e0e0",
       borderwidth: 1,
-      tracegroupgap: 20,
+      tracegroupgap: isMobilePlot ? 8 : 20,
+      font: { size: isMobilePlot ? 10 : 12 },
     },
     hovermode: "closest",
     paper_bgcolor: "#ffffff",

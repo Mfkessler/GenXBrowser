@@ -1,10 +1,10 @@
 <template>
-  <div class="h-[100vh] flex flex-col">
+  <div class="min-h-[100vh] flex flex-col">
     <!-- Optional: Your header or controls here -->
 
     <!-- Gallery container: flex wrap and gap for nice grid layout -->
     <div
-      class="flex gap-4 flex-grow p-2 overflow-x-auto overflow-y-hidden whitespace-nowrap"
+      class="flex gap-4 flex-grow p-2 overflow-visible min-w-0"
     >
       <!-- Only render Compare after hash data is loaded (if hash-based) -->
       <!-- For non-hash loads (hashLoadedSpecies stays null), render immediately when isDataLoaded is true -->
@@ -13,7 +13,7 @@
         <div
           v-for="tableName in effectiveTableNames"
           :key="tableName"
-          class="flex-grow min-w-[42rem] h-[90vh] flex flex-col"
+          class="flex-grow min-w-0 min-h-[34rem] sm:min-h-[calc(100vh-5rem)] flex flex-col"
         >
           <Compare
             :table-name="tableName"
