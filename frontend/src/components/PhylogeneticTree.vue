@@ -163,6 +163,7 @@ import {
 import { buildPhyloMetricKeys, matchLeafToDataset, resolvePhyloLeafMatch } from "@/shared/phyloLeafMatching";
 import type { Config } from "@/shared/Config";
 import { hierarchicalCluster } from "@/shared/clustering";
+import { useFilterSeparation } from "@/shared/useFilterSeparation";
 import { useRoute, useRouter } from 'vue-router';
 
 const config = inject("config") as Config;
@@ -173,6 +174,7 @@ const filtersStore = useFiltersStore();
 const visualizationStore = useVisualizationStore();
 const columnStore = useColumnsStore();
 const {filters} = storeToRefs(filtersStore);
+const { sampleFilters } = useFilterSeparation();
 const tableData = ref<Record<string, any[]>>({});
 
 // Router for URL state management
@@ -405,6 +407,7 @@ async function fetchData(
             table_name: tableName,
             filters: requestFilters,
             filter_chain: filtersStore.buildFilterChainPayload(requestFilters),
+            sample_filters: sampleFilters.value,
             layer: visualizationStore.expressionDisplay.layer,
             transform: visualizationStore.expressionDisplay.transform,
           },
@@ -418,6 +421,7 @@ async function fetchData(
           {
             table_name: tableName + "_meta",
             filters: {},
+            sample_filters: sampleFilters.value,
           },
         ),
       ]);
@@ -541,6 +545,7 @@ async function fetchAllSelected(options: { keepLoading?: boolean } = {}) {
           table_name: tableName,
           filters: filtersStore.getMergedFilters(tableName),
           filter_chain: filtersStore.buildFilterChainPayload(filtersStore.getMergedFilters(tableName)),
+          sample_filters: sampleFilters.value,
         },
       );
       const rowCount = count.count;

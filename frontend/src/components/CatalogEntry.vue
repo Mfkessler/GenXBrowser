@@ -337,6 +337,7 @@ import {useColumnsStore} from "@/stores/columns";
 import {beautifyLabel} from "@/shared/utils";
 import BatchInputModal from "./BatchInputModal.vue";
 import { getProcessedPhoto, generateInitialsPlaceholder } from "@/utils/imageProcessor";
+import { filterMetadataRows, uniqueMetadataValues, type MetadataFilterValue, type MetadataRow } from "@/shared/sampleMetadataFilters";
 
 const filtersStore = useFiltersStore();
 const columnsStore = useColumnsStore();
@@ -503,38 +504,11 @@ function closePhotoModal() {
   showPhotoModal.value = false;
 }
 
-type MetadataRow = Record<string, unknown>;
-type FilterObject = { value?: unknown };
-
-function rowMatchesAnyPart(item: MetadataRow, columnName: string, parts: string[]): boolean {
-  const itemVal = item[columnName];
-  if (Array.isArray(itemVal)) {
-    return itemVal.some((value) => parts.includes(String(value)));
-  }
-  return parts.includes(String(itemVal));
-}
-
-function rowMatchesExact(item: MetadataRow, columnName: string, value: string): boolean {
-  const itemVal = item[columnName];
-  if (Array.isArray(itemVal)) {
-    return itemVal.includes(value);
-  }
-  return itemVal === value;
-}
-
 async function calculate_tissues(tableName: string, filters: Record<string, unknown>): Promise<string[]> {
   try {
-    // Tissue column name — read from admin config via store
-    const TISSUE_COLUMNS = columnsStore.tissueColumnName ? [columnsStore.tissueColumnName] : [];
-    
-    // Sample metadata columns that can be filtered
-    const SAMPLE_METADATA_COLUMNS = [
-      ...TISSUE_COLUMNS,
-      'assigned',
-      'pct_unmapped',
-      'pct_no_feature',
-      'pct_trimmed'
-    ];
+    const tissueColumnName = columnsStore.tissueColumnName;
+    if (!tissueColumnName) return [];
+    const sampleMetadataColumns = new Set(columnsStore.filterableColColumns.map((column) => column.column_name));
     
     // Backend doesn't properly filter _meta tables, so we always fetch all data
     // and filter client-side
@@ -554,98 +528,9 @@ async function calculate_tissues(tableName: string, filters: Record<string, unkn
       return [];
     }
     
-    // Convert to array if it's an object
-    let dataArray = (Array.isArray(data) ? data : Object.values(data)) as MetadataRow[];
-    
-    // CLIENT-SIDE FILTERING: Apply all sample-level filters
-    const appliedFilters: string[] = [];
-    
-    for (const [columnName, filterValue] of Object.entries(filters as Record<string, unknown>)) {
-      // Only process sample metadata columns
-      if (!SAMPLE_METADATA_COLUMNS.includes(columnName)) {
-        continue;
-      }
-      
-      // Handle different filter formats
-      if (typeof filterValue === 'string') {
-        // Split comma-separated values for OR matching (multiselect)
-        const parts = filterValue.split(',').map((v: string) => v.trim()).filter(Boolean);
-        if (parts.length > 1) {
-          dataArray = dataArray.filter((item) => rowMatchesAnyPart(item, columnName, parts));
-          appliedFilters.push(`${columnName}∈{${parts.join(', ')}}`);
-        } else {
-          dataArray = dataArray.filter((item) => rowMatchesExact(item, columnName, filterValue));
-          appliedFilters.push(`${columnName}='${filterValue}'`);
-        }
-      } else if (typeof filterValue === 'object' && filterValue !== null && 'value' in filterValue) {
-        // Object format with value property
-        const filterObject = filterValue as FilterObject;
-        if (filterObject.value !== undefined) {
-          const value = filterObject.value;
-          
-          if (typeof value === 'string') {
-            // Split comma-separated values for OR matching (multiselect)
-            const parts = value.split(',').map((v: string) => v.trim()).filter(Boolean);
-            if (parts.length > 1) {
-              dataArray = dataArray.filter((item) => rowMatchesAnyPart(item, columnName, parts));
-              appliedFilters.push(`${columnName}∈{${parts.join(', ')}}`);
-            } else {
-              dataArray = dataArray.filter((item) => rowMatchesExact(item, columnName, value));
-              appliedFilters.push(`${columnName}='${value}'`);
-            }
-          } else if (Array.isArray(value)) {
-            // Array can mean:
-            // - Range for numbers: [min, max]
-            // - List of values for strings: [val1, val2, ...]
-            if (value.length === 2 && typeof value[0] === 'number' && typeof value[1] === 'number') {
-              // Numeric range
-              const [min, max] = value;
-              dataArray = dataArray.filter((item) => {
-                const itemValue = parseFloat(String(item[columnName]));
-                return !isNaN(itemValue) && itemValue >= min && itemValue <= max;
-              });
-              appliedFilters.push(`${columnName}∈[${min}, ${max}]`);
-            } else {
-              // List of values
-              dataArray = dataArray.filter((item) => value.includes(item[columnName]));
-              appliedFilters.push(`${columnName}∈{${value.join(', ')}}`);
-            }
-          } else if (typeof value === 'number') {
-            // Numeric equality
-            dataArray = dataArray.filter((item) => parseFloat(String(item[columnName])) === value);
-            appliedFilters.push(`${columnName}=${value}`);
-          }
-        }
-      } else if (Array.isArray(filterValue)) {
-        // Direct array (range or list)
-        if (filterValue.length === 2 && typeof filterValue[0] === 'number' && typeof filterValue[1] === 'number') {
-          // Numeric range
-          const [min, max] = filterValue;
-          dataArray = dataArray.filter((item) => {
-            const itemValue = parseFloat(String(item[columnName]));
-            return !isNaN(itemValue) && itemValue >= min && itemValue <= max;
-          });
-          appliedFilters.push(`${columnName}∈[${min}, ${max}]`);
-        } else {
-          // List of values
-          dataArray = dataArray.filter((item) => filterValue.includes(item[columnName]));
-          appliedFilters.push(`${columnName}∈{${filterValue.join(', ')}}`);
-        }
-      }
-    }
-    
-    // Extract unique tissue values from filtered data
-    let values: string[] = [];
-    for (const tissueCol of TISSUE_COLUMNS) {
-      const colValues = dataArray.map((item) => item[tissueCol]).filter(Boolean).map(String);
-      if (colValues.length > 0) {
-        values = colValues;
-        break;
-      }
-    }
-    
-    const uniqueTissues = [...new Set(values)];
-    return uniqueTissues;
+    const dataArray = (Array.isArray(data) ? data : Object.values(data)) as MetadataRow[];
+    const filteredRows = filterMetadataRows(dataArray, filters as Record<string, MetadataFilterValue>, sampleMetadataColumns);
+    return uniqueMetadataValues(filteredRows, tissueColumnName);
   } catch (error) {
     console.error("Error calculating tissues:", error);
     return [];
