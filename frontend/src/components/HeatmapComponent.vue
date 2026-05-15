@@ -17,6 +17,52 @@
         >
       </div>
       <div class="flex gap-2 flex-wrap justify-end">
+        <button
+          v-if="rowCount <= 1000 && rowCount > 0"
+          aria-label="Toggle zoom mode"
+          @click="toggleZoomMode"
+          class="p-2 rounded-md border"
+          :class="zoomMode
+            ? 'text-white bg-primary-500 border-primary-500'
+            : 'text-primary-500 border-primary-500 hover:bg-primary-500 hover:text-white'"
+          v-tooltip="zoomMode ? 'Zoom mode active' : 'Rectangle zoom mode'"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 18a7.5 7.5 0 1 1 5.3-12.8A7.5 7.5 0 0 1 10.5 18Z" />
+            <path stroke-linecap="round" stroke-linejoin="round" d="m16 16 5 5M8 10.5h5M10.5 8v5" />
+          </svg>
+        </button>
+
+        <button
+          v-if="rowCount <= 1000 && rowCount > 0"
+          aria-label="Toggle pan mode"
+          @click="togglePanMode"
+          :disabled="!isHeatmapZoomed"
+          class="p-2 rounded-md border"
+          :class="panMode
+            ? 'text-white bg-primary-500 border-primary-500'
+            : 'text-primary-500 border-primary-500 disabled:opacity-50 hover:bg-primary-500 hover:text-white'"
+          v-tooltip="!isHeatmapZoomed ? 'Zoom in before panning' : panMode ? 'Pan mode active' : 'Pan mode'"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M7 11.5V9a2 2 0 1 1 4 0v2.5M11 11V8a2 2 0 1 1 4 0v4m0-1V9.5a2 2 0 1 1 4 0V15a6 6 0 0 1-6 6h-1.5a6 6 0 0 1-4.8-2.4L4 15v-1a2 2 0 0 1 3.2-1.6L9 14" />
+          </svg>
+        </button>
+
+        <button
+          v-if="rowCount <= 1000 && rowCount > 0"
+          aria-label="Reset heatmap zoom"
+          @click="resetZoom"
+          :disabled="!isHeatmapZoomed"
+          class="p-2 rounded-md text-primary-500 border border-primary-500 disabled:opacity-50"
+          :class="{'hover:bg-primary-500 hover:text-white': isHeatmapZoomed}"
+          v-tooltip="isHeatmapZoomed ? 'Reset zoom' : 'No zoom active'"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5" />
+          </svg>
+        </button>
+
         <span v-tooltip="props.existingTables.length === Object.keys(props.allTables).length ? 'All heatmaps already shown' : 'Add another heatmap'">
         <button
           aria-label="Add another heatmap"
@@ -284,6 +330,17 @@ const heatmapInstanceId = `heatmap-${Math.random().toString(36).slice(2, 10)}`;
 const colorLegendId = `${heatmapInstanceId}-color-legend`;
 const sideColorTooltipId = `${heatmapInstanceId}-side-color-tooltip`;
 
+interface HeatmapZoomWindow {
+  xStart: number;
+  xEnd: number;
+  yStart: number;
+  yEnd: number;
+}
+
+const zoomWindow = ref<HeatmapZoomWindow | null>(null);
+const zoomMode = ref(false);
+const panMode = ref(false);
+
 // Guards against concurrent renders: if a second render is requested while
 // one is already in progress, it will be queued and run immediately after.
 let isRendering = false;
@@ -320,6 +377,7 @@ const visibleColumns = computed(() => {
 // Reactive references for TooltipModal
 const idColumn = computed(() => config.visualization.id_column);
 const heatmapCols = computed(() => visibleColumns.value);
+const isHeatmapZoomed = computed(() => zoomWindow.value !== null);
 
 const heatmapExportMetaColumns = computed(() =>
   columnNames.value.includes(idColumn.value) ? [idColumn.value] : [],
@@ -351,6 +409,76 @@ const heatmapExportPayload = computed(() => {
 defineExpose({
   getExportPayload: () => heatmapExportPayload.value,
 });
+
+function getCurrentZoomWindow(rowTotal: number, colTotal: number): HeatmapZoomWindow {
+  const current = zoomWindow.value;
+  if (!current) {
+    return {xStart: 0, xEnd: colTotal, yStart: 0, yEnd: rowTotal};
+  }
+  return clampZoomWindow(current, rowTotal, colTotal);
+}
+
+function clampZoomWindow(window: HeatmapZoomWindow, rowTotal: number, colTotal: number): HeatmapZoomWindow {
+  const visibleCols = Math.max(1, Math.min(colTotal, window.xEnd - window.xStart));
+  const visibleRows = Math.max(1, Math.min(rowTotal, window.yEnd - window.yStart));
+  const xStart = Math.max(0, Math.min(window.xStart, Math.max(0, colTotal - visibleCols)));
+  const yStart = Math.max(0, Math.min(window.yStart, Math.max(0, rowTotal - visibleRows)));
+  return {
+    xStart,
+    xEnd: Math.min(colTotal, xStart + visibleCols),
+    yStart,
+    yEnd: Math.min(rowTotal, yStart + visibleRows),
+  };
+}
+
+function setZoomWindow(nextWindow: HeatmapZoomWindow | null) {
+  if (!nextWindow) {
+    zoomWindow.value = null;
+    panMode.value = false;
+    scheduleHeatmapRender();
+    return;
+  }
+
+  const clamped = clampZoomWindow(nextWindow, sortedRows.value.length, visibleColumns.value.length);
+  if (
+    clamped.xStart <= 0 &&
+    clamped.yStart <= 0 &&
+    clamped.xEnd >= visibleColumns.value.length &&
+    clamped.yEnd >= sortedRows.value.length
+  ) {
+    zoomWindow.value = null;
+    panMode.value = false;
+  } else {
+    zoomWindow.value = clamped;
+  }
+  scheduleHeatmapRender();
+}
+
+function resetZoom() {
+  zoomMode.value = false;
+  panMode.value = false;
+  setZoomWindow(null);
+}
+
+function toggleZoomMode() {
+  zoomMode.value = !zoomMode.value;
+  if (zoomMode.value) {
+    panMode.value = false;
+  }
+  scheduleHeatmapRender();
+}
+
+function togglePanMode() {
+  if (!isHeatmapZoomed.value) {
+    panMode.value = false;
+    return;
+  }
+  panMode.value = !panMode.value;
+  if (panMode.value) {
+    zoomMode.value = false;
+  }
+  scheduleHeatmapRender();
+}
 
 // Helper
 function getColumnKeys(dataRows: RowType[]): string[] {
@@ -511,6 +639,9 @@ function maskRows(
 function recalculateData() {
   sortedRows.value = calculateSortedRows(processedRows.value);
   sortedColumns.value = calculateSortedColumns(columns.value);
+  if (zoomWindow.value) {
+    zoomWindow.value = clampZoomWindow(zoomWindow.value, sortedRows.value.length, visibleColumns.value.length);
+  }
 }
 
 function calculateProcessedRows(): RowType[] {
@@ -726,6 +857,7 @@ async function renderSideColors({
                                   dimensionSize,
                                   labels,
                                   attributeValues,
+                                  colorDomainValues,
                                   column_name,
                                   colType,
                                   xOffset = 0,
@@ -744,17 +876,19 @@ async function renderSideColors({
   try {
     const isNumericSideColor = colType === "double precision" || colType === "bigint";
     const useSharedMapping = !(orientation === "col" && isNumericSideColor);
+    const mappingValues = colorDomainValues ?? attributeValues;
 
     // Categorical/list side colors share a registry for stable colors across plots.
     // Numeric column side colors intentionally use a local domain per heatmap and
-    // per metadata column, so each visible row has its own independent gradient.
+    // per metadata column, but the domain is still based on the full loaded
+    // heatmap, not the current zoom window.
     if (sharedColorRegistry && useSharedMapping) {
-      sharedColorRegistry.registerValues(column_name, colType, attributeValues);
+      sharedColorRegistry.registerValues(column_name, colType, mappingValues);
     }
     const sharedColorMap = sharedColorRegistry && useSharedMapping
       ? sharedColorRegistry.getMapping(column_name)
       : null;
-    const colorMap = sharedColorMap ?? createVisibleColorMapping(column_name, colType, attributeValues);
+    const colorMap = sharedColorMap ?? createVisibleColorMapping(column_name, colType, mappingValues);
 
     // Dimension calculations
     const colorSize = dimensionSize * 0.75;
@@ -1109,7 +1243,10 @@ async function renderHeatmap(): Promise<boolean> {
       .select(container)
       .append("svg")
       .attr("width", width)
-      .attr("height", height);
+      .attr("height", height)
+      .attr("data-zoomed", zoomWindow.value !== null ? "true" : "false")
+      .attr("data-pan-mode", panMode.value ? "true" : "false")
+      .attr("data-zoom-mode", zoomMode.value ? "true" : "false");
 
   svg
     .append("text")
@@ -1120,8 +1257,11 @@ async function renderHeatmap(): Promise<boolean> {
     .attr("font-style", "italic")
     .text(beautifyLabel(localTableName.value));
 
-    const data = sortedRows.value;
-    const heatmapCols = visibleColumns.value;
+    const allData = sortedRows.value;
+    const allHeatmapCols = visibleColumns.value;
+    const activeWindow = getCurrentZoomWindow(allData.length, allHeatmapCols.length);
+    const data = allData.slice(activeWindow.yStart, activeWindow.yEnd);
+    const heatmapCols = allHeatmapCols.slice(activeWindow.xStart, activeWindow.xEnd);
     const currentIdColumn = idColumn.value;
   
   // Determine if we should use deferred event binding for large datasets
@@ -1141,9 +1281,9 @@ async function renderHeatmap(): Promise<boolean> {
     const y = d3.scaleBand().domain(yLabels).range([0, svgH]).padding(0);
 
   //Colorscaling
-    const allCellVals = data
+    const allCellVals = allData
       .flatMap((row: RowType) =>
-        heatmapCols.map((c) => {
+        allHeatmapCols.map((c) => {
           const val = row[c];
           return val === "[BLOB]" ? NaN : +val;
         }),
@@ -1284,7 +1424,7 @@ async function renderHeatmap(): Promise<boolean> {
       .style("max-width", "24rem")
       .style("border", "1px solid #d1d5db")
       .style("box-shadow", "0 1px 2px rgba(0,0,0,0.05)")
-      .style("pointer-events", "auto")
+      .style("pointer-events", "none")
       .style("user-select", "text");
 
   let hideTimeout; // global merken
@@ -1300,13 +1440,169 @@ async function renderHeatmap(): Promise<boolean> {
   
   const cellGroup = svg
     .append("g")
-    .attr("transform", `translate(${margin.left},${margin.top})`);
+    .attr("transform", `translate(${margin.left},${margin.top})`)
+    .style("cursor", panMode.value ? "grab" : zoomMode.value ? "crosshair" : "default");
+
+  const plotHitbox = cellGroup
+    .append("rect")
+    .attr("class", "heatmap-plot-hitbox")
+    .attr("width", svgW)
+    .attr("height", svgH)
+    .attr("fill", "transparent")
+    .attr("pointer-events", "all");
+
+  const zoomSelectionRect = cellGroup
+    .append("rect")
+    .attr("class", "heatmap-zoom-selection")
+    .attr("fill", "rgba(166, 197, 80, 0.24)")
+    .attr("stroke", "#ffffff")
+    .attr("stroke-width", 2)
+    .attr("pointer-events", "none")
+    .style("filter", "drop-shadow(0 0 2px rgba(98, 128, 16, 0.45))")
+    .style("display", "none");
+
+  const clampPointer = (event: MouseEvent): [number, number] => {
+    const containerRect = container.getBoundingClientRect();
+    const rawX = event.clientX - containerRect.left - margin.left;
+    const rawY = event.clientY - containerRect.top - margin.top;
+    return [
+      Math.max(0, Math.min(svgW, rawX)),
+      Math.max(0, Math.min(svgH, rawY)),
+    ];
+  };
+
+  const handlePlotMouseDown = (event: MouseEvent) => {
+    if (event.button !== 0) return;
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    if (!zoomMode.value && !panMode.value) return;
+
+    const start = clampPointer(event);
+    const startWindow = {...activeWindow};
+    const startZoomed = zoomWindow.value !== null;
+    if (panMode.value && !startZoomed) return;
+    event.preventDefault();
+    event.stopPropagation();
+    tooltip.style("visibility", "hidden");
+    let pendingPanWindow: HeatmapZoomWindow | null = null;
+    let panWindow = {...startWindow};
+    let lastPanPoint = start;
+    let accumulatedPanDx = 0;
+    let accumulatedPanDy = 0;
+    let livePanFrame: number | null = null;
+    let didMove = false;
+
+    const zoomWindowsEqual = (left: HeatmapZoomWindow, right: HeatmapZoomWindow) => (
+      left.xStart === right.xStart &&
+      left.xEnd === right.xEnd &&
+      left.yStart === right.yStart &&
+      left.yEnd === right.yEnd
+    );
+
+    const scheduleLivePan = () => {
+      if (livePanFrame !== null) return;
+      livePanFrame = requestAnimationFrame(() => {
+        livePanFrame = null;
+        if (pendingPanWindow) {
+          setZoomWindow(pendingPanWindow);
+        }
+      });
+    };
+
+    const cleanup = () => {
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+      if (livePanFrame !== null) {
+        cancelAnimationFrame(livePanFrame);
+        livePanFrame = null;
+      }
+      cellGroup.style("cursor", panMode.value ? "grab" : zoomMode.value ? "crosshair" : "default");
+      zoomSelectionRect.style("display", "none");
+    };
+
+    const handleMove = (moveEvent: MouseEvent) => {
+      const current = clampPointer(moveEvent);
+      const dx = current[0] - start[0];
+      const dy = current[1] - start[1];
+      didMove = didMove || Math.abs(dx) > 3 || Math.abs(dy) > 3;
+
+      if (panMode.value && startZoomed) {
+        cellGroup.style("cursor", "grabbing");
+        accumulatedPanDx += current[0] - lastPanPoint[0];
+        accumulatedPanDy += current[1] - lastPanPoint[1];
+        lastPanPoint = current;
+
+        const colWidth = Math.max(1, x.bandwidth());
+        const rowHeight = Math.max(1, y.bandwidth());
+        const colShift = Math.trunc(-accumulatedPanDx / colWidth);
+        const rowShift = Math.trunc(-accumulatedPanDy / rowHeight);
+        if (colShift !== 0 || rowShift !== 0) {
+          accumulatedPanDx += colShift * colWidth;
+          accumulatedPanDy += rowShift * rowHeight;
+
+          const nextPanWindow = clampZoomWindow({
+            xStart: panWindow.xStart + colShift,
+            xEnd: panWindow.xEnd + colShift,
+            yStart: panWindow.yStart + rowShift,
+            yEnd: panWindow.yEnd + rowShift,
+          }, allData.length, allHeatmapCols.length);
+          if (!zoomWindowsEqual(nextPanWindow, panWindow)) {
+            panWindow = nextPanWindow;
+            pendingPanWindow = nextPanWindow;
+            scheduleLivePan();
+          }
+        }
+        return;
+      }
+
+      const x0 = Math.min(start[0], current[0]);
+      const y0 = Math.min(start[1], current[1]);
+      const x1 = Math.max(start[0], current[0]);
+      const y1 = Math.max(start[1], current[1]);
+      zoomSelectionRect
+        .raise()
+        .style("display", null)
+        .attr("x", x0)
+        .attr("y", y0)
+        .attr("width", x1 - x0)
+        .attr("height", y1 - y0);
+    };
+
+    const handleUp = (upEvent: MouseEvent) => {
+      cleanup();
+      if (panMode.value && startZoomed) {
+        if (didMove && pendingPanWindow) setZoomWindow(pendingPanWindow);
+        return;
+      }
+      if (!didMove) return;
+
+      const end = clampPointer(upEvent);
+      const x0 = Math.min(start[0], end[0]);
+      const y0 = Math.min(start[1], end[1]);
+      const x1 = Math.max(start[0], end[0]);
+      const y1 = Math.max(start[1], end[1]);
+      if (x1 - x0 < 8 || y1 - y0 < 8) return;
+
+      const nextWindow = {
+        xStart: activeWindow.xStart + Math.floor(x0 / Math.max(1, x.bandwidth())),
+        xEnd: activeWindow.xStart + Math.ceil(x1 / Math.max(1, x.bandwidth())),
+        yStart: activeWindow.yStart + Math.floor(y0 / Math.max(1, y.bandwidth())),
+        yEnd: activeWindow.yStart + Math.ceil(y1 / Math.max(1, y.bandwidth())),
+      };
+      setZoomWindow(nextWindow);
+    };
+
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp, {once: true});
+  };
+
+  plotHitbox.on("mousedown.zoom-pan", handlePlotMouseDown);
   
   // Render cells - for large datasets, skip initial event binding
   const rects = cellGroup
-    .selectAll("rect")
+    .selectAll<SVGRectElement, (typeof cellData)[number]>("rect.heatmap-cell")
     .data(cellData)
     .join("rect")
+    .attr("class", "heatmap-cell")
     .attr("x", (d) => x(d.col) ?? 0)
     .attr("y", (d) => y(yLabels[d.rowIndex]) ?? 0)
     .attr("width", x.bandwidth())
@@ -1316,12 +1612,14 @@ async function renderHeatmap(): Promise<boolean> {
       const n = +d.value;
       return isNaN(n) ? "#eee" : colorScale(n);
     })
-    .attr("stroke", "none");
+    .attr("stroke", "none")
+    .on("mousedown.zoom-pan", handlePlotMouseDown);
   
   // Add event handlers (deferred for large datasets to improve initial render)
   const addCellEventHandlers = () => {
     rects
     .on("mouseover", function (event, d) {
+      if (zoomMode.value || panMode.value) return;
       d3.select(this).attr("stroke", "white").style("stroke-width", 2);
 
       const row = data[d.rowIndex];
@@ -1385,6 +1683,7 @@ async function renderHeatmap(): Promise<boolean> {
       if (hideTimeout) clearTimeout(hideTimeout); // falls noch aktiv
     })
     .on("mousemove", function (event) {
+      if (zoomMode.value || panMode.value) return;
       if (!heatmapContainer.value) return;
       const containerRect = heatmapContainer.value.getBoundingClientRect();
       const tooltipNode = tooltip.node();
@@ -1414,6 +1713,7 @@ async function renderHeatmap(): Promise<boolean> {
     })
 
     .on("mouseout", function () {
+      if (zoomMode.value || panMode.value) return;
       d3.select(this).attr("stroke", "none");
 
       // Tooltip nach 300ms schließen (falls Maus nicht in Tooltip wandert)
@@ -1510,6 +1810,7 @@ async function renderHeatmap(): Promise<boolean> {
 
       // Use helper for values:
       const attributeValues = getSideColorAttributeValues(data, col, colType);
+      const colorDomainValues = getSideColorAttributeValues(allData, col, colType);
 
       await renderSideColors({
         svg,
@@ -1517,6 +1818,7 @@ async function renderHeatmap(): Promise<boolean> {
         dimensionSize: SIDE_COLOR_WIDTH,
         labels: yLabels,
         attributeValues,
+        colorDomainValues,
         column_name: col,
         colType,
         xOffset:
@@ -1536,23 +1838,24 @@ async function renderHeatmap(): Promise<boolean> {
       : [];
     for (let i = 0; i < sortedColSideColors.length; i++) {
       const col = sortedColSideColors[i];
-      let xLabelsForColoring, attributeValues, colType;
+      let xLabelsForColoring, attributeValues, colorDomainValues, colType;
+      const allColMeta = sortedColumns.value.filter((meta) =>
+        allHeatmapCols.includes(String(meta.column_name ?? "")),
+      );
       if (col === "tissue_types") {
-        // Filter to only the visible columns
-        xLabelsForColoring = dataColumnNames.value.filter((name) =>
-          visibleColumns.value.includes(name),
-        );
+        xLabelsForColoring = heatmapCols;
         // Get actual tissue values from column metadata using configured tissue column
         const tissueKey = columnStore.tissueColumnName ?? 'tissue';
         const filteredColMeta = sortedColumns.value.filter((meta) =>
-          visibleColumns.value.includes(String(meta.column_name ?? "")),
+          heatmapCols.includes(String(meta.column_name ?? "")),
         );
         attributeValues = filteredColMeta.map((meta) => meta[tissueKey] ?? meta.column_name);
+        colorDomainValues = allColMeta.map((meta) => meta[tissueKey] ?? meta.column_name);
       } else {
         xLabelsForColoring = heatmapCols; // already filtered by visibleColumns
         // Filter metadata to only visible columns
         const filteredColMeta = sortedColumns.value.filter((meta) =>
-          visibleColumns.value.includes(String(meta.column_name ?? "")),
+          heatmapCols.includes(String(meta.column_name ?? "")),
         );
         const colMeta = columnStore.colColumns.find(
           (c) => c.column_name === col,
@@ -1564,6 +1867,11 @@ async function renderHeatmap(): Promise<boolean> {
           col,
           colType,
         );
+        colorDomainValues = getSideColorAttributeValues(
+          allColMeta,
+          col,
+          colType,
+        );
       }
       await renderSideColors({
         svg,
@@ -1571,6 +1879,7 @@ async function renderHeatmap(): Promise<boolean> {
         dimensionSize: SIDE_COLOR_WIDTH,
         labels: xLabelsForColoring,
         attributeValues,
+        colorDomainValues,
         column_name: col,
         colType,
         xOffset: margin.left,
