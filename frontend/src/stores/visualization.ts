@@ -1,7 +1,5 @@
 import { defineStore } from "pinia";
 
-import { beautifyLabel } from "@/shared/utils";
-
 export interface ExpressionDisplayState {
   optionId: string; // 'tpm', 'tmm', 'getmm', 'log2', 'zscore', 'raw'
   layer: string | null; // 'tpm', 'tmm', 'getmm', 'X', or null for auto-select
@@ -368,9 +366,7 @@ export const useVisualizationStore = defineStore("visualization", {
       const defaultState = getDefaultState();
       const row_id_column = this.rowOrder.name;
 
-      Object.entries(defaultState).forEach(([key, value]) => {
-        (this as any)[key] = value;
-      });
+      this.$patch(defaultState);
 
       this.initialize(row_id_column);
     },

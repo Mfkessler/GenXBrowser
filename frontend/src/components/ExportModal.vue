@@ -301,34 +301,29 @@ async function doExport() {
   try {
     let blob: Blob;
     let extension: string;
-    let mimeType: string;
     
     switch (selectedFormat.value) {
       case 'csv':
         const csvContent = toDelimited(props.data, props.columns, ',', quoteStrings.value, includeHeaders.value);
         blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
         extension = 'csv';
-        mimeType = 'text/csv';
         break;
         
       case 'tsv':
         const tsvContent = toDelimited(props.data, props.columns, '\t', quoteStrings.value, includeHeaders.value);
         blob = new Blob([tsvContent], { type: 'text/tab-separated-values;charset=utf-8' });
         extension = 'tsv';
-        mimeType = 'text/tab-separated-values';
         break;
         
       case 'json':
         const jsonContent = toJson(props.data, props.columns);
         blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8' });
         extension = 'json';
-        mimeType = 'application/json';
         break;
         
       case 'xlsx':
         blob = await toXlsx(props.data, props.columns, includeHeaders.value);
         extension = 'xlsx';
-        mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
         break;
         
       default:

@@ -106,11 +106,18 @@ export const useFiltersStore = defineStore("filters", {
     replaceState(newState: Partial<FiltersState>) {
       Object.entries(newState).forEach(([key, value]) => {
         if (key in this) {
-          // Convert arrays back to Sets for tags and table_names
           if (key === 'tags' || key === 'table_names') {
             this[key] = new Set(Array.isArray(value) ? value : []);
+          } else if (key === 'filters') {
+            this.filters = value as FiltersState['filters'];
+          } else if (key === 'columns') {
+            this.columns = value as FiltersState['columns'];
+          } else if (key === 'datasetIdFilters') {
+            this.datasetIdFilters = value as FiltersState['datasetIdFilters'];
+          } else if (key === 'idColumnName') {
+            this.idColumnName = value as FiltersState['idColumnName'];
           } else {
-            (this as any)[key] = value;
+            return;
           }
         }
       });

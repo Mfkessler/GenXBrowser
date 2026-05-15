@@ -126,7 +126,19 @@ const showSettingsOverlay = ref(false);
 const showShareOverlay = ref(false);
 const showExportModal = ref(false);
 const viewContentRoot = ref<HTMLDivElement | null>(null);
-const oraRefs = ref<any[]>([]);
+interface ExportPayload {
+  dataset: string;
+  columns: string[];
+  metaColumns: string[];
+  sampleColumns: string[];
+  data: RowType[];
+}
+
+interface ExportPayloadProvider {
+  getExportPayload?: () => ExportPayload | null;
+}
+
+const oraRefs = ref<ExportPayloadProvider[]>([]);
 const allTables = ref<Record<string, string>>({});
 const hashLoading = ref(true);
 
@@ -154,10 +166,10 @@ const globalExportPayload = computed(() => {
   const payloads = (oraRefs.value || [])
     .map((component) => component?.getExportPayload?.())
     .filter(Boolean);
-  const columns = uniqueColumns(['dataset', ...payloads.flatMap((payload: any) => payload.columns)]);
-  const metaColumns = uniqueColumns(['dataset', ...payloads.flatMap((payload: any) => payload.metaColumns)]);
-  const sampleColumns = uniqueColumns(payloads.flatMap((payload: any) => payload.sampleColumns));
-  const data = payloads.flatMap((payload: any) =>
+  const columns = uniqueColumns(['dataset', ...payloads.flatMap((payload) => payload.columns)]);
+  const metaColumns = uniqueColumns(['dataset', ...payloads.flatMap((payload) => payload.metaColumns)]);
+  const sampleColumns = uniqueColumns(payloads.flatMap((payload) => payload.sampleColumns));
+  const data = payloads.flatMap((payload) =>
     payload.data.map((row: RowType) => ({ dataset: beautifyLabel(payload.dataset), ...row })),
   );
 

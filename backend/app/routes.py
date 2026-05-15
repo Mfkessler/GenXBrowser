@@ -573,9 +573,12 @@ def list_data():
         parsed_filters = parse_filters(filters, lambda **kw: service.get_all_columns(table_name=table_name, **kw))
         parsed_sample_filters = parse_filters(sample_filters, lambda **kw: service.get_all_columns(table_name=table_name, **kw), source="column_meta") if sample_filters else {}
         
-        # Debug: Log parsed filters
-        logger.info(f"[list_data] parsed_filters: {parsed_filters}")
-        logger.info(f"[list_data] parsed_sample_filters: {parsed_sample_filters}")
+        # Keep request logs compact; full filter payloads can be large.
+        logger.debug(
+            "[list_data] Parsed %d row filters and %d sample filters",
+            len(parsed_filters),
+            len(parsed_sample_filters),
+        )
         
         # Add gene_ids filter if provided
         if gene_ids:

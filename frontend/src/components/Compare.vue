@@ -126,9 +126,11 @@
   </main>
 </template>
 
+<!-- eslint-disable vue/multi-word-component-names, @typescript-eslint/no-explicit-any -->
 <script setup lang="ts">
+defineOptions({ name: "CompareComponent" });
+
 import axios from "axios";
-import { storeToRefs } from "pinia";
 import {
   computed,
   ref,
@@ -143,7 +145,7 @@ import * as Plotly from "plotly.js-dist-min";
 
 import { API_BASE_URL } from "@/shared/Config";
 import { getCategoricalColors } from "@/shared/Colorscales";
-import { getExpressionOption, EXPRESSION_OPTIONS } from "@/shared/ExpressionDisplay";
+import { getExpressionOption } from "@/shared/ExpressionDisplay";
 import { useFiltersStore } from "@/stores/filters";
 import { useColumnsStore } from "@/stores/columns";
 import { useVisualizationStore } from "@/stores/visualization";
@@ -201,7 +203,7 @@ const router = useRouter();
 const filtersStore = useFiltersStore();
 const columnsStore = useColumnsStore();
 const visualizationStore = useVisualizationStore();
-const { filters, geneFilters, sampleFilters, getMergedGeneFilters } = useFilterSeparation();
+const { filters, sampleFilters, getMergedGeneFilters } = useFilterSeparation();
 
 // ============================================================================
 // Reactive State
@@ -218,7 +220,6 @@ const showPlotTypeDropdown = ref(false);
 const plotTypeDropdownRef = ref<HTMLDivElement | null>(null);
 
 // Selection state
-const localTableName = ref(props.tableName);
 // Initialize with all species - we need to load all data to know which species have which OGs
 const selectedTables = ref<string[]>([]);
 
@@ -294,25 +295,7 @@ const commonOGs_options = computed(() => {
   return record;
 });
 
-// Available tissues derived from loaded data
-const availableTissues = computed(() => {
-  if (!processedData.value) return [];
-  return processedData.value.tissues;
-});
-
 // Removed totalTranscripts - using processedData.transcripts.length directly
-
-const expressionDisplayLabel = computed(() => {
-  const labels: Record<string, string> = {
-    tpm: "TPM",
-    tmm: "TMM",
-    getmm: "GeTMM",
-    log2: "Log₂",
-    zscore: "Z-Score",
-    raw: "Raw Counts",
-  };
-  return labels[expressionDisplayOption.value] || expressionDisplayOption.value;
-});
 
 // Species colors (consistent across renders)
 const speciesColors = computed(() => {
@@ -325,13 +308,6 @@ const speciesColors = computed(() => {
   });
   return colorMap;
 });
-
-// Plot type options for dropdown
-const plotTypeOptions = [
-  { value: 'line' as const, label: 'Line Plot' },
-  { value: 'box' as const, label: 'Box Plot' },
-  { value: 'violin' as const, label: 'Violin Plot' },
-];
 
 // Export modal computed properties
 const hasActiveFilters = computed(() => Object.keys(filters.value).length > 0);
@@ -378,36 +354,6 @@ const exportData = computed<RowType[]>(() => {
   });
 });
 
-// Plot type change handler
-async function onPlotTypeChange(newValue?: 'line' | 'box' | 'violin') {
-  if (newValue !== undefined) {
-    plotType.value = newValue;
-  }
-  showPlotTypeDropdown.value = false;
-  updateUrlFromState();
-  await nextTick();
-  renderPlot();
-}
-
-// Reset settings to defaults
-async function resetSettings() {
-  // Reset store state
-  visualizationStore.setCompareState({
-    plotType: 'line',
-    plotHeight: 500,
-    expression: 'tpm',
-    selectedSpecies: [props.tableName],
-    selectedOrthogroup: commonOGs_array.value[0] || '',
-  });
-  
-  const params = getExpressionParams('tpm');
-  visualizationStore.setExpressionDisplay('tpm', params.layer, params.transform);
-  
-  await fetchAllSelected();
-  await nextTick();
-  renderPlot();
-}
-
 // Share overlay - no sync needed since store is now Single Source of Truth
 function openShareOverlay() {
   showShareOverlay.value = true;
@@ -424,17 +370,6 @@ function getExpressionParams(optionId: string): { layer: string | null; transfor
   }
   // Fallback defaults
   return { layer: "tpm", transform: "raw" };
-}
-
-async function onExpressionDisplayChange(newValue?: string) {
-  if (newValue !== undefined) {
-    expressionDisplayOption.value = newValue;
-  }
-  const params = getExpressionParams(expressionDisplayOption.value);
-  visualizationStore.setExpressionDisplay(expressionDisplayOption.value, params.layer, params.transform);
-  await fetchAllSelected();
-  await nextTick();
-  renderPlot();
 }
 
 // ============================================================================
@@ -555,7 +490,7 @@ async function fetchAllSelected() {
     }
 
     console.log('[Compare] All results keys:', Object.keys(results));
-    console.log('[Compare] Results with data:', Object.entries(results).filter(([_, v]) => v !== null).map(([k]) => k));
+    console.log('[Compare] Results with data:', Object.entries(results).filter((entry) => entry[1] !== null).map(([k]) => k));
     
     tableData.value = results;
     const allOGs = getAllOGs(results);
@@ -588,9 +523,6 @@ async function fetchAllSelected() {
       unfilteredTableData.value = {};
     }
 
-    // Extract available species and tissues
-    extractFiltersFromData(results);
-
     // Handle OG selection with persistence and fallback
     // Keep current selection if still valid (case-insensitive), otherwise select first
     const currentSelection = selectedOrthogroup.value;
@@ -617,8 +549,8 @@ async function fetchAllSelected() {
 function getAllOGs(dataRef: Record<string, any>): Set<string> {
   const raw = toRaw(unref(dataRef));
 
-  const sets = Object.entries(raw)
-    .map(([_, plant]) => {
+  const sets = Object.values(raw)
+    .map((plant) => {
       const items = plant?.items ?? [];
       const arr = Array.isArray(items) ? items : Object.values(toRaw(items));
 
@@ -786,11 +718,6 @@ async function fetchUnfilteredData(tableName: string, ogIds: string[]) {
     console.error('[FetchUnfiltered] Error fetching unfiltered data for', tableName, ':', e);
   }
   return null;
-}
-
-function extractFiltersFromData(data: Record<string, any>) {
-  // No longer needed - all species are always loaded
-  // Kept for backwards compatibility, but does nothing
 }
 
 // ============================================================================
@@ -1404,49 +1331,6 @@ function handleClickOutside(event: MouseEvent) {
 }
 
 // ============================================================================
-// CSV Export
-// ============================================================================
-function downloadCSV() {
-  if (!processedData.value) return;
-
-  const { transcripts, tissues } = processedData.value;
-  // Export all transcripts from all species
-  const filteredTranscripts = transcripts;
-  // Use all tissues (filtering now done via sampleFilters)
-  const filteredTissues = tissues;
-
-  // Build CSV header
-  const headers = ["species", filtersStore.idColumnName, ...filteredTissues];
-  const rows: string[][] = [headers];
-
-  // Build data rows
-  filteredTranscripts.forEach((t) => {
-    const row = [
-      beautifyLabel(t.species),
-      t.geneId,
-      ...filteredTissues.map((tissue) => {
-        const vals = t.values[tissue];
-        if (!vals || vals.length === 0) return "";
-        const mean = vals.reduce((a, b) => a + b.value, 0) / vals.length;
-        return mean.toFixed(4);
-      }),
-    ];
-    rows.push(row);
-  });
-
-  // Convert to CSV string
-  const csvContent = rows.map((row) => row.map((cell) => `"${cell}"`).join(",")).join("\n");
-
-  // Download
-  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob);
-  link.download = `expression_${selectedOrthogroupLabel.value}_${expressionDisplayOption.value}.csv`;
-  link.click();
-  URL.revokeObjectURL(link.href);
-}
-
-// ============================================================================
 // Watchers
 // ============================================================================
 watch([filters, () => filtersStore.datasetIdFilters], () => {
@@ -1663,7 +1547,6 @@ onMounted(async () => {
       }
     }
 
-    const rawSpecies = route.query.species;
     // Species selection from URL removed - Plotly legend controls visibility
   } // End of else block for non-hash-based load
 

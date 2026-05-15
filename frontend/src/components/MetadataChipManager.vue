@@ -172,13 +172,26 @@ export interface ChipItem {
   sortable?: boolean;
 }
 
+interface ColumnDefinition {
+  display_name?: string;
+  type?: string;
+  visible?: boolean;
+  is_meta?: boolean;
+  is_sample_metadata?: boolean;
+  is_array?: boolean;
+  array_separator?: string;
+  order?: number;
+  source?: 'auto' | 'custom';
+  sortable?: boolean;
+}
+
 export default defineComponent({
   name: 'MetadataChipManager',
   components: { draggable },
   props: {
     /** All column definitions from backend config */
     columnDefinitions: {
-      type: Object as PropType<Record<string, any>>,
+      type: Object as PropType<Record<string, ColumnDefinition>>,
       required: true,
     },
     /** The currently configured tissue column name (from config.tissue_column) */
@@ -345,7 +358,7 @@ export default defineComponent({
 
     function emitUpdate() {
       // Rebuild column definitions from chips with updated order
-      const result: Record<string, any> = {};
+      const result: Record<string, ColumnDefinition> = {};
 
       // Process var chips first
       varChips.value.forEach((chip, index) => {

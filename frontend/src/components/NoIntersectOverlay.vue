@@ -29,7 +29,7 @@
   </div>
 </template>
 <script setup lang="ts">
-const props = defineProps<{
+defineProps<{
   nIntersect: number;
 }>();
 </script>

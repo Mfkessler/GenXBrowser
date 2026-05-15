@@ -321,7 +321,6 @@
 import axios from "axios";
 import { computed, onMounted, onUnmounted, ref, watch, nextTick } from "vue";
 import type { RowType } from "@/shared/RowType";
-import { API_BASE_URL } from "@/shared/Config";
 import { beautifyLabel, formatSpeciesValue, isCellEmpty } from "@/shared/utils";
 import { useFiltersStore } from "@/stores/filters";
 import { useColumnsStore } from "@/stores/columns";
@@ -335,7 +334,7 @@ const props = defineProps<{
   title?: string;
 }>();
 
-const emit = defineEmits(["close"]);
+defineEmits(["close"]);
 
 const filtersStore = useFiltersStore();
 const columnsStore = useColumnsStore();
@@ -445,7 +444,7 @@ const visibleColumns = computed(() => {
 // Filter rows based on search
 const filteredRows = computed(() => {
   // First apply sample filters from sidebar
-  let rows = filteredByFilters.value;
+  const rows = filteredByFilters.value;
   
   // Then apply search filter
   if (parsedSampleIds.value.length === 0) {
@@ -511,14 +510,14 @@ function getColumnDisplayName(col: string): string {
 }
 
 // Format cell value for tooltip (full value)
-function formatCellValue(value: any): string {
+function formatCellValue(value: unknown): string {
   if (value === null || value === undefined) return '';
   if (Array.isArray(value)) return value.join(', ');
   return String(value);
 }
 
 // Format cell value for display (truncated if needed, with species formatting)
-function formatCellDisplay(value: any): string {
+function formatCellDisplay(value: unknown): string {
   if (value === null || value === undefined) return '';
   
   // Format species names if present

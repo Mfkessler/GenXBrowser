@@ -120,13 +120,13 @@
   </main>
 </template>
 
+<!-- eslint-disable @typescript-eslint/no-explicit-any -->
 <script setup lang="ts">
 
-// Imports
 import axios from "axios";
-import {storeToRefs} from "pinia";
-import {onMounted, ref, computed, toRaw, watch, unref, inject, nextTick} from 'vue'
-import '../assets/phylotree.css' // CSS from phylotree GitHub page https://github.com/veg/phylotree.js/blob/master/phylotree.css (modified)
+import { storeToRefs } from "pinia";
+import { onMounted, ref, computed, toRaw, watch, unref, inject, nextTick } from 'vue'
+import '../assets/phylotree.css'
 import * as d3 from "d3";
 import { parseNewick } from "@/utils/newick";
 import {
@@ -137,22 +137,22 @@ import {
   type LayoutNode,
   type PhyloDatum,
 } from "@/utils/phyloLayout";
-import {API_BASE_URL} from "@/shared/Config.ts";
-import {COLORSCALES} from "@/shared/Colorscales.ts";
-import type {MetaFormat} from "@/shared/MetaFormat.ts";
-import type {RowType} from "@/shared/RowType.ts";
-import {assign} from "lodash-es";
-import {useFiltersStore} from "@/stores/filters.ts";
-import {useVisualizationStore} from "@/stores/visualization.ts";
-import {useColumnsStore} from "@/stores/columns.ts";
-import {getExpressionOption} from "@/shared/ExpressionDisplay.ts";
+import { API_BASE_URL } from "@/shared/Config.ts";
+import { COLORSCALES } from "@/shared/Colorscales.ts";
+import type { MetaFormat } from "@/shared/MetaFormat.ts";
+import type { RowType } from "@/shared/RowType.ts";
+import { assign } from "lodash-es";
+import { useFiltersStore } from "@/stores/filters.ts";
+import { useVisualizationStore } from "@/stores/visualization.ts";
+import { useColumnsStore } from "@/stores/columns.ts";
+import { getExpressionOption } from "@/shared/ExpressionDisplay.ts";
 import ShareOverlay from "@/components/ShareOverlay.vue";
 import ExportModal from "@/components/ExportModal.vue";
 import LoadingOverlay from "@/components/LoadingOverlay.vue";
 import NoNewickComponent from "@/components/NoNewickComponent.vue";
 import TooltipModal from "@/components/TooltipModal.vue";
 import DropdownMenu from "@/components/DropdownMenu.vue";
-import { getDisplayName, sequenceFields, verboseFields } from "@/shared/metadataDisplayNames";
+import { getDisplayName } from "@/shared/metadataDisplayNames";
 import { beautifyLabel } from "@/shared/utils";
 import { getEntityIdLabel } from "@/shared/dataTypeLabels";
 import {
@@ -434,7 +434,7 @@ async function fetchData(
       );
       columnStore.setSampleMetadata(columns.value as Record<string, unknown>[], tableName);
 
-      Object.entries(data).map(([_, v]) => {
+      Object.values(data).map((v) => {
         // Store newick with lowercase OG key to match getAllOGs() filtering
         const ogKey = String(v["ortho_id"]).trim().toLowerCase();
         orthogroupCaseMap.value[ogKey] = String(v["ortho_id"]).trim();
@@ -482,8 +482,8 @@ async function fetchData(
 function getAllOGs(dataRef: Record<string, any>, newicksRef: Record<string, string>): Set<string> {
   const raw = toRaw(unref(dataRef));
 
-  const sets = Object.entries(raw)
-    .map(([_, plant]) => {
+  const sets = Object.values(raw)
+    .map((plant) => {
       if (!plant) return new Set<string>();
       
       const items = plant?.items ?? [];
@@ -777,32 +777,6 @@ function getPrefix(name: string): string {
 }
 
 /**
- * Extract subtree as Newick string from a node using phylotree's getNewick
- * @param node - The phylotree node to export
- * @returns Newick string representation of the subtree
- */
-function getSubtreeNewick(node: any): string {
-  // Recursive function to build Newick from node structure
-  function buildNewick(n: any): string {
-    if (!n) return '';
-    
-    const name = n.data?.name || n.name || '';
-    const branchLength = n.data?.attribute !== undefined ? `:${n.data.attribute}` : '';
-    
-    // If node has children, recursively process them
-    if (n.children && n.children.length > 0) {
-      const childStrings = n.children.map((child: any) => buildNewick(child));
-      return `(${childStrings.join(',')})${name}${branchLength}`;
-    }
-    
-    // Leaf node
-    return `${name}${branchLength}`;
-  }
-  
-  return buildNewick(node) + ';';
-}
-
-/**
  * Download text content as a file
  */
 function downloadTextFile(content: string, filename: string, mimeType: string = 'text/plain') {
@@ -977,9 +951,6 @@ async function initPhylotree(newick_str: string, metrics: any) {
 
   // --- Nodes (internal + leaves) ---
   const nodeGroup = mainGroup.append('g').attr('class', 'nodes')
-
-  // Helper: get species prefix from a leaf datum
-  const prefixOfLeaf = (ln: LayoutNode): string => getPrefix(ln.hnode.data.name)
 
   // Apply clade-highlight colours into a map for O(1) lookup
   const cladeColorByNodeId = new Map<string, string>()

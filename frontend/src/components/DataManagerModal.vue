@@ -436,7 +436,7 @@ const props = defineProps<{
   title: string;
 }>();
 
-const emit = defineEmits(["close"]);
+defineEmits(["close"]);
 
 const filtersStore = useFiltersStore();
 const columnsStore = useColumnsStore();
@@ -550,7 +550,6 @@ const filteredSampleColumns = computed(() => {
 });
 
 // Export data
-const exportData = computed(() => rows.value);
 const exportColumns = computed(() => [
   'gene_id',
   ...selectedMetaColumns.value,
@@ -844,7 +843,7 @@ async function handleExport() {
     allExportData.value = Array.isArray(responseData) ? responseData : (responseData?.data ?? []);
     
     showExportModal.value = true;
-  } catch (e: any) {
+  } catch (e: unknown) {
     console.error("Error fetching export data:", e);
     error.value = "Failed to load data for export";
   } finally {
@@ -909,9 +908,11 @@ async function fetchData() {
 
     // Save settings after successful fetch
     saveSettings();
-  } catch (e: any) {
+  } catch (e: unknown) {
     console.error("Error fetching data:", e);
-    error.value = e.response?.data?.error || "Failed to load data";
+    error.value = axios.isAxiosError<{ error?: string }>(e)
+      ? e.response?.data?.error || "Failed to load data"
+      : "Failed to load data";
   } finally {
     loading.value = false;
   }

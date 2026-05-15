@@ -83,8 +83,8 @@ export function parseBoolean(value: unknown): boolean | null {
 }
 
 export function compareValues(
-  a: any,
-  b: any,
+  a: unknown,
+  b: unknown,
   order: "asc" | "desc" = "asc",
 ): number {
   // Handle list metadata by comparing the same normalized set key used for colors.
@@ -103,8 +103,8 @@ export function compareValues(
   }
 
   // For numbers or numeric strings, coerce to number for numeric comparison
-  const numA = typeof a === "number" ? a : parseFloat(a);
-  const numB = typeof b === "number" ? b : parseFloat(b);
+  const numA = typeof a === "number" ? a : parseFloat(String(a));
+  const numB = typeof b === "number" ? b : parseFloat(String(b));
   const isNumA = !isNaN(numA);
   const isNumB = !isNaN(numB);
 
@@ -168,11 +168,11 @@ export function exact_nc(
   return Math.exp(den_sum - sum_l);
 }
 
-export function jsonToTsv(data: any[]): string {
+export function jsonToTsv(data: Record<string, unknown>[]): string {
   if (!Array.isArray(data) || data.length === 0) return "";
 
   const header = Object.keys(data[0]);
-  const escape = (val: any) => {
+  const escape = (val: unknown) => {
     if (Array.isArray(val)) return `"${val.join(",")}"`; // Join arrays with comma, quote for TSV safety
     if (typeof val === "string")
       return val.replace(/\t/g, " ").replace(/\n/g, " ");
@@ -190,7 +190,7 @@ export function jsonToTsv(data: any[]): string {
  * @param value - Cell value to format
  * @returns Formatted HTML string with species names in italics, or original value
  */
-export function formatSpeciesValue(value: any): string {
+export function formatSpeciesValue(value: unknown): string {
   if (value === null || value === undefined) return '';
   
   const str = String(value);
@@ -215,7 +215,7 @@ export function formatSpeciesValue(value: any): string {
  * @param value - Cell value to check
  * @returns True if value is empty
  */
-export function isCellEmpty(value: any): boolean {
+export function isCellEmpty(value: unknown): boolean {
   if (value === null || value === undefined) return true;
   if (Array.isArray(value)) return value.length === 0;
   const str = String(value).trim();

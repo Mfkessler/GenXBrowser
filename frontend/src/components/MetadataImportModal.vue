@@ -344,6 +344,23 @@ interface ValidationResult {
   sample_values: string[];
 }
 
+interface ImportConfirmResult {
+  results?: Record<string, {
+    status?: string;
+    matched?: number;
+    total?: number;
+    persisted?: boolean;
+  }>;
+  [key: string]: unknown;
+}
+
+function getRequestErrorMessage(err: unknown, fallback: string): string {
+  if (axios.isAxiosError<{ error?: string }>(err)) {
+    return err.response?.data?.error || err.message || fallback;
+  }
+  return err instanceof Error ? err.message : fallback;
+}
+
 export default defineComponent({
   name: 'MetadataImportModal',
   props: {
@@ -376,7 +393,7 @@ export default defineComponent({
 
     const confirming = ref(false);
     const confirmError = ref('');
-    const confirmResult = ref<any>(null);
+    const confirmResult = ref<ImportConfirmResult | null>(null);
     const persistToH5ad = ref(false);
 
     // Parse the header row from the current data
@@ -508,8 +525,8 @@ export default defineComponent({
           validationError.value = resp.data.error || 'Validation failed';
           step.value = 2;
         }
-      } catch (err: any) {
-        validationError.value = err.response?.data?.error || err.message || 'Validation failed';
+      } catch (err: unknown) {
+        validationError.value = getRequestErrorMessage(err, 'Validation failed');
         step.value = 2;
       } finally {
         validating.value = false;
@@ -546,8 +563,8 @@ export default defineComponent({
         } else {
           confirmError.value = resp.data.error || 'Import failed';
         }
-      } catch (err: any) {
-        confirmError.value = err.response?.data?.error || err.message || 'Import failed';
+      } catch (err: unknown) {
+        confirmError.value = getRequestErrorMessage(err, 'Import failed');
       } finally {
         confirming.value = false;
       }

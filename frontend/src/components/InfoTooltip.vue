@@ -34,11 +34,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
+import { ref, computed } from "vue";
 import { useFloating, offset, flip, shift, arrow, autoUpdate } from "@floating-ui/vue";
 
 // Props for title + description
-const props = defineProps<{
+defineProps<{
   title?: string;
   description?: string;
 }>();

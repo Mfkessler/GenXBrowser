@@ -351,7 +351,6 @@ const suggestionAnchorRef = ref<HTMLElement | null>(null);
 const suggestionFloatRef = ref<HTMLElement | null>(null);
 const {
   floatingStyles: suggestionFloatStyles,
-  update: updateSuggestionPosition,
 } = useFloating(suggestionAnchorRef, suggestionFloatRef, {
   placement: 'bottom-start',
   middleware: [offset(4), flip(), shift({ padding: 8 })],
@@ -407,7 +406,7 @@ const fetchSuggestions = debounce(async (val: string) => {
         });
         
         if (response.data.available && response.data.results) {
-          searchResults.value = response.data.results.map((result: any) => ({
+          searchResults.value = response.data.results.map((result: { id: string; name: string; definition?: string }) => ({
             term: result.id,  // Store the GO ID
             description: `${result.name}${result.definition ? ' - ' + result.definition.substring(0, 100) + (result.definition.length > 100 ? '...' : '') : ''}`,
             similarity: 1.0,
@@ -537,11 +536,11 @@ async function ensureTissueValuesLoaded() {
           const data = response.data.data || response.data;
           if (data && typeof data === 'object') {
             // Extract tissue values from the metadata
-            const values = Object.values(data) as any[];
-            values.forEach((item: any) => {
+            const values = Object.values(data) as Record<string, unknown>[];
+            values.forEach((item) => {
               const tissueValue = item[columnName];
               if (tissueValue) {
-                allTissues.add(tissueValue);
+                allTissues.add(String(tissueValue));
               }
             });
           }

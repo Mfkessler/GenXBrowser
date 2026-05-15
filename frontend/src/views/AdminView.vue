@@ -453,9 +453,9 @@ interface Config {
   project_name: string;
   version: string;
   description?: string;
-  species: Record<string, any>;
+  species: Record<string, SpeciesConfig>;
   column_mappings: { h5ad_to_display: Record<string, string> };
-  column_definitions: Record<string, any>;
+  column_definitions: Record<string, ColumnDefinition>;
   sample_metadata_columns?: { enabled: boolean; columns: string[] };
   tissue_column?: string | null;
   frontend_settings: {
@@ -479,6 +479,43 @@ interface Config {
     max_tokens: number;
     temperature: number;
   };
+}
+
+interface SpeciesConfig {
+  full_name?: string;
+  display_name?: string;
+  enabled?: boolean;
+  tags?: string[];
+  [key: string]: unknown;
+}
+
+interface ColumnDefinition {
+  display_name?: string;
+  type?: string;
+  visible?: boolean;
+  is_meta?: boolean;
+  is_sample_metadata?: boolean;
+  is_array?: boolean;
+  array_separator?: string;
+  order?: number;
+  source?: 'auto' | 'custom';
+  sortable?: boolean;
+}
+
+interface Dataset {
+  code: string;
+  full_name: string;
+  display_name: string;
+  enabled: boolean;
+  [key: string]: unknown;
+}
+
+interface DatasetResponse {
+  code: string;
+  full_name?: string;
+  display_name?: string;
+  enabled?: boolean;
+  [key: string]: unknown;
 }
 
 interface Profile {
@@ -514,7 +551,7 @@ export default defineComponent({
 
     // UI state
     const activeTab = ref('project');
-    const datasets = ref<any[]>([]);
+    const datasets = ref<Dataset[]>([]);
     const profiles = ref<Profile[]>([]);
     const showProfileMenu = ref(false);
     const showSaveProfileModal = ref(false);
@@ -572,8 +609,8 @@ export default defineComponent({
           headers: getAuthHeaders(),
         });
         llmTestResult.value = { ok: true, latency_ms: resp.data.latency_ms, model: resp.data.model };
-      } catch (err: any) {
-        llmTestResult.value = { ok: false, error: err.response?.data?.error || err.message || 'Test failed' };
+      } catch (err: unknown) {
+        llmTestResult.value = { ok: false, error: getRequestErrorMessage(err, 'Test failed') };
       } finally {
         llmTestRunning.value = false;
       }
@@ -589,6 +626,13 @@ export default defineComponent({
         headers['Authorization'] = `Bearer ${adminToken.value}`;
       }
       return headers;
+    }
+
+    function getRequestErrorMessage(err: unknown, fallback: string): string {
+      if (axios.isAxiosError<{ error?: string }>(err)) {
+        return err.response?.data?.error || err.message || fallback;
+      }
+      return err instanceof Error ? err.message : fallback;
     }
 
     // ========== Auth ==========
@@ -642,8 +686,8 @@ export default defineComponent({
         ensureLlmConfig(config.value);
         originalConfig.value = JSON.stringify(config.value);
         showStatus('Configuration loaded', 'success');
-      } catch (err: any) {
-        error.value = err.response?.data?.error || err.message || 'Failed to load';
+      } catch (err: unknown) {
+        error.value = getRequestErrorMessage(err, 'Failed to load');
         showStatus(error.value!, 'error');
       } finally {
         loading.value = false;
@@ -660,8 +704,8 @@ export default defineComponent({
         // Refresh the app's column store so changes are visible immediately
         await columnsStore.refreshColumns();
         showStatus('Configuration saved!', 'success');
-      } catch (err: any) {
-        showStatus(err.response?.data?.error || 'Save failed', 'error');
+      } catch (err: unknown) {
+        showStatus(getRequestErrorMessage(err, 'Save failed'), 'error');
       }
     }
 
@@ -684,8 +728,8 @@ export default defineComponent({
         originalConfig.value = JSON.stringify(config.value);
         await columnsStore.refreshColumns();
         showStatus('Configuration reloaded from disk', 'success');
-      } catch (err: any) {
-        showStatus(err.response?.data?.error || 'Reload failed', 'error');
+      } catch (err: unknown) {
+        showStatus(getRequestErrorMessage(err, 'Reload failed'), 'error');
       }
     }
 
@@ -696,17 +740,23 @@ export default defineComponent({
           headers: getAuthHeaders(),
         });
         showStatus('Backend restart initiated...', 'info');
-      } catch (err: any) {
-        showStatus(err.response?.data?.error || 'Restart request sent', 'info');
+      } catch (err: unknown) {
+        showStatus(getRequestErrorMessage(err, 'Restart request sent'), 'info');
       }
     }
 
     async function loadDatasets() {
       try {
-        const resp = await axios.get(`${adminBaseUrl}/datasets`, {
+        const resp = await axios.get<{ datasets: DatasetResponse[] }>(`${adminBaseUrl}/datasets`, {
           headers: getAuthHeaders(),
         });
-        datasets.value = resp.data.datasets;
+        datasets.value = (resp.data.datasets ?? []).map((dataset) => ({
+          ...dataset,
+          code: dataset.code,
+          full_name: dataset.full_name ?? dataset.code,
+          display_name: dataset.display_name ?? dataset.full_name ?? dataset.code,
+          enabled: dataset.enabled ?? true,
+        }));
       } catch {
         console.error('Failed to load datasets');
       }
@@ -743,8 +793,8 @@ export default defineComponent({
         showSaveProfileModal.value = false;
         showStatus(`Profile '${profileName.value}' saved`, 'success');
         loadProfiles();
-      } catch (err: any) {
-        showStatus(err.response?.data?.error || 'Failed to save profile', 'error');
+      } catch (err: unknown) {
+        showStatus(getRequestErrorMessage(err, 'Failed to save profile'), 'error');
       }
     }
 
@@ -762,14 +812,14 @@ export default defineComponent({
         originalConfig.value = JSON.stringify(config.value);
         await columnsStore.refreshColumns();
         showStatus(`Profile '${name}' loaded`, 'success');
-      } catch (err: any) {
-        showStatus(err.response?.data?.error || 'Failed to load profile', 'error');
+      } catch (err: unknown) {
+        showStatus(getRequestErrorMessage(err, 'Failed to load profile'), 'error');
       }
     }
 
     // ========== Metadata ==========
 
-    function onColumnsUpdate(updatedDefs: Record<string, any>) {
+    function onColumnsUpdate(updatedDefs: Record<string, ColumnDefinition>) {
       if (config.value) {
         config.value.column_definitions = updatedDefs;
       }
@@ -799,8 +849,8 @@ export default defineComponent({
         await loadConfig();
         await columnsStore.refreshColumns();
         showStatus(`Column '${columnName}' deleted`, 'success');
-      } catch (err: any) {
-        showStatus(err.response?.data?.error || 'Delete failed', 'error');
+      } catch (err: unknown) {
+        showStatus(getRequestErrorMessage(err, 'Delete failed'), 'error');
       }
     }
 

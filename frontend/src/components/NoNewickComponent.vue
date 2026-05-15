@@ -33,7 +33,7 @@
   </div>
 </template>
 <script setup lang="ts">
-const props = defineProps<{
+defineProps<{
   og: string;
   showFullTree?: boolean;
   message?: string;

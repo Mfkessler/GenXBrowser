@@ -101,7 +101,7 @@
           :id="col.column_name"
           :ref="
             (el) => {
-              if (el) searchFilterRefs[col.column_name] = el;
+              setSearchFilterRef(col.column_name, el);
             }
           "
         ></SearchFilter>
@@ -128,7 +128,7 @@ defineProps<{
   disableControls?: boolean;
 }>();
 
-const emit = defineEmits<{
+defineEmits<{
   'toggle-sidebar': [];
   'navigate-home': [];
 }>();
@@ -156,7 +156,19 @@ const filteredRowColumns = computed(() =>
   columnsStore.rowColumns.filter((col) => col.column_name !== config.visualization.id_column)
 );
 
-const searchFilterRefs = ref<Record<string, any>>({});
+interface SearchFilterExpose {
+  collapse?: () => void;
+  uncollapse?: () => void;
+  reset?: () => void;
+}
+
+const searchFilterRefs = ref<Record<string, SearchFilterExpose>>({});
+
+function setSearchFilterRef(columnName: string, refInstance: unknown) {
+  if (refInstance && typeof refInstance === "object") {
+    searchFilterRefs.value[columnName] = refInstance as SearchFilterExpose;
+  }
+}
 
 // Guard to prevent infinite loop between store sync and auto-apply watchers
 let syncingFromStore = false;
@@ -222,11 +234,11 @@ async function fetchColumns() {
 }
 
 // Helper function to extract unique tissue values from metadata
-function extractTissueValues(data: Record<string, any>[], tissueColName: string): string[] {
+function extractTissueValues(data: Record<string, unknown>[], tissueColName: string): string[] {
   const values = data
     .map(item => item[tissueColName])
     .filter(Boolean);
-  return [...new Set(values)].sort();
+  return [...new Set(values.map(String))].sort();
 }
 
 async function fetchTissueValuesForAllTables() {
@@ -250,7 +262,7 @@ async function fetchTissueValuesForAllTables() {
         
         const data = response.data.data || response.data;
         if (data && typeof data === 'object') {
-          const tissues = extractTissueValues(Object.values(data), tissueColName);
+          const tissues = extractTissueValues(Object.values(data) as Record<string, unknown>[], tissueColName);
           tissues.forEach(t => allTissues.add(t));
         }
       } catch (err) {
@@ -289,7 +301,7 @@ async function fetchTissueValues() {
     
     const data = response.data.data || response.data;
     if (data && typeof data === 'object') {
-      const tissues = extractTissueValues(Object.values(data), tissueColName);
+      const tissues = extractTissueValues(Object.values(data) as Record<string, unknown>[], tissueColName);
       if (tissues.length > 0) {
         columnsStore.setDistinctValues(tissueColName, tissues);
       }
@@ -300,7 +312,7 @@ async function fetchTissueValues() {
 }
 
 // Fetch tissue values when table is available or changes
-watch(currentTableName, async (newTable) => {
+watch(currentTableName, async () => {
   if (columnsStore.tissueColumnName) {
     await fetchTissueValues();
   }

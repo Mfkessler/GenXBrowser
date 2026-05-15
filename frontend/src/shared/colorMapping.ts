@@ -2,7 +2,17 @@ import * as d3 from "d3";
 import { getCategoricalColors } from "@/shared/Colorscales";
 
 export type SideColorValue = string | number | boolean | string[] | null;
-export type ColorMapping = Record<string, any> & { getColor?: (value: number) => string; colorScale?: d3.ScaleSequential<string>; bins?: any[] };
+export interface NumericBin {
+  bucket_lower: number;
+  bucket_upper: number;
+  frequency?: number;
+}
+
+export type ColorMapping = Record<string, unknown> & {
+  getColor?: (value: number) => string;
+  colorScale?: d3.ScaleSequential<string>;
+  bins?: NumericBin[];
+};
 
 export const EMPTY_LIST_METADATA_COLOR = "#e0e0e0";
 

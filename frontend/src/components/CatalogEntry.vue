@@ -220,7 +220,7 @@
       </div>
       
       <div v-if="tagItems.length > 0" class="flex flex-wrap gap-1.5 mt-2 overflow-hidden max-h-7 items-center justify-center">
-        <template v-for="(tag, idx) in visibleTags" :key="tag">
+        <template v-for="tag in visibleTags" :key="tag">
           <div
             :class="[
               'flex items-center border-1 text-xs font-medium px-2 py-0.5 rounded-full whitespace-nowrap shrink-0 cursor-pointer transition-all duration-300',
@@ -328,8 +328,7 @@
 </template>
 <script setup lang="ts">
 import axios from "axios";
-import {storeToRefs} from "pinia";
-import {computed, inject, nextTick, onMounted, ref, watch} from "vue";
+import {computed, inject, onMounted, ref, watch} from "vue";
 
 import {API_BASE_URL, type Config} from "@/shared/Config";
 import { getEntityLabelPlural } from "@/shared/dataTypeLabels";
@@ -340,7 +339,6 @@ import BatchInputModal from "./BatchInputModal.vue";
 import { getProcessedPhoto, generateInitialsPlaceholder } from "@/utils/imageProcessor";
 
 const filtersStore = useFiltersStore();
-const {filters} = storeToRefs(filtersStore);
 const columnsStore = useColumnsStore();
 
 const config = inject("config") as Config;
@@ -505,10 +503,27 @@ function closePhotoModal() {
   showPhotoModal.value = false;
 }
 
-async function calculate_tissues(tableName: string, filters: any) {
+type MetadataRow = Record<string, unknown>;
+type FilterObject = { value?: unknown };
+
+function rowMatchesAnyPart(item: MetadataRow, columnName: string, parts: string[]): boolean {
+  const itemVal = item[columnName];
+  if (Array.isArray(itemVal)) {
+    return itemVal.some((value) => parts.includes(String(value)));
+  }
+  return parts.includes(String(itemVal));
+}
+
+function rowMatchesExact(item: MetadataRow, columnName: string, value: string): boolean {
+  const itemVal = item[columnName];
+  if (Array.isArray(itemVal)) {
+    return itemVal.includes(value);
+  }
+  return itemVal === value;
+}
+
+async function calculate_tissues(tableName: string, filters: Record<string, unknown>): Promise<string[]> {
   try {
-    console.log(`[calculate_tissues] Fetching tissues for ${tableName} with filters:`, filters);
-    
     // Tissue column name — read from admin config via store
     const TISSUE_COLUMNS = columnsStore.tissueColumnName ? [columnsStore.tissueColumnName] : [];
     
@@ -531,8 +546,6 @@ async function calculate_tissues(tableName: string, filters: any) {
       },
     );
     
-    console.log(`[calculate_tissues] Response received`);
-    
     // Backend returns {data: [...records...]}, axios wraps in .data
     const data = response_data.data?.data || response_data.data || [];
     
@@ -542,9 +555,7 @@ async function calculate_tissues(tableName: string, filters: any) {
     }
     
     // Convert to array if it's an object
-    let dataArray = Array.isArray(data) ? data : Object.values(data);
-    
-    console.log(`[calculate_tissues] Total records before filtering:`, dataArray.length);
+    let dataArray = (Array.isArray(data) ? data : Object.values(data)) as MetadataRow[];
     
     // CLIENT-SIDE FILTERING: Apply all sample-level filters
     const appliedFilters: string[] = [];
@@ -552,60 +563,34 @@ async function calculate_tissues(tableName: string, filters: any) {
     for (const [columnName, filterValue] of Object.entries(filters as Record<string, unknown>)) {
       // Only process sample metadata columns
       if (!SAMPLE_METADATA_COLUMNS.includes(columnName)) {
-        console.log(`[calculate_tissues] Skipping non-sample filter: ${columnName}`);
         continue;
       }
-      
-      console.log(`[calculate_tissues] Applying client-side filter for '${columnName}':`, filterValue);
       
       // Handle different filter formats
       if (typeof filterValue === 'string') {
         // Split comma-separated values for OR matching (multiselect)
         const parts = filterValue.split(',').map((v: string) => v.trim()).filter(Boolean);
         if (parts.length > 1) {
-          dataArray = dataArray.filter((item: any) => {
-            const itemVal = item[columnName];
-            if (Array.isArray(itemVal)) {
-              return itemVal.some((v: any) => parts.includes(String(v)));
-            }
-            return parts.includes(String(itemVal));
-          });
+          dataArray = dataArray.filter((item) => rowMatchesAnyPart(item, columnName, parts));
           appliedFilters.push(`${columnName}∈{${parts.join(', ')}}`);
         } else {
-          dataArray = dataArray.filter((item: any) => {
-            const itemVal = item[columnName];
-            if (Array.isArray(itemVal)) {
-              return itemVal.includes(filterValue);
-            }
-            return itemVal === filterValue;
-          });
+          dataArray = dataArray.filter((item) => rowMatchesExact(item, columnName, filterValue));
           appliedFilters.push(`${columnName}='${filterValue}'`);
         }
       } else if (typeof filterValue === 'object' && filterValue !== null && 'value' in filterValue) {
         // Object format with value property
-        if (filterValue.value !== undefined) {
-          const value = filterValue.value;
+        const filterObject = filterValue as FilterObject;
+        if (filterObject.value !== undefined) {
+          const value = filterObject.value;
           
           if (typeof value === 'string') {
             // Split comma-separated values for OR matching (multiselect)
             const parts = value.split(',').map((v: string) => v.trim()).filter(Boolean);
             if (parts.length > 1) {
-              dataArray = dataArray.filter((item: any) => {
-                const itemVal = item[columnName];
-                if (Array.isArray(itemVal)) {
-                  return itemVal.some((v: any) => parts.includes(String(v)));
-                }
-                return parts.includes(String(itemVal));
-              });
+              dataArray = dataArray.filter((item) => rowMatchesAnyPart(item, columnName, parts));
               appliedFilters.push(`${columnName}∈{${parts.join(', ')}}`);
             } else {
-              dataArray = dataArray.filter((item: any) => {
-                const itemVal = item[columnName];
-                if (Array.isArray(itemVal)) {
-                  return itemVal.includes(value);
-                }
-                return itemVal === value;
-              });
+              dataArray = dataArray.filter((item) => rowMatchesExact(item, columnName, value));
               appliedFilters.push(`${columnName}='${value}'`);
             }
           } else if (Array.isArray(value)) {
@@ -615,19 +600,19 @@ async function calculate_tissues(tableName: string, filters: any) {
             if (value.length === 2 && typeof value[0] === 'number' && typeof value[1] === 'number') {
               // Numeric range
               const [min, max] = value;
-              dataArray = dataArray.filter((item: any) => {
-                const itemValue = parseFloat(item[columnName]);
+              dataArray = dataArray.filter((item) => {
+                const itemValue = parseFloat(String(item[columnName]));
                 return !isNaN(itemValue) && itemValue >= min && itemValue <= max;
               });
               appliedFilters.push(`${columnName}∈[${min}, ${max}]`);
             } else {
               // List of values
-              dataArray = dataArray.filter((item: any) => value.includes(item[columnName]));
+              dataArray = dataArray.filter((item) => value.includes(item[columnName]));
               appliedFilters.push(`${columnName}∈{${value.join(', ')}}`);
             }
           } else if (typeof value === 'number') {
             // Numeric equality
-            dataArray = dataArray.filter((item: any) => parseFloat(item[columnName]) === value);
+            dataArray = dataArray.filter((item) => parseFloat(String(item[columnName])) === value);
             appliedFilters.push(`${columnName}=${value}`);
           }
         }
@@ -636,37 +621,30 @@ async function calculate_tissues(tableName: string, filters: any) {
         if (filterValue.length === 2 && typeof filterValue[0] === 'number' && typeof filterValue[1] === 'number') {
           // Numeric range
           const [min, max] = filterValue;
-          dataArray = dataArray.filter((item: any) => {
-            const itemValue = parseFloat(item[columnName]);
+          dataArray = dataArray.filter((item) => {
+            const itemValue = parseFloat(String(item[columnName]));
             return !isNaN(itemValue) && itemValue >= min && itemValue <= max;
           });
           appliedFilters.push(`${columnName}∈[${min}, ${max}]`);
         } else {
           // List of values
-          dataArray = dataArray.filter((item: any) => filterValue.includes(item[columnName]));
+          dataArray = dataArray.filter((item) => filterValue.includes(item[columnName]));
           appliedFilters.push(`${columnName}∈{${filterValue.join(', ')}}`);
         }
       }
     }
     
-    if (appliedFilters.length > 0) {
-      console.log(`[calculate_tissues] Applied filters: ${appliedFilters.join(', ')}`);
-    }
-    console.log(`[calculate_tissues] Filtered to ${dataArray.length} records`);
-    
     // Extract unique tissue values from filtered data
-    let values: any[] = [];
+    let values: string[] = [];
     for (const tissueCol of TISSUE_COLUMNS) {
-      const colValues = dataArray.map((item: any) => item[tissueCol]).filter(Boolean);
+      const colValues = dataArray.map((item) => item[tissueCol]).filter(Boolean).map(String);
       if (colValues.length > 0) {
-        console.log(`[calculate_tissues] Extracting tissues from column '${tissueCol}'`);
         values = colValues;
         break;
       }
     }
     
     const uniqueTissues = [...new Set(values)];
-    console.log(`[calculate_tissues] Found ${uniqueTissues.length} unique tissues:`, uniqueTissues);
     return uniqueTissues;
   } catch (error) {
     console.error("Error calculating tissues:", error);

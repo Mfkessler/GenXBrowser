@@ -43,23 +43,24 @@
       class="grid gap-4 p-2 overflow-visible items-stretch [container-type:inline-size]"
       :style="heatmapGridStyle"
     >
-      <div
-        v-if="hashStateLoaded"
-        v-for="tableName in visibleTableNames"
-        :key="tableName"
-        class="min-w-0 flex flex-col"
-        :style="heatmapCardStyle"
-      >
-        <HeatmapComponent
-          ref="heatmapRefs"
-          :table-name="tableName"
-          :existing-tables="visibleTableNames"
-          :all-tables="allTables"
-          :show-shared-actions="visibleTableNames.length <= 1"
-          @openSettingsOverlay="openSettingsOverlay"
-          @update:tableName="onUpdateTableName(tableName, $event)"
-        />
-      </div>
+      <template v-if="hashStateLoaded">
+        <div
+          v-for="tableName in visibleTableNames"
+          :key="tableName"
+          class="min-w-0 flex flex-col"
+          :style="heatmapCardStyle"
+        >
+          <HeatmapComponent
+            ref="heatmapRefs"
+            :table-name="tableName"
+            :existing-tables="visibleTableNames"
+            :all-tables="allTables"
+            :show-shared-actions="visibleTableNames.length <= 1"
+            @openSettingsOverlay="openSettingsOverlay"
+            @update:tableName="onUpdateTableName(tableName, $event)"
+          />
+        </div>
+      </template>
     </div>
     <div
       v-if="hiddenTableNames.length > 0"
@@ -131,7 +132,19 @@ const showSettingsOverlay = ref(false);
 const showShareOverlay = ref(false);
 const showExportModal = ref(false);
 const viewContentRoot = ref<HTMLDivElement | null>(null);
-const heatmapRefs = ref<any[]>([]);
+interface ExportPayload {
+  dataset: string;
+  columns: string[];
+  metaColumns: string[];
+  sampleColumns: string[];
+  data: RowType[];
+}
+
+interface ExportPayloadProvider {
+  getExportPayload?: () => ExportPayload | null;
+}
+
+const heatmapRefs = ref<ExportPayloadProvider[]>([]);
 const allTables = ref<Record<string, string>>({});
 const hashStateLoaded = ref(false);
 
@@ -162,10 +175,10 @@ const globalExportPayload = computed(() => {
   const payloads = (heatmapRefs.value || [])
     .map((component) => component?.getExportPayload?.())
     .filter(Boolean);
-  const columns = uniqueColumns(['dataset', ...payloads.flatMap((payload: any) => payload.columns)]);
-  const metaColumns = uniqueColumns(['dataset', ...payloads.flatMap((payload: any) => payload.metaColumns)]);
-  const sampleColumns = uniqueColumns(payloads.flatMap((payload: any) => payload.sampleColumns));
-  const data = payloads.flatMap((payload: any) =>
+  const columns = uniqueColumns(['dataset', ...payloads.flatMap((payload) => payload.columns)]);
+  const metaColumns = uniqueColumns(['dataset', ...payloads.flatMap((payload) => payload.metaColumns)]);
+  const sampleColumns = uniqueColumns(payloads.flatMap((payload) => payload.sampleColumns));
+  const data = payloads.flatMap((payload) =>
     payload.data.map((row: RowType) => ({ dataset: beautifyLabel(payload.dataset), ...row })),
   );
 

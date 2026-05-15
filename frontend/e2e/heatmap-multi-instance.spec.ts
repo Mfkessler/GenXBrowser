@@ -11,12 +11,26 @@ type HeatmapState = {
   rects: number
 }
 
+type VueAppElement = HTMLElement & {
+  __vue_app__?: {
+    _context?: {
+      provides?: Record<PropertyKey, { _s?: Map<string, { setFilters?: (filters: Record<string, { value: string }>) => void }> }>
+    }
+  }
+}
+
+type VueComponentElement = HTMLElement & {
+  __vueParentComponent?: {
+    setupState?: Record<string, unknown>
+  }
+}
+
 const route = '/dev/genxbrowser/h/arabidopsis_thaliana,solanum_lycopersicum,oryza_sativa'
 
 async function setGlobalFilter(page: Page, key: string, value: string) {
   await page.evaluate(
     ({ key, value }: { key: string; value: string }) => {
-      const app = (document.querySelector('#app') as HTMLElement & { __vue_app__?: any })?.__vue_app__
+      const app = (document.querySelector('#app') as VueAppElement | null)?.__vue_app__
       const provides = app?._context?.provides
       const piniaKey = provides
         ? Reflect.ownKeys(provides).find((entry) => String(entry) === 'Symbol(pinia)')
@@ -28,7 +42,7 @@ async function setGlobalFilter(page: Page, key: string, value: string) {
 
       const pinia = provides[piniaKey]
       const filtersStore = pinia._s.get('filters')
-      filtersStore.setFilters({
+      filtersStore?.setFilters?.({
         [key]: {
           value,
         },
@@ -49,16 +63,16 @@ async function readHeatmapStates(page: Page): Promise<HeatmapState[]> {
 
     const panels = Array.from(document.querySelectorAll('main.flex.flex-col.h-full.overflow-hidden'))
     return panels.map((main) => {
-      const instance = (main as HTMLElement & { __vueParentComponent?: any }).__vueParentComponent
+      const instance = (main as VueComponentElement).__vueParentComponent
       const setup = instance?.setupState || {}
       const container = main.querySelector('div.w-full.h-full')
       const svg = container?.querySelector('svg')
       return {
         tableName: unwrap<string | null>(setup.localTableName ?? null),
         rowCount: unwrap<number>(setup.rowCount ?? 0),
-        rowsLength: unwrap<any[]>(setup.rows ?? []).length,
-        processedRowsLength: unwrap<any[]>(setup.processedRows ?? []).length,
-        sortedRowsLength: unwrap<any[]>(setup.sortedRows ?? []).length,
+        rowsLength: unwrap<unknown[]>(setup.rows ?? []).length,
+        processedRowsLength: unwrap<unknown[]>(setup.processedRows ?? []).length,
+        sortedRowsLength: unwrap<unknown[]>(setup.sortedRows ?? []).length,
         visibleColumnsLength: unwrap<string[]>(setup.visibleColumns ?? []).length,
         hasSvg: Boolean(svg),
         rects: svg ? svg.querySelectorAll('rect').length : 0,
@@ -68,8 +82,7 @@ async function readHeatmapStates(page: Page): Promise<HeatmapState[]> {
 }
 
 test('renders all selected heatmaps after a shared TF family filter', async ({ page }) => {
-  await page.goto(route)
-  await page.waitForLoadState('networkidle')
+  await page.goto(route, { waitUntil: 'domcontentloaded' })
 
   await setGlobalFilter(page, 'tf_family', 'MIKC')
 

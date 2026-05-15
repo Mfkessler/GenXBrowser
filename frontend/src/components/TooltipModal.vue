@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, inject, watch } from "vue";
+import { ref, computed, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { getDisplayName, sequenceFields } from "@/shared/metadataDisplayNames";
 import axios from "axios";
-import { API_BASE_URL, type Config } from "@/shared/Config";
+import { API_BASE_URL } from "@/shared/Config";
 import { getEntityMetadataLabel } from "@/shared/dataTypeLabels";
 import { openBlast as openBlastUtil, isBlastableSequence } from "@/shared/blast";
 import type { BlastDatabase } from "@/shared/blast";
@@ -13,7 +13,7 @@ import InfoTooltip from "./InfoTooltip.vue";
 
 export interface TooltipModalProps {
   show: boolean;
-  rowData: Record<string, any> | null;
+  rowData: Record<string, unknown> | null;
   tableName: string;
   idColumn: string;
   heatmapCols: string[];
@@ -21,7 +21,6 @@ export interface TooltipModalProps {
   cellValue: string | number;
 }
 
-const config = inject("config") as Config;
 const props = defineProps<TooltipModalProps>();
 const route = useRoute();
 const router = useRouter();
@@ -50,7 +49,7 @@ const identificationFields = computed(() => {
 });
 
 // Helper to check if a field looks like a sample value (numeric expression data)
-const isSampleValueField = (key: string, value: any): boolean => {
+const isSampleValueField = (key: string, value: unknown): boolean => {
   // If it's a number (expression value), it's likely a sample column
   if (typeof value === 'number') return true;
   // If it starts with tissue_type_, it's metadata for samples
@@ -134,8 +133,6 @@ const loadSequenceIfNeeded = async (key: string) => {
   
   const value = props.rowData[key];
   
-  console.log(`Loading sequence for ${key}, current value:`, value);
-  
   // If value is [BLOB], load the actual sequence
   if (value === "[BLOB]") {
     if (loadingSequences.value.has(key)) return; // Already loading
@@ -143,8 +140,6 @@ const loadSequenceIfNeeded = async (key: string) => {
     loadingSequences.value.add(key);
     
     try {
-      console.log(`Fetching ${key} from backend for`, props.rowData[props.idColumn]);
-      
       // Fetch the full row data with sequences
       const response = await axios.post(`${API_BASE_URL}/api/data`, {
         table_name: props.tableName,
@@ -153,17 +148,12 @@ const loadSequenceIfNeeded = async (key: string) => {
         }
       });
       
-      console.log(`Backend response for ${key}:`, response.data);
-      
       const data = response.data.data || response.data;
       if (Array.isArray(data) && data.length > 0) {
-        const fullRow = data[0];
-        console.log(`Full row data:`, fullRow);
-        console.log(`Value for ${key}:`, fullRow[key]);
+        const fullRow = data[0] as Record<string, unknown>;
         
         if (fullRow[key] && fullRow[key] !== "[BLOB]") {
-          loadedSequences.value[key] = fullRow[key];
-          console.log(`Successfully loaded ${key}`);
+          loadedSequences.value[key] = String(fullRow[key]);
         } else {
           console.warn(`${key} is still [BLOB] or empty in backend response`);
         }
@@ -175,8 +165,7 @@ const loadSequenceIfNeeded = async (key: string) => {
     }
   } else if (value && value !== "[BLOB]") {
     // Already have the data
-    loadedSequences.value[key] = value;
-    console.log(`${key} already available:`, value.substring(0, 50) + '...');
+    loadedSequences.value[key] = String(value);
   }
 };
 
@@ -210,7 +199,7 @@ const cancelBlast = () => {
   pendingBlastParams.value = null;
 };
 
-const formatValue = (value: any): string => {
+const formatValue = (value: unknown): string => {
   if (value === null || value === undefined) return "—";
   if (value === "[BLOB]") return "[Loading...]";
   if (Array.isArray(value)) {
@@ -218,10 +207,6 @@ const formatValue = (value: any): string => {
   }
   if (typeof value === "boolean") return value ? "Yes" : "No";
   return String(value);
-};
-
-const isSequenceField = (key: string): boolean => {
-  return sequenceFields.includes(key);
 };
 
 // Load sequences when modal opens

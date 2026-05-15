@@ -18,7 +18,7 @@
 </template>
 <script setup lang="ts">
 //IMPORT
-import { computed, watch } from "vue";
+import { computed } from "vue";
 
 import { getDisplayName } from "@/shared/metadataDisplayNames";
 
@@ -39,5 +39,4 @@ const selectedOptions = computed({
   set: (value) => emit("update:modelValue", value),
 });
 
-//WATCHERS
 </script>

@@ -109,7 +109,13 @@ const visualizationStore = useVisualizationStore();
 const allTables = ref<Record<string, string>>({});
 const speciesCodeMap = ref<Record<string, string>>({});
 const showSettingsOverlay = ref(false);
-const phyloTreeRefs = ref<InstanceType<typeof PhylogeneticTree>[] | null>(null);
+type PhylogeneticTreeExpose = InstanceType<typeof PhylogeneticTree> & {
+  orthogroupOptions?: Record<string, string>;
+  expandAll?: () => void;
+  collapseAll?: () => void;
+  collapseToSpecies?: () => void;
+};
+const phyloTreeRefs = ref<PhylogeneticTreeExpose[] | null>(null);
 const hashLoading = ref(true); // Prevent child from fetching until hash is loaded
 const initialOrthogroup = ref<string | null>(null); // OG from hash load
 
@@ -137,8 +143,7 @@ function callOnAllTrees(method: 'expandAll' | 'collapseAll' | 'collapseToSpecies
   const refs = phyloTreeRefs.value;
   if (!refs) return;
   for (const r of refs) {
-    const fn = (r as any)?.[method];
-    if (typeof fn === 'function') fn();
+    r[method]?.();
   }
 }
 

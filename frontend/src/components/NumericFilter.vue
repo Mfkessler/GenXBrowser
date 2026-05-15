@@ -132,8 +132,6 @@ const histogramBins = ref<
 // Local state
 const errorMessage = ref("");
 
-const step = props.step ?? 1; // kept for potential future use
-
 const binEdges = computed(() =>
   Array.from(
     histogramBins.value.reduce((acc, bin) => {
@@ -221,7 +219,7 @@ const displayDecimals = computed(() => {
   return 1;
 });
 const inputStep = computed(() =>
-  isFloatRange.value ? parseFloat((1 / Math.pow(10, displayDecimals.value)).toFixed(displayDecimals.value)) : 1,
+  props.step ?? (isFloatRange.value ? parseFloat((1 / Math.pow(10, displayDecimals.value)).toFixed(displayDecimals.value)) : 1),
 );
 function formatValue(val: number): number | string {
   if (!isFloatRange.value) return val;

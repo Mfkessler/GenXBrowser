@@ -30,6 +30,13 @@ export interface ClusterNode {
   size: number;             // Number of leaves in subtree
 }
 
+interface HClusterNode {
+  isLeaf: boolean;
+  index?: number;
+  height: number;
+  children?: HClusterNode[];
+}
+
 /**
  * Compute Pearson correlation coefficient between two vectors
  */
@@ -105,16 +112,16 @@ function computeDistanceMatrix(
 /**
  * Convert ml-hclust tree to our ClusterNode format
  */
-function convertToClusterNode(tree: any): ClusterNode {
+function convertToClusterNode(tree: HClusterNode): ClusterNode {
   if (tree.isLeaf) {
     return {
-      index: tree.index,
+      index: tree.index ?? 0,
       height: 0,
       size: 1
     };
   }
   
-  const children = tree.children.map((child: any) => convertToClusterNode(child));
+  const children = (tree.children ?? []).map((child) => convertToClusterNode(child));
   const size = children.reduce((sum: number, c: ClusterNode) => sum + c.size, 0);
   
   return {
@@ -267,7 +274,7 @@ export function transpose(matrix: number[][]): number[][] {
  * @returns 2D array suitable for clustering
  */
 export function extractExpressionMatrix(
-  rows: Record<string, any>[],
+  rows: Record<string, unknown>[],
   dataColumns: string[]
 ): number[][] {
   return rows.map(row => {

@@ -7,7 +7,7 @@
  * - Falls back to main thread if Web Workers not available
  */
 
-import { ref, computed, watch, onUnmounted } from 'vue';
+import { ref, computed, onUnmounted } from 'vue';
 import { useVisualizationStore } from '@/stores/visualization';
 import { 
   hierarchicalCluster, 
@@ -37,7 +37,7 @@ function getClusterWorker(): Worker | null {
         new URL('./clustering.worker.ts', import.meta.url),
         { type: 'module' }
       );
-    } catch (e) {
+    } catch {
       console.warn('Web Workers not supported, falling back to main thread clustering');
       workerSupported = false;
       return null;
@@ -170,8 +170,8 @@ export function useClustering() {
    */
   async function performBackendClustering(
     tableName: string,
-    filters: Record<string, any>,
-    sampleFilters: Record<string, any>,
+    filters: Record<string, unknown>,
+    sampleFilters: Record<string, unknown>,
     clusterRows: boolean,
     clusterCols: boolean,
     method: ClusterMethod,
@@ -206,11 +206,11 @@ export function useClustering() {
    * @returns Promise that resolves when clustering is complete
    */
   async function performClustering(
-    rows: Record<string, any>[],
+    rows: Record<string, unknown>[],
     dataColumns: string[],
     tableName?: string,
-    filters?: Record<string, any>,
-    sampleFilters?: Record<string, any>
+    filters?: Record<string, unknown>,
+    sampleFilters?: Record<string, unknown>
   ): Promise<void> {
     const { clusterRows, clusterCols, method, distance } = visualizationStore.clustering;
     

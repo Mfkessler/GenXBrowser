@@ -779,7 +779,8 @@ async function renderDotplotRowSideColors({
         return colorMap.getColor(numericValue) ?? "#eeeeee";
       }
       // Boolean/categorical mapping
-      if (colorMap[d] !== undefined) return colorMap[d];
+      const mappedColor = colorMap[d];
+      if (typeof mappedColor === "string") return mappedColor;
       return "#eeeeee";
     });
 

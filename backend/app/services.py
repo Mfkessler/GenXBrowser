@@ -1333,9 +1333,7 @@ class GenXBrowserService:
     ) -> pd.DataFrame:
         """Apply filters to DataFrame."""
         result = df.copy()
-        logger.info(f"[_apply_filters] Applying filters: {filters}")
-        logger.info(f"[_apply_filters] DataFrame columns: {list(df.columns)[:20]}...")
-        logger.info(f"[_apply_filters] DataFrame shape before: {df.shape}")
+        logger.debug("[_apply_filters] Applying %d filters to DataFrame shape %s", len(filters), df.shape)
         
         for col, filter_spec in filters.items():
             pg_col = self._to_display_column_name(col)
@@ -1347,7 +1345,11 @@ class GenXBrowserService:
                     actual_col = candidate
                     break
             
-            logger.info(f"[_apply_filters] Filter col={col}, pg_col={pg_col}, h5ad_col={h5ad_col}, actual_col={actual_col}")
+            logger.debug(
+                "[_apply_filters] Resolved filter column %r to %r",
+                col,
+                actual_col,
+            )
             
             if actual_col is None:
                 logger.warning(f"[_apply_filters] Column '{col}' not found in DataFrame columns: {list(result.columns)[:10]}...")

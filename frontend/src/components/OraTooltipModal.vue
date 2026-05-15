@@ -110,7 +110,7 @@ const copyToClipboard = async (text: string, fieldName: string) => {
   }
 };
 
-const formatValue = (key: string, value: any): string => {
+const formatValue = (key: string, value: unknown): string => {
   if (value === null || value === undefined) return "—";
   
   // Format based on metric type
@@ -146,7 +146,7 @@ const formatGoDepth = (depth: number): string => {
 
 // Core metrics (always shown)
 const coreMetrics = computed(() => {
-  const metrics: Array<{key: string, value: any}> = [];
+  const metrics: Array<{key: string, value: unknown}> = [];
   if (!props.data) return metrics;
   
   // Always show these
@@ -160,7 +160,7 @@ const coreMetrics = computed(() => {
 
 // Additional metrics (configurable via visibleFields)
 const additionalMetrics = computed(() => {
-  const metrics: Array<{key: string, value: any}> = [];
+  const metrics: Array<{key: string, value: unknown}> = [];
   if (!props.data) return metrics;
   
   const availableMetrics = ['gene_ratio', 'p_value', 'q_value', 'combined_score', 'odds_ratio'];
@@ -174,14 +174,6 @@ const additionalMetrics = computed(() => {
   return metrics;
 });
 
-const isFieldVisible = (key: string): boolean => {
-  // Core metrics always visible
-  if (['subset_count', 'expected_count', 'background_count', 'fold_enrichment'].includes(key)) {
-    return true;
-  }
-  // Others based on visibleFields
-  return props.visibleFields.includes(key);
-};
 </script>
 
 <template>
