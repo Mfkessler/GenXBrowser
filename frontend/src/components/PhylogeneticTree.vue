@@ -265,7 +265,8 @@ const phyloExportPayload = computed(() => {
   const selectedKey = selectedOrthogroupKey();
   const rowsForExport: RowType[] = [];
   const sampleColumnSet = new Set<string>();
-  const metaColumnSet = new Set<string>(['dataset']);
+  const identifierColumn = config.visualization.id_column;
+  const metaColumns = ['dataset', identifierColumn];
 
   for (const [dataset, datasetData] of Object.entries(tableData.value)) {
     const items = (datasetData as { items?: RowType[] })?.items ?? [];
@@ -273,14 +274,14 @@ const phyloExportPayload = computed(() => {
       const rowOrthogroup = String(row.ortho_id ?? '').trim().toLowerCase();
       if (selectedKey && rowOrthogroup !== selectedKey) continue;
 
-      const exportRow: RowType = { dataset: beautifyLabel(dataset) };
+      const exportRow: RowType = {
+        dataset: beautifyLabel(dataset),
+        [identifierColumn]: row[identifierColumn],
+      };
       for (const [key, value] of Object.entries(row)) {
-        if (key.startsWith('tissue_type_') || key.startsWith('_')) continue;
-        exportRow[key] = value;
         if (dataColumnNames.value.includes(key)) {
+          exportRow[key] = value;
           sampleColumnSet.add(key);
-        } else {
-          metaColumnSet.add(key);
         }
       }
       rowsForExport.push(exportRow);
@@ -288,7 +289,6 @@ const phyloExportPayload = computed(() => {
   }
 
   const sampleColumns = dataColumnNames.value.filter((column) => sampleColumnSet.has(column));
-  const metaColumns = [...metaColumnSet].filter((column) => column !== 'newick_str');
   const columns = [...metaColumns, ...sampleColumns];
 
   return {

@@ -326,7 +326,7 @@ const idColumn = computed(() => config.visualization.id_column);
 const heatmapCols = computed(() => visibleColumns.value);
 
 const heatmapExportMetaColumns = computed(() =>
-  columnNames.value.filter((col) => !dataColumnNames.value.includes(col) && !String(col).startsWith('_')),
+  columnNames.value.includes(idColumn.value) ? [idColumn.value] : [],
 );
 
 const heatmapExportPayload = computed(() => {

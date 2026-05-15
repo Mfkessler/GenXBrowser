@@ -340,7 +340,7 @@ const exportFilename = computed(() => {
   return `compare_${selectedOrthogroupLabel.value}_${expressionDisplayOption.value}`;
 });
 
-const exportMetaColumns = computed(() => ['species', 'gene_id']);
+const exportMetaColumns = computed(() => ['species', filtersStore.idColumnName]);
 
 const exportSampleColumns = computed(() => {
   if (!processedData.value) return [];
@@ -363,7 +363,7 @@ const exportData = computed<RowType[]>(() => {
   return filteredTranscripts.map((t) => {
     const row: RowType = {
       species: beautifyLabel(t.species),
-      gene_id: t.geneId,
+      [filtersStore.idColumnName]: t.geneId,
     };
     filteredTissues.forEach((tissue) => {
       const vals = t.values[tissue];
@@ -829,7 +829,7 @@ function processDataForPlotting(og: string): ProcessedData | null {
     });
 
     matchingItems.forEach((item: any) => {
-      const geneId = item.gene_id || "unknown";
+      const geneId = item[filtersStore.idColumnName] || item.gene_id || "unknown";
       filteredGeneIds.add(`${tableName}::${geneId}`);
       const values: Record<string, SampleValue[]> = {};
 
@@ -893,7 +893,7 @@ function processDataForPlotting(og: string): ProcessedData | null {
       }
 
       matchingItems.forEach((item: any) => {
-        const geneId = item.gene_id || "unknown";
+        const geneId = item[filtersStore.idColumnName] || item.gene_id || "unknown";
         const key = `${tableName}::${geneId}`;
 
         // Skip transcripts already in filtered data
@@ -1416,7 +1416,7 @@ function downloadCSV() {
   const filteredTissues = tissues;
 
   // Build CSV header
-  const headers = ["species", "gene_id", ...filteredTissues];
+  const headers = ["species", filtersStore.idColumnName, ...filteredTissues];
   const rows: string[][] = [headers];
 
   // Build data rows
