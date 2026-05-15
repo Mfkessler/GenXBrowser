@@ -256,12 +256,11 @@ import {
   onUnmounted,
   ref,
   type Ref,
-  withDefaults,
   watch,
 } from "vue";
 
-import { API_BASE_URL, type Config } from "@/shared/Config";
-import { COLORSCALES, getCategoricalColors } from "@/shared/Colorscales";
+import { API_BASE_URL } from "@/shared/Config";
+import { COLORSCALES } from "@/shared/Colorscales";
 import DropdownMenu from "./DropdownMenu.vue";
 import { useFiltersStore } from "@/stores/filters";
 import LoadingOverlay from "./LoadingOverlay.vue";
@@ -271,12 +270,12 @@ import type { RowType } from "@/shared/RowType";
 import ShareOverlay from "./ShareOverlay.vue";
 import ExportModal from "./ExportModal.vue";
 import OraTooltipModal from "./OraTooltipModal.vue";
-import { beautifyLabel, compareValues, exact_nc } from "@/shared/utils";
+import { beautifyLabel, compareValues } from "@/shared/utils";
 import { useVisualizationStore } from "@/stores/visualization";
 import { useColumnsStore } from "@/stores/columns";
 import { useAssistantStore } from "@/stores/assistant";
-import { getEntityCountLabel, getEntitySetLabel, getEntityLabelPluralLower, getEntityLabelPlural } from "@/shared/dataTypeLabels";
-import { createVisibleColorMapping, type ColorMapping, type SharedColorRegistry } from "@/shared/colorMapping";
+import { getEntityCountLabel, getEntitySetLabel, getEntityLabelPluralLower } from "@/shared/dataTypeLabels";
+import { createVisibleColorMapping, type SharedColorRegistry } from "@/shared/colorMapping";
 
 // TODO: Numeric column values have not been tested as ORA input
 
@@ -323,14 +322,8 @@ const oraInfoOpen = ref(false);
 const error = ref("");
 const rowCount = ref(0);
 const columnMeta = ref<MetaFormat>();
-const subset = ref<string[]>([]);
-const subsetFrequency = ref<Record<string, number>>({});
-const subsetSize = ref<number>(0);
-const data = ref<string[]>([]);
-const dataFrequency = ref<Record<string, number>>({});
-const dataSize = ref<number>(0);
 const pValueEntries = ref<PValueEntry[]>([]);
-const oraMetadata = ref<any>(null);
+const oraMetadata = ref<OraMetadata | null>(null);
 
 const dotplotContainer = ref<HTMLDivElement | null>(null);
 const colorLegendContainer = ref<HTMLDivElement | null>(null);
@@ -405,6 +398,39 @@ interface PValueEntry {
   go_name?: string;
   go_namespace?: string;
   go_depth?: number;
+}
+
+interface OraResult {
+  attribute: string;
+  subset_count: number;
+  background_count: number;
+  gene_ratio: number;
+  p_value: number;
+  q_value: number;
+  combined_score: number;
+  odds_ratio?: number;
+  expected_count: number;
+  fold_enrichment: number;
+}
+
+interface OraMetadata {
+  count?: number;
+  subset_size?: number;
+  background_size?: number;
+  unannotated_subset_count?: number;
+  unannotated_background_count?: number;
+  topological_filter_applied?: boolean;
+  filtered_parent_count?: number;
+  filtered_parents_sample?: string[];
+  message?: string;
+  [key: string]: unknown;
+}
+
+interface OraResponse {
+  results?: OraResult[];
+  metadata?: OraMetadata;
+  error?: string;
+  go_terms?: Record<string, { name?: string; namespace?: string; depth?: number }>;
 }
 
 const oraExportMetaColumns = computed(() => {
@@ -513,29 +539,6 @@ async function fetchGoTermDetails(goIds: string[]): Promise<void> {
 }
 
 /**
- * Format GO depth for display with visual indicator.
- */
-function formatGoDepth(depth: number): string {
-  if (depth < 0) return 'N/A';
-  if (depth === 0) return '0 (Root)';
-  if (depth <= 2) return `${depth} (General)`;
-  if (depth <= 5) return `${depth} (Intermediate)`;
-  return `${depth} (Specific)`;
-}
-
-/**
- * Format GO namespace for display.
- */
-function formatGoNamespace(namespace: string): string {
-  const namespaceMap: Record<string, string> = {
-    'biological_process': 'Biological Process',
-    'molecular_function': 'Molecular Function',
-    'cellular_component': 'Cellular Component'
-  };
-  return namespaceMap[namespace] || namespace;
-}
-
-/**
  * Fetch ORA data from backend endpoint.
  * 
  * The backend performs:
@@ -565,8 +568,6 @@ async function fetchAndPrepareData() {
       max_subset_size: 5000,
     };
     
-    console.log('ORA Request:', oraRequest);
-    
     // Call backend ORA endpoint (includes count check)
     const { data: oraResponse } = await axios.post(
       `${API_BASE_URL}/api/ora`,
@@ -574,14 +575,11 @@ async function fetchAndPrepareData() {
     );
     if (requestId !== oraRequestSeq) return;
     
-    console.log('ORA Response:', oraResponse);
-    console.log('ORA Response type:', typeof oraResponse);
-    
     // Parse response if it's a string (shouldn't happen with proper Content-Type)
-    let parsedResponse = oraResponse;
+    let parsedResponse = oraResponse as OraResponse;
     if (typeof oraResponse === 'string') {
       console.warn('ORA response is string, parsing JSON manually');
-      parsedResponse = JSON.parse(oraResponse);
+      parsedResponse = JSON.parse(oraResponse) as OraResponse;
     }
 
     // Extract count from metadata (replaces separate /api/count call)
@@ -606,7 +604,7 @@ async function fetchAndPrepareData() {
 
       // Store results - map backend response to frontend interface
       // Fold enrichment and expected count are now calculated on backend
-      pValueEntries.value = parsedResponse.results.map((r: any) => {
+      pValueEntries.value = parsedResponse.results.map((r) => {
         return {
           attr: r.attribute,  // Map 'attribute' to 'attr' for compatibility
           attribute: r.attribute,  // Keep original for modal
@@ -623,12 +621,6 @@ async function fetchAndPrepareData() {
       });
 
       oraMetadata.value = parsedResponse.metadata;
-
-      console.log(`ORA results: ${pValueEntries.value.length} significant terms`);
-      console.log(`Metadata:`, oraMetadata.value);
-      console.log(`ORA Column Name: "${visualizationStore.oraColumnName}"`);
-      console.log(`Is GO Term Enrichment: ${isGoTermEnrichment.value}`);
-      
       // Fetch GO term details if this is GO term enrichment
       if (isGoTermEnrichment.value && pValueEntries.value.length > 0) {
         // Use inline GO terms from ORA response if available, otherwise fetch separately
@@ -643,10 +635,8 @@ async function fetchAndPrepareData() {
           }
         } else {
           const goIds = pValueEntries.value.map(e => e.attr);
-          console.log(`Fetching GO term details for ${goIds.length} terms:`, goIds.slice(0, 5));
           await fetchGoTermDetails(goIds);
         }
-        console.log(`GO Term Cache after fetch:`, goTermInfoCache.value);
         
         // Enrich entries with GO term info including depth
         pValueEntries.value = pValueEntries.value.map(entry => {
@@ -658,7 +648,6 @@ async function fetchAndPrepareData() {
             go_depth: goInfo?.depth
           };
         });
-        console.log(`Enriched entries sample:`, pValueEntries.value.slice(0, 2));
       }
 
       await nextTick();
@@ -717,107 +706,6 @@ function publishAnalysisContext() {
   }
 }
 
-// Compute p-values for each attribute observed in either subset or background
-// NOTE: This function is now DEPRECATED - ORA calculation moved to backend
-// Kept for reference only
-/*
-function calculatePValues(
-  subFreq: Record<string, number>,
-  bgFreq: Record<string, number>,
-  subSize: number,
-  bgSize: number,
-): PValueEntry[] {
-  // ... old implementation removed ...
-  // See backend: app/services.py -> calculate_ora()
-  return [];
-}
-*/
-
-// Local createVisibleColorMapping removed — now imported from @/shared/colorMapping
-
-// Keep the old function for backwards compatibility with API-based lookup
-async function createSideColorMapping(column_name: string, colType: string) {
-  try {
-    if (colType === "double precision" || colType === "bigint") {
-      const { data } = await axios.get(
-        `${API_BASE_URL}/api/column_bins`,
-        {
-          params: {
-            table_names: props.tableName + "_meta",
-            column_name: column_name,
-            n_bins: 50, // Default histogram resolution
-          },
-        },
-      );
-
-      const bins = data; // Expect array of {bucket_lower, bucket_upper, frequency}
-
-      if (!bins?.length) {
-        // Fallback or empty mapping
-        return {};
-      }
-
-      // Extract numeric domain for continuous scale
-      const domainMin = bins[0].bucket_lower;
-      const domainMax = bins[bins.length - 1].bucket_upper;
-
-      // Use a sequential or diverging color scale suitable for numeric data
-      // For example, use d3.interpolateViridis or your chosen scheme
-      const colorScale = d3
-        .scaleSequential(d3.interpolateBlues)
-        .domain([domainMin, domainMax]);
-
-      // Cache the bins and scale together, returning a function that maps value to color
-      const mapping = {
-        bins,
-        colorScale,
-        getColor: (value: number) => {
-          // Find the bin where value falls (bucket_lower < value <= bucket_upper)
-          const bin = bins.find(
-            (b) => value >= b.bucket_lower && value <= b.bucket_upper,
-          );
-          return bin
-            ? colorScale((bin.bucket_lower + bin.bucket_upper) / 2)
-            : "#eeeeee";
-        },
-      };
-
-      return mapping;
-    } else if (colType === "boolean") {
-      const terms = [true, false, null];
-      const range = ["#36a2eb", "#e74c3c", "#ccc"];
-      const scale = d3.scaleOrdinal<boolean | null, string>().domain(terms).range(range);
-
-      const mapping: Record<string, string> = {};
-      terms.forEach((term) => {
-        mapping[String(term)] = scale(term);
-      });
-
-      return mapping;
-    } else {
-      const response = await axios.get(`${API_BASE_URL}/api/col`, {
-        params: { column_name },
-      });
-      const terms = (response.data.terms || []).map((term: unknown) => String(term));
-      const colors = getCategoricalColors(terms.length);
-      const scale = d3.scaleOrdinal<string, string>().domain(terms).range(colors);
-
-      const mapping: Record<string, string> = {};
-      terms.forEach((term) => {
-        mapping[term] = scale(term);
-      });
-
-      return mapping;
-    }
-  } catch (error) {
-    console.error(
-      `Failed to fetch unique terms or buckets for column ${column_name}`,
-      error,
-    );
-    return {};
-  }
-}
-
 //Plot
 function resetDotplot() {
   if (dotplotContainer.value) {
@@ -844,7 +732,7 @@ async function renderDotplotRowSideColors({
   svg: d3.Selection<SVGSVGElement, unknown, null, undefined>;
   margin: { top: number; right: number; bottom: number; left: number };
   yLabels: string[];
-  attributeValues: any[];
+  attributeValues: string[];
   column_name: string;
   colType: string;
   sideColorWidth?: number;
@@ -881,14 +769,14 @@ async function renderDotplotRowSideColors({
     .attr("width", sideColorWidth * 0.75)
     .attr("height", scale.bandwidth())
     .attr("fill", (d) => {
+      const numericValue = Number(d);
       // Numeric columns with binning and getColor method
       if (
         (colType === "double precision" || colType === "bigint") &&
-        d !== null &&
-        d !== undefined &&
+        Number.isFinite(numericValue) &&
         typeof colorMap.getColor === "function"
       ) {
-        return colorMap.getColor(d) ?? "#eeeeee";
+        return colorMap.getColor(numericValue) ?? "#eeeeee";
       }
       // Boolean/categorical mapping
       if (colorMap[d] !== undefined) return colorMap[d];
@@ -961,19 +849,19 @@ async function renderDotplotRowSideColors({
       tooltip.style("visibility", "hidden");
     })
     .on("click", function (event, d) {
+      const numericValue = Number(d);
       if (
         (colType === "double precision" || colType === "bigint") &&
-        d !== null &&
-        d !== undefined &&
+        Number.isFinite(numericValue) &&
         colorMap.bins
       ) {
         // Find bin for clicked value to set filter range
         const bin = colorMap.bins.find(
-          (b) => d >= b.bucket_lower && d <= b.bucket_upper,
+          (b) => numericValue >= b.bucket_lower && numericValue <= b.bucket_upper,
         );
         if (bin) {
           filtersStore.setFilter(column_name, {
-            value: [bin.bucket_lower, bin.bucket_upper] as any,
+            value: [bin.bucket_lower, bin.bucket_upper] as unknown as string,
           });
         } else {
           filtersStore.setFilter(column_name, { value: d });
@@ -1398,7 +1286,7 @@ async function drawDotPlot() {
     .attr("r", (d) => sizeScale(d.subset_count))
     .style("fill", (d) => colorScale(d.q_value ?? 1))
     .style("opacity", 0.8)
-    .on("mouseover", (event, d) => {
+    .on("mouseover", (event) => {
       tooltip.style("visibility", "visible");
       d3.select(event.currentTarget)
         .style("stroke", "white")
@@ -1455,18 +1343,15 @@ async function drawDotPlot() {
   // Add mobile long-press support for touch devices
   const circleElements = plotGroup.selectAll("circle").nodes() as SVGCircleElement[];
   let longPressTimer: number | null = null;
-  let longPressTriggered = false;
   
   circleElements.forEach((circle) => {
     if (!circle) return;
     
     circle.addEventListener("touchstart", function (event: TouchEvent) {
-      longPressTriggered = false;
       const target = event.currentTarget as SVGCircleElement;
-      const d = d3.select(target).datum() as any;
+      const d = d3.select(target).datum() as PValueEntry;
       
       longPressTimer = window.setTimeout(() => {
-        longPressTriggered = true;
         selectedTerm.value = d;
         showOraTooltipModal.value = true;
         tooltip.style("visibility", "hidden");
@@ -1607,7 +1492,6 @@ async function drawDotPlot() {
       maxSubsetCount,
     ].filter((v) => v > 0);
 
-    const sizeLegendHeight = 150; // approximate height to reserve; adjust as needed
     createSizeLegend(
       sizeLegendGroup, // pass the bottom legend group
       sizeScale,
@@ -1785,7 +1669,6 @@ onMounted(async () => {
     });
     
     if (goColumn) {
-      console.log(`ORA: Setting default column to GO terms: ${goColumn.column_name}`);
       visualizationStore.oraColumnName = goColumn.column_name;
     }
   }

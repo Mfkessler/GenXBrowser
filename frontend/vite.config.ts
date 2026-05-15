@@ -69,6 +69,7 @@ export default defineConfig({
     include: ["plotly.js-dist-min"],
   },
   build: {
+    chunkSizeWarningLimit: 5000,
     commonjsOptions: {
       include: [/plotly\.js-dist-min/, /node_modules/],
     },

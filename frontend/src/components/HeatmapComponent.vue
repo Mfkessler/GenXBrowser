@@ -184,7 +184,6 @@
 import axios from "axios";
 import * as d3 from "d3";
 import {lowerCase} from "lodash-es";
-import {storeToRefs} from "pinia";
 import {
   computed,
   inject,
@@ -193,12 +192,11 @@ import {
   onMounted,
   ref,
   type Ref,
-  withDefaults,
   watch,
 } from "vue";
 
 import DropdownMenu from "./DropdownMenu.vue";
-import {COLORSCALES, getCategoricalColors} from "@/shared/Colorscales";
+import {COLORSCALES} from "@/shared/Colorscales";
 import {useColumnsStore} from "@/stores/columns";
 import {API_BASE_URL, type Config} from "@/shared/Config";
 import {useFiltersStore} from "@/stores/filters";
@@ -216,7 +214,6 @@ import { getDisplayName, sequenceFields, verboseFields } from "@/shared/metadata
 import { getEntityCountLabel } from "@/shared/dataTypeLabels";
 import { useClustering } from "@/shared/useClustering";
 import {
-  type ColorMapping,
   createVisibleColorMapping,
   getListMetadataKey,
   normalizeMetadataList,
@@ -231,8 +228,8 @@ const sharedColorRegistry = inject<SharedColorRegistry>('sharedColorRegistry', u
 const filtersStore = useFiltersStore();
 const visualizationStore = useVisualizationStore();
 const columnStore = useColumnsStore();
-const { filters, geneFilters, sampleFilters, getMergedGeneFilters } = useFilterSeparation();
-const { performClustering, isComputing: isClusteringComputing } = useClustering();
+const { filters, sampleFilters, getMergedGeneFilters } = useFilterSeparation();
+const { performClustering } = useClustering();
 
 // Per-dataset merged gene filters (includes per-dataset ID filter)
 const mergedGeneFilters = computed(() => getMergedGeneFilters(props.tableName).value);
@@ -281,7 +278,6 @@ const columnNames = ref<string[]>([]);
 const dataColumnNames = ref<string[]>([]);
 const columns = ref<RowType[]>([]);
 const sortedColumns = ref<RowType[]>([]);
-const sideColorCache: Record<string, ColorMapping> = {};
 
 const heatmapContainer = ref<HTMLDivElement | null>(null);
 const heatmapInstanceId = `heatmap-${Math.random().toString(36).slice(2, 10)}`;
@@ -691,119 +687,6 @@ function renderColorLegend(
     .call((g) => g.select(".domain").remove());
 }
 
-// Local createVisibleColorMapping removed — now imported from @/shared/colorMapping
-
-async function getOrCreateSideColorMapping(
-  column_name: string,
-  colType: string,
-) {
-  if (sideColorCache[column_name]) {
-    return sideColorCache[column_name];
-  }
-
-  try {
-    if (colType === "double precision" || colType === "bigint") {
-      const {data} = await axios.get(
-        `${API_BASE_URL}/api/column_bins`,
-        {
-          params: {
-            table_names: props.tableName + "_meta",
-            column_name: column_name,
-            n_bins: 50, // Default histogram resolution
-          },
-        },
-      );
-
-      const bins = data; // Expect array of {bucket_lower, bucket_upper, frequency}
-
-      if (!bins?.length) {
-        // Fallback or empty mapping
-        return {};
-      }
-
-      // Extract numeric domain for continuous scale
-      const domainMin = bins[0].bucket_lower;
-      const domainMax = bins[bins.length - 1].bucket_upper;
-
-      // Use a sequential or diverging color scale suitable for numeric data
-      // For example, use d3.interpolateViridis or your chosen scheme
-      const colorScale = d3
-        .scaleSequential(d3.interpolateBlues)
-        .domain([domainMin, domainMax]);
-
-      // Cache the bins and scale together, returning a function that maps value to color
-      const mapping = {
-        bins,
-        colorScale,
-        getColor: (value: number) => {
-          // Find the bin where value falls (bucket_lower < value <= bucket_upper)
-          const bin = bins.find(
-            (b) => value >= b.bucket_lower && value <= b.bucket_upper,
-          );
-          return bin
-            ? colorScale((bin.bucket_lower + bin.bucket_upper) / 2)
-            : "#eeeeee";
-        },
-      };
-
-      sideColorCache[column_name] = mapping;
-      return mapping;
-    } else if (colType === "boolean") {
-      const terms = [true, false, null];
-      const range = ["#36a2eb", "#e74c3c", "#ccc"];
-      const scale = d3.scaleOrdinal<boolean | null, string>().domain(terms).range(range);
-
-      const mapping: ColorMapping = {} as ColorMapping;
-      terms.forEach((term) => {
-        mapping[String(term)] = scale(term);
-      });
-
-      sideColorCache[column_name] = mapping;
-      return mapping;
-    } else if (column_name === "tissue_types") {
-      // Get unique tissue values from column metadata
-      const tissueKey = columnStore.tissueColumnName ?? 'tissue';
-      const tissueValues = sortedColumns.value.map((meta) => String(meta[tissueKey] ?? meta.column_name ?? ""));
-      const uniqueTissues = [...new Set(tissueValues)].filter(Boolean);
-      
-      // Use dynamic color palette that scales to any number of tissues
-      const colors = getCategoricalColors(uniqueTissues.length);
-      const scale = d3.scaleOrdinal<string, string>().domain(uniqueTissues).range(colors);
-
-      const mapping: ColorMapping = {} as ColorMapping;
-      uniqueTissues.forEach((term) => {
-        mapping[term] = scale(term);
-      });
-
-      sideColorCache[column_name] = mapping;
-      return mapping;
-    } else {
-      const response = await axios.get(`${API_BASE_URL}/api/col`, {
-        params: {column_name},
-      });
-      const terms = (response.data.terms ?? []).map((term: unknown) => String(term));
-      
-      // Use dynamic color palette
-      const colors = getCategoricalColors(terms.length);
-      const scale = d3.scaleOrdinal<string, string>().domain(terms).range(colors);
-
-      const mapping: ColorMapping = {} as ColorMapping;
-      terms.forEach((term) => {
-        mapping[term] = scale(term);
-      });
-
-      sideColorCache[column_name] = mapping;
-      return mapping;
-    }
-  } catch (error) {
-    console.error(
-      `Failed to fetch unique terms or buckets for column ${column_name}`,
-      error,
-    );
-    return {};
-  }
-}
-
 function getSideColorAttributeValues(dataSource: Record<string, unknown>[], colName: string, colType: string): SideColorValue[] {
   return dataSource.map((entry) => {
     const val = entry[colName];
@@ -1048,11 +931,11 @@ async function renderSideColors({
           );
           if (bin) {
             filtersStore.setFilter(column_name, {
-              value: [bin.bucket_lower, bin.bucket_upper] as any,
+              value: [bin.bucket_lower, bin.bucket_upper] as unknown as string,
             });
           } else {
             // Fallback if no bin found, set raw value
-            filtersStore.setFilter(column_name, {value: d as any});
+            filtersStore.setFilter(column_name, {value: d as unknown as string});
           }
         } else {
           // For non-numeric or other types, keep existing behavior
@@ -1353,7 +1236,7 @@ async function renderHeatmap(): Promise<boolean> {
       .style("pointer-events", "none");
 
     yAxisTexts
-      .on("mouseover", function(event) {
+      .on("mouseover", function() {
         const originalText = d3.select(this).text().replace('...', '');
         const fullText = d3.select(this).select("title").text() || originalText;
         
@@ -1564,7 +1447,6 @@ async function renderHeatmap(): Promise<boolean> {
 
   // Add long-press support for touch devices
   let longPressTimer: number | null = null;
-  let longPressTriggered = false;
   
   // Use passive event listeners for touch events to improve scroll performance
   const rectElements = cellGroup.selectAll("rect").nodes() as SVGRectElement[];
@@ -1572,13 +1454,10 @@ async function renderHeatmap(): Promise<boolean> {
     if (!rect) return;
     
     rect.addEventListener("touchstart", function (event: TouchEvent) {
-      longPressTriggered = false;
       const target = event.currentTarget as SVGRectElement;
-      const d = d3.select(target).datum() as any;
+      const d = d3.select(target).datum() as { rowIndex: number; col: string; value: string | number };
       
       longPressTimer = window.setTimeout(() => {
-        longPressTriggered = true;
-        
         const row = data[d.rowIndex];
         selectedRowData.value = row;
         selectedColumnValue.value = d.col;

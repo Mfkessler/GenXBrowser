@@ -843,7 +843,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineProps, defineEmits, inject, ref, watch } from "vue";
+import { computed, inject, ref, watch } from "vue";
 import Draggable from "vuedraggable";
 import axios from "axios";
 import { useRoute } from "vue-router";
@@ -865,7 +865,6 @@ import { beautifyLabel } from "@/shared/utils";
 import {
   EXPRESSION_SECTIONS,
   getExpressionOption,
-  type ExpressionOption
 } from "@/shared/ExpressionDisplay";
 import { getDisplayName, sequenceFields } from "@/shared/metadataDisplayNames";
 import { getEntityLabelPlural, getMinimumCountLabel, getEntityLabelPluralLower } from "@/shared/dataTypeLabels";

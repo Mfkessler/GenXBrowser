@@ -82,8 +82,6 @@
 
 <script setup lang="ts">
 import {
-  defineProps,
-  defineEmits,
   ref,
 } from "vue";
 import { useVisualizationStore } from "@/stores/visualization";
@@ -95,7 +93,7 @@ import {
 
 
 // Props
-const props = defineProps<{
+defineProps<{
   show: boolean;
   showColorSchema: boolean;
 }>();

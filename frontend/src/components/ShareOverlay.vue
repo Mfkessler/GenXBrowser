@@ -106,9 +106,6 @@
 <script setup lang="ts">
 import axios from "axios";
 import {
-  computed,
-  defineProps,
-  defineEmits,
   onMounted,
   ref,
   type Ref,
@@ -848,12 +845,12 @@ function exportPhyloTreeSvg(svg: SVGSVGElement): SVGSVGElement {
               bounds.height = bottom - bounds.y;
             }
           }
-        } catch (e) {
+        } catch {
           // getBBox can fail on empty groups
         }
       });
     }
-  } catch (e) {
+  } catch {
     console.warn('getBBox failed, using fallback bounds');
   }
   
@@ -990,7 +987,7 @@ function mergeAllSvgsInContainer(container: HTMLElement): string {
       const bbox = svg.getBBox();
       width = bbox.width || svg.viewBox.baseVal.width || parseFloat(svg.getAttribute("width") || "0") || 800;
       height = bbox.height || svg.viewBox.baseVal.height || parseFloat(svg.getAttribute("height") || "0") || 600;
-    } catch (e) {
+    } catch {
       width = parseFloat(svg.getAttribute("width") || "0") || 800;
       height = parseFloat(svg.getAttribute("height") || "0") || 600;
     }
