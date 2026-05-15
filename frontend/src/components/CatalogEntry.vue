@@ -706,8 +706,8 @@ onMounted(() => {
 
 
 watch(
-  effectiveFilters,
-  async (newFilters) => {
+  [effectiveFilters, () => filtersStore.filterChainVersion],
+  async ([newFilters]) => {
     console.log(`[CatalogEntry watcher] Filter change detected for ${props.tableName}:`, newFilters);
     
     if (!props.tableName) return;
@@ -753,6 +753,7 @@ watch(
         {
           table_name: props.tableName,
           filters: newFilters,
+          filter_chain: filtersStore.buildFilterChainPayload(newFilters),
         },
       );
       filteredCount.value = response.data.count;

@@ -128,6 +128,7 @@ class QueryRequestSchema(Schema):
     table_name = fields.String(required=True)
     columns = fields.List(fields.String(), required=False, load_default=list)
     filters = fields.Dict(keys=fields.String(), values=fields.Raw(), required=False, load_default=dict)
+    filter_chain = fields.Dict(keys=fields.String(), values=fields.Raw(), required=False, allow_none=True, load_default=None)
     sample_filters = fields.Dict(keys=fields.String(), values=fields.Raw(), required=False, load_default=dict)
     limit = fields.Integer(required=False, load_default=1001, validate=validate.Range(min=1))
     offset = fields.Integer(required=False, load_default=0, validate=validate.Range(min=0))
@@ -493,6 +494,7 @@ def get_row_count():
         data = schema.load(data)
         table_name = data.get('table_name')
         filters = data.get('filters')
+        filter_chain = data.get('filter_chain')
         sample_filters = data.get('sample_filters') or {}
         
         service = get_service()
@@ -504,7 +506,7 @@ def get_row_count():
         
         # Parse and apply gene-level (var) filters via the existing helper.
         parsed_filters = parse_filters(filters, service.get_all_columns)
-        count = service.get_row_count(table_name, parsed_filters)
+        count = service.get_row_count(table_name, parsed_filters, filter_chain=filter_chain)
 
         # Compute the post-filter sample count via the registry directly so
         # we don't have to materialise the full data frame just to count.
@@ -555,6 +557,7 @@ def list_data():
         table_name = data.get('table_name')
         columns = data.get('columns')
         filters = data.get('filters')
+        filter_chain = data.get('filter_chain')
         sample_filters = data.get('sample_filters')
         limit = data.get('limit')
         offset = data.get('offset')
@@ -589,6 +592,7 @@ def list_data():
             table_name, 
             columns, 
             filters=parsed_filters,
+            filter_chain=filter_chain,
             sample_filters=parsed_sample_filters,
             limit=limit, 
             offset=offset,
@@ -1108,6 +1112,7 @@ def calculate_ora():
         table_name = data.get('table_name')
         column_name = data.get('column_name')
         filters = data.get('filters', [])
+        filter_chain = data.get('filter_chain')
         
         if not table_name or not column_name:
             return jsonify({'error': 'table_name and column_name are required'}), 400
@@ -1162,6 +1167,7 @@ def calculate_ora():
             table_name=table_name,
             column_name=column_name,
             filters=parsed_filters,
+            filter_chain=filter_chain,
             significance=significance,
             top_n=top_n,
             min_count=min_count,

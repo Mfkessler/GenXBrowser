@@ -32,6 +32,7 @@ async function initApp() {
 
   const filtersStore = useFiltersStore();
   filtersStore.setIdColumnName(config.visualization.id_column);
+  filtersStore.hydrateFilterChainOperators();
 
   app.mount("#app");
 }

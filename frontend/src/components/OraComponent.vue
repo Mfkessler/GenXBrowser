@@ -284,6 +284,7 @@ const visualizationStore = useVisualizationStore();
 const columnsStore = useColumnsStore();
 const assistantStore = useAssistantStore();
 const { filters } = storeToRefs(filtersStore);
+const filterChainVersion = computed(() => filtersStore.filterChainVersion);
 
 // Per-dataset merged filters (includes per-dataset ID filter)
 const mergedFilters = computed(() => filtersStore.getMergedFilters(props.tableName));
@@ -561,6 +562,7 @@ async function fetchAndPrepareData() {
       table_name: props.tableName,
       column_name: visualizationStore.oraColumnName,
       filters: mergedFilters.value,
+      filter_chain: filtersStore.buildFilterChainPayload(mergedFilters.value),
       significance: visualizationStore.significance,
       top_n: visualizationStore.oraTopN,
       min_count: visualizationStore.oraMinCount,
@@ -1615,7 +1617,7 @@ watch(
 
 // Watch for filter changes from sidebar and per-dataset ID filters
 watch(
-  [() => filters.value, () => filtersStore.datasetIdFilters],
+  [() => filters.value, () => filtersStore.datasetIdFilters, filterChainVersion],
   async () => {
     if (props.hashLoading) return;
     await fetchAndPrepareData();

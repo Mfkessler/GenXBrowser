@@ -24,7 +24,7 @@ def test_calculate_ora_uses_annotated_universe() -> None:
     service = GenXBrowserService.__new__(GenXBrowserService)
     service._ora_background_cache = {}
     service._normalize_table_name = lambda table_name: "TS"
-    service.get_row_count = lambda table_name, filters: 2
+    service.get_row_count = lambda table_name, filters, filter_chain=None: 2
 
     subset_df = pd.DataFrame(
         {"pfam_desc": ["PFAM_A", ""]},
@@ -35,7 +35,7 @@ def test_calculate_ora_uses_annotated_universe() -> None:
         index=["gene_a", "gene_b", "gene_c", "gene_d"],
     )
 
-    def fake_get_data(table_name, columns, filters, limit=None, include_virtual_columns=False):
+    def fake_get_data(table_name, columns, filters, filter_chain=None, limit=None, include_virtual_columns=False):
         if filters:
             return subset_df.copy(), {}
         return background_df.copy(), {}

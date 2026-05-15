@@ -26,30 +26,54 @@
         </svg>
       </button>
 
-      <!-- Catalog Button (Centered) — text-only pseudo-button (icon + label, no border). -->
-      <button
-        aria-label="Navigate to Catalog"
-        :disabled="disableControls"
-        class="cursor-pointer font-semibold bg-transparent text-blue-600 hover:text-blue-800 disabled:opacity-50 inline-flex justify-center items-center gap-1 px-2 py-1 text-sm"
-        @click="$emit('navigate-home')"
-        v-tooltip:right="'Navigate to Catalog'"
-      >
-        <svg
-          class="h-4 w-4"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
+      <div class="inline-flex items-center gap-2">
+        <button
+          v-if="showFilterChainButton"
+          aria-label="Configure filter chain"
+          :disabled="disableControls"
+          class="cursor-pointer rounded-md bg-transparent p-1.5 text-gray-600 hover:bg-gray-100 hover:text-gray-900 disabled:opacity-50"
+          @click="filterChainOpen = true"
+          v-tooltip:right="'Configure filter chain'"
         >
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M4 6h16M4 10h16M4 14h16M4 18h10"
-          />
-        </svg>
-        <span>Catalog</span>
-      </button>
+          <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 13a5 5 0 0 0 7.54.54l2-2a5 5 0 0 0-7.07-7.07l-1.15 1.15" />
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 11a5 5 0 0 0-7.54-.54l-2 2a5 5 0 0 0 7.07 7.07l1.15-1.15" />
+          </svg>
+        </button>
+
+        <!-- Catalog Button (Centered) — text-only pseudo-button (icon + label, no border). -->
+        <button
+          aria-label="Navigate to Catalog"
+          :disabled="disableControls"
+          class="cursor-pointer font-semibold bg-transparent text-blue-600 hover:text-blue-800 disabled:opacity-50 inline-flex justify-center items-center gap-1 px-2 py-1 text-sm"
+          @click="$emit('navigate-home')"
+          v-tooltip:right="'Navigate to Catalog'"
+        >
+          <svg
+            class="h-4 w-4"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M4 6h16M4 10h16M4 14h16M4 18h10"
+            />
+          </svg>
+          <span>Catalog</span>
+        </button>
+      </div>
     </div>
+
+    <GlobalFilterChainModal
+      :open="filterChainOpen"
+      :columns="activeRowFilterKeys"
+      :filters="activeRowFilters"
+      :labels="rowFilterLabels"
+      @close="filterChainOpen = false"
+    />
 
     <!-- Tabs -->
     <div class="flex whitespace-nowrap">
@@ -119,6 +143,7 @@ import { useColumnsStore } from "@/stores/columns";
 import { API_BASE_URL, type Config } from "@/shared/Config";
 import { useFiltersStore, type FilterValue } from "@/stores/filters";
 import SearchFilter from "./SearchFilter.vue";
+import GlobalFilterChainModal from "./GlobalFilterChainModal.vue";
 import { getEntityLabelPlural } from "@/shared/dataTypeLabels";
 import { getDisplayName } from "@/shared/metadataDisplayNames";
 
@@ -150,11 +175,26 @@ const currentTableName = computed(() => {
 const selectedTab = ref<"meta" | "columnMeta">("meta");
 const loading = ref(true);
 const filters = ref<Record<string, FilterValue>>({ ...filtersStore.filters });
+const filterChainOpen = ref(false);
 
 // Columns filtered to exclude the transcript/gene ID column (handled per-dataset in cards)
 const filteredRowColumns = computed(() =>
   columnsStore.rowColumns.filter((col) => col.column_name !== config.visualization.id_column)
 );
+
+const rowFilterColumnNames = computed(() => new Set(filteredRowColumns.value.map((col) => col.column_name)));
+
+const activeRowFilters = computed(() => Object.fromEntries(
+  Object.entries(filtersStore.filters).filter(([key, filter]) => (
+    rowFilterColumnNames.value.has(key) && filter && String(filter.value ?? "").trim() !== ""
+  )),
+));
+
+const activeRowFilterKeys = computed(() => Object.keys(activeRowFilters.value));
+const showFilterChainButton = computed(() => activeRowFilterKeys.value.length >= 2);
+const rowFilterLabels = computed(() => Object.fromEntries(
+  filteredRowColumns.value.map((col) => [col.column_name, col.display_name]),
+));
 
 interface SearchFilterExpose {
   collapse?: () => void;

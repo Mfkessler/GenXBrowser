@@ -203,7 +203,7 @@ const router = useRouter();
 const filtersStore = useFiltersStore();
 const columnsStore = useColumnsStore();
 const visualizationStore = useVisualizationStore();
-const { filters, sampleFilters, getMergedGeneFilters } = useFilterSeparation();
+const { filters, sampleFilters, filterChainVersion, getMergedGeneFilters, getFilterChainPayload } = useFilterSeparation();
 
 // ============================================================================
 // Reactive State
@@ -419,6 +419,7 @@ async function fetchData(tableName: string) {
     const { data: responseData } = await axios.post(`${API_BASE_URL}/api/data`, {
       table_name: tableName,
       filters: getMergedGeneFilters(tableName).value,
+      filter_chain: getFilterChainPayload(getMergedGeneFilters(tableName).value),
       sample_filters: sampleFilters.value,
       layer: params.layer,
       transform: params.transform,
@@ -1333,7 +1334,7 @@ function handleClickOutside(event: MouseEvent) {
 // ============================================================================
 // Watchers
 // ============================================================================
-watch([filters, () => filtersStore.datasetIdFilters], () => {
+watch([filters, () => filtersStore.datasetIdFilters, filterChainVersion], () => {
   if (initialUrlParsing.value) return;
   updateUrlFromState();
   fetchAllSelected();

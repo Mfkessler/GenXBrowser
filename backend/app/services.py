@@ -1027,6 +1027,7 @@ class GenXBrowserService:
         table_name: str,
         columns: List[str],
         filters: Optional[Dict[str, Tuple[str, Any]]] = None,
+        filter_chain: Optional[Dict[str, Any]] = None,
         sample_filters: Optional[Dict[str, Tuple[str, Any]]] = None,
         limit: int = 1001,
         offset: int = 0,
@@ -1189,7 +1190,7 @@ class GenXBrowserService:
         
         # Apply filters
         if filters:
-            df = self._apply_filters(df, filters)
+            df = self._apply_filters(df, filters, filter_chain=filter_chain)
         
         # Pagination (if limit is None, select all rows from offset)
         if limit is not None:
@@ -1329,11 +1330,24 @@ class GenXBrowserService:
     def _apply_filters(
         self,
         df: pd.DataFrame,
-        filters: Dict[str, Tuple[str, Any]]
+        filters: Dict[str, Tuple[str, Any]],
+        filter_chain: Optional[Dict[str, Any]] = None,
     ) -> pd.DataFrame:
         """Apply filters to DataFrame."""
         result = df.copy()
         logger.debug("[_apply_filters] Applying %d filters to DataFrame shape %s", len(filters), df.shape)
+
+        chain_columns, chain_operators, chain_groups = self._normalize_filter_chain(filters, filter_chain)
+        if chain_columns:
+            masks = {col: self._filter_mask(result, col, filters[col]) for col in chain_columns}
+            combined = self._evaluate_filter_chain(
+                chain_columns,
+                chain_operators,
+                chain_groups,
+                masks,
+                result.index,
+            )
+            return result[combined]
         
         for col, filter_spec in filters.items():
             pg_col = self._to_display_column_name(col)
@@ -1434,6 +1448,205 @@ class GenXBrowserService:
                 result = result[result[actual_col].apply(check_array)]
         
         return result
+
+    @staticmethod
+    def _normalize_filter_chain(
+        filters: Dict[str, Tuple[str, Any]],
+        filter_chain: Optional[Dict[str, Any]],
+    ) -> Tuple[List[str], List[str], Dict[str, Dict[str, int]]]:
+        if not filters or not isinstance(filter_chain, dict):
+            return [], [], {}
+
+        raw_columns = filter_chain.get('columns') or []
+        if not isinstance(raw_columns, list):
+            return [], [], {}
+
+        seen = set()
+        columns = []
+        for column in raw_columns:
+            column = str(column)
+            if column in filters and column not in seen:
+                columns.append(column)
+                seen.add(column)
+        for column in filters.keys():
+            if column not in seen:
+                columns.append(column)
+
+        if len(columns) < 2:
+            return [], [], {}
+
+        raw_operators = filter_chain.get('operators') or []
+        if not isinstance(raw_operators, list):
+            raw_operators = []
+        operators = [str(op).lower() if str(op).lower() == 'or' else 'and' for op in raw_operators]
+        while len(operators) < len(columns) - 1:
+            operators.append('and')
+        groups = GenXBrowserService._normalize_filter_chain_groups(columns, filter_chain.get('groups'))
+        return columns, operators[:len(columns) - 1], groups
+
+    @staticmethod
+    def _normalize_filter_chain_groups(
+        columns: List[str],
+        raw_groups: Any,
+    ) -> Dict[str, Dict[str, int]]:
+        if not isinstance(raw_groups, dict):
+            return {}
+
+        column_set = set(columns)
+        groups: Dict[str, Dict[str, int]] = {}
+        for column, group in raw_groups.items():
+            column = str(column)
+            if column not in column_set or not isinstance(group, dict):
+                continue
+            open_count = max(0, int(group.get('open') or 0))
+            close_count = max(0, int(group.get('close') or 0))
+            if open_count or close_count:
+                groups[column] = {'open': open_count, 'close': close_count}
+
+        depth = 0
+        for column in columns:
+            depth += groups.get(column, {}).get('open', 0)
+            depth -= groups.get(column, {}).get('close', 0)
+            if depth < 0:
+                logger.warning("Ignoring invalid filter_chain groups: closing parenthesis before open")
+                return {}
+        if depth != 0:
+            logger.warning("Ignoring invalid filter_chain groups: unbalanced parentheses")
+            return {}
+        return groups
+
+    @staticmethod
+    def _evaluate_filter_chain(
+        columns: List[str],
+        operators: List[str],
+        groups: Dict[str, Dict[str, int]],
+        masks: Dict[str, pd.Series],
+        index: pd.Index,
+    ) -> pd.Series:
+        if not groups:
+            combined = masks[columns[0]].copy()
+            for idx, col in enumerate(columns[1:]):
+                operator = operators[idx] if idx < len(operators) else 'and'
+                combined = (combined | masks[col]) if operator == 'or' else (combined & masks[col])
+            return combined
+
+        output: List[Any] = []
+        op_stack: List[str] = []
+
+        def push_operator(operator: str) -> None:
+            while op_stack and op_stack[-1] != '(':
+                output.append(op_stack.pop())
+            op_stack.append(operator)
+
+        for idx, column in enumerate(columns):
+            for _ in range(groups.get(column, {}).get('open', 0)):
+                op_stack.append('(')
+
+            output.append(column)
+
+            for _ in range(groups.get(column, {}).get('close', 0)):
+                while op_stack and op_stack[-1] != '(':
+                    output.append(op_stack.pop())
+                if op_stack and op_stack[-1] == '(':
+                    op_stack.pop()
+
+            if idx < len(columns) - 1:
+                push_operator(operators[idx] if idx < len(operators) else 'and')
+
+        while op_stack:
+            operator = op_stack.pop()
+            if operator != '(':
+                output.append(operator)
+
+        stack: List[pd.Series] = []
+        for token in output:
+            if token in ('and', 'or'):
+                if len(stack) < 2:
+                    return pd.Series(True, index=index)
+                right = stack.pop()
+                left = stack.pop()
+                stack.append((left | right) if token == 'or' else (left & right))
+            else:
+                stack.append(masks[str(token)])
+
+        return stack[0] if stack else pd.Series(True, index=index)
+
+    def _resolve_filter_column(self, df: pd.DataFrame, col: str) -> Optional[str]:
+        pg_col = self._to_display_column_name(col)
+        h5ad_col = self._to_h5ad_column_name(col)
+        for candidate in [pg_col, h5ad_col, col]:
+            if candidate in df.columns:
+                return candidate
+        return None
+
+    def _filter_mask(
+        self,
+        df: pd.DataFrame,
+        col: str,
+        filter_spec: Tuple[str, Any],
+    ) -> pd.Series:
+        actual_col = self._resolve_filter_column(df, col)
+        if actual_col is None:
+            logger.warning(f"[_filter_mask] Column '{col}' not found in DataFrame columns: {list(df.columns)[:10]}...")
+            return pd.Series(True, index=df.index)
+
+        if filter_spec is None or filter_spec == (None, None):
+            return df[actual_col].isna() | (df[actual_col] == '')
+
+        op, value = filter_spec
+
+        if op == 'eq':
+            if isinstance(value, bool):
+                return df[actual_col] == value
+            return df[actual_col].astype(str).str.strip() == str(value).strip()
+        if op == 'in':
+            if isinstance(value, list):
+                target_set = {str(v).strip() for v in value}
+                return df[actual_col].astype(str).str.strip().isin(target_set)
+            return pd.Series(True, index=df.index)
+        if op in ('text_substr_any', 'text_substr_all'):
+            if not isinstance(value, list):
+                value = [value]
+            if not value:
+                return pd.Series(True, index=df.index)
+            lowered = df[actual_col].astype(str).str.lower()
+            masks = [lowered.str.contains(re.escape(str(v).lower()), regex=True, na=False)
+                     for v in value]
+            combined = masks[0].copy()
+            for mask in masks[1:]:
+                combined = (combined & mask) if op == 'text_substr_all' else (combined | mask)
+            return combined
+        if op == 'range':
+            min_val, max_val = value
+            return (df[actual_col] >= min_val) & (df[actual_col] <= max_val)
+        if op in ('array_overlap', 'array_contains', 'array_substr_any', 'array_substr_all'):
+            col_defs = self.config_manager.get_column_definitions()
+            pg_col = self._to_display_column_name(col)
+            sep = (
+                col_defs.get(pg_col, col_defs.get(col, {})).get('array_separator')
+                or ('|' if (pg_col or col).lower().endswith('desc') else ',')
+            )
+
+            def check_array(x, _sep=sep, _op=op, _value=value):
+                if isinstance(x, (list, np.ndarray)):
+                    items = list(x)
+                elif isinstance(x, str) and x:
+                    items = [s.strip() for s in x.split(_sep) if s.strip()]
+                else:
+                    return False
+
+                if _op == 'array_overlap':
+                    return any(v in items for v in _value)
+                if _op == 'array_contains':
+                    return all(v in items for v in _value)
+                items_lc = [str(it).lower() for it in items]
+                if _op == 'array_substr_any':
+                    return any(any(str(v).lower() in it for it in items_lc) for v in _value)
+                return all(any(str(v).lower() in it for it in items_lc) for v in _value)
+
+            return df[actual_col].apply(check_array)
+
+        return pd.Series(True, index=df.index)
     
     # =========================================================================
     # Public API - Aggregations
@@ -1442,7 +1655,8 @@ class GenXBrowserService:
     def get_row_count(
         self,
         table_name: str,
-        filters: Optional[Dict[str, Tuple[str, Any]]] = None
+        filters: Optional[Dict[str, Tuple[str, Any]]] = None,
+        filter_chain: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Get row count with optional filtering."""
         species_code = self._normalize_table_name(table_name)
@@ -1458,7 +1672,7 @@ class GenXBrowserService:
         for col in adata.var.columns:
             df[self._to_display_column_name(col)] = adata.var[col].values
         
-        df = self._apply_filters(df, filters)
+        df = self._apply_filters(df, filters, filter_chain=filter_chain)
         return len(df)
     
     def get_column_bins(
@@ -1730,6 +1944,7 @@ class GenXBrowserService:
         table_name: str,
         column_name: str,
         filters: List[Dict],
+        filter_chain: Optional[Dict[str, Any]] = None,
         significance: float = 0.01,
         top_n: int = 50,
         min_count: int = 3,
@@ -1773,7 +1988,7 @@ class GenXBrowserService:
         
         # Quick count check to avoid expensive computation on large subsets
         if max_subset_size > 0:
-            row_count = self.get_row_count(table_name, filters)
+            row_count = self.get_row_count(table_name, filters, filter_chain=filter_chain)
             if row_count == 0 or row_count > max_subset_size:
                 return {
                     'results': [],
@@ -1806,6 +2021,7 @@ class GenXBrowserService:
             table_name=table_name,
             columns=columns_to_fetch,
             filters=filters,
+            filter_chain=filter_chain,
             limit=None,
             include_virtual_columns=False
         )

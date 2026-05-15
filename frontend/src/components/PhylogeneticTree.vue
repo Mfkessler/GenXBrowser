@@ -404,6 +404,7 @@ async function fetchData(
           {
             table_name: tableName,
             filters: requestFilters,
+            filter_chain: filtersStore.buildFilterChainPayload(requestFilters),
             layer: visualizationStore.expressionDisplay.layer,
             transform: visualizationStore.expressionDisplay.transform,
           },
@@ -539,6 +540,7 @@ async function fetchAllSelected(options: { keepLoading?: boolean } = {}) {
         {
           table_name: tableName,
           filters: filtersStore.getMergedFilters(tableName),
+          filter_chain: filtersStore.buildFilterChainPayload(filtersStore.getMergedFilters(tableName)),
         },
       );
       const rowCount = count.count;
@@ -659,6 +661,7 @@ async function fetchOrthogroupDataForAllSpecies() {
       const { data: count } = await axios.post(`${API_BASE_URL}/api/count`, {
         table_name: tableName,
         filters: scopedFilters,
+        filter_chain: filtersStore.buildFilterChainPayload(scopedFilters),
       });
 
       const rowCount = count.count;
@@ -710,6 +713,7 @@ async function fetchHighlightedGenesForAllSpecies() {
         {
           table_name: tableName,
           filters: scopedFilters,
+          filter_chain: filtersStore.buildFilterChainPayload(scopedFilters),
           columns: [config.visualization.id_column],
         },
       );
@@ -1708,7 +1712,7 @@ watch(
 
 // Watch for filter, per-dataset ID filter, and table changes - refetch data
 watch(
-  [tableNameOptions, filters, () => filtersStore.datasetIdFilters],
+  [tableNameOptions, filters, () => filtersStore.datasetIdFilters, () => filtersStore.filterChainVersion],
   async () => {
     // Don't fetch while hash is still loading
     if (props.hashLoading) return;

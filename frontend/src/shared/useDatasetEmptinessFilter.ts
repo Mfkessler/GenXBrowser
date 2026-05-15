@@ -24,7 +24,7 @@ export function useDatasetEmptinessFilter(
   tableNames: Ref<string[]>,
   options: EmptyProbeOptions = {},
 ) {
-  const { sampleFilters, geneFilters } = useFilterSeparation();
+  const { sampleFilters, geneFilters, filterChainVersion, getFilterChainPayload } = useFilterSeparation();
   const hideOnEmptyVar = options.hideOnEmptyVar ?? true;
 
   // Per-table probe results. `null` = pending / unknown (treat as visible
@@ -80,6 +80,7 @@ export function useDatasetEmptinessFilter(
           }>(`${API_BASE_URL}/api/count`, {
             table_name: tn,
             filters: geneFilterPayload,
+            filter_chain: getFilterChainPayload(geneFilterPayload),
             sample_filters: sampleFilterPayload,
           });
           return { tn, count: data.count ?? 0, sample_count: data.sample_count ?? 0 };
@@ -105,7 +106,7 @@ export function useDatasetEmptinessFilter(
   }
 
   watch(
-    [tableNames, sampleFilters, geneFilters],
+    [tableNames, sampleFilters, geneFilters, filterChainVersion],
     () => {
       refreshProbes();
     },

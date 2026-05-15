@@ -228,7 +228,7 @@ const sharedColorRegistry = inject<SharedColorRegistry>('sharedColorRegistry', u
 const filtersStore = useFiltersStore();
 const visualizationStore = useVisualizationStore();
 const columnStore = useColumnsStore();
-const { filters, sampleFilters, getMergedGeneFilters } = useFilterSeparation();
+const { filters, sampleFilters, filterChainVersion, getMergedGeneFilters, getFilterChainPayload } = useFilterSeparation();
 const { performClustering } = useClustering();
 
 // Per-dataset merged gene filters (includes per-dataset ID filter)
@@ -368,6 +368,7 @@ async function fetchAndPrepareData() {
       {
         table_name: props.tableName,
         filters: mergedGeneFilters.value,
+        filter_chain: getFilterChainPayload(mergedGeneFilters.value),
       },
     );
 
@@ -387,6 +388,7 @@ async function fetchAndPrepareData() {
         {
           table_name: props.tableName,
           filters: mergedGeneFilters.value,
+          filter_chain: getFilterChainPayload(mergedGeneFilters.value),
           sample_filters: sampleFilters.value,
           layer: visualizationStore.expressionDisplay.layer,
           transform: visualizationStore.expressionDisplay.transform,
@@ -1623,7 +1625,7 @@ watch(
 );
 
 watch(
-  [() => visualizationStore.expressionDisplay, () => filters.value, () => filtersStore.datasetIdFilters],
+  [() => visualizationStore.expressionDisplay, () => filters.value, () => filtersStore.datasetIdFilters, filterChainVersion],
   async ([expressionDisplay]) => {
     if (!expressionDisplay) return; // guard against unset
     await fetchAndPrepareData();

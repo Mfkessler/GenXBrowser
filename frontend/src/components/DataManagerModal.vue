@@ -636,6 +636,7 @@ async function copyColumnValues(columnName: string) {
       table_name: props.tableName,
       columns: [columnName], // Only fetch the column we need
       filters: geneFilters.value,
+      filter_chain: filtersStore.buildFilterChainPayload(geneFilters.value),
       sample_filters: sampleFilters.value,
       limit: 100000, // Get all data
       offset: 0,
@@ -788,6 +789,7 @@ async function fetchTotalCount() {
     const requestBody: Record<string, unknown> = {
       table_name: props.tableName,
       filters: geneFilters.value,
+      filter_chain: filtersStore.buildFilterChainPayload(geneFilters.value),
     };
     
     // Add gene ID filter if search is active
@@ -820,6 +822,7 @@ async function handleExport() {
       table_name: props.tableName,
       columns: columns,
       filters: geneFilters.value,
+      filter_chain: filtersStore.buildFilterChainPayload(geneFilters.value),
       sample_filters: sampleFilters.value,
       limit: 100000, // Get all data (high limit)
       offset: 0,

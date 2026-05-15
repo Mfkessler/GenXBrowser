@@ -4,13 +4,14 @@
  */
 import { computed, type ComputedRef } from "vue";
 import { storeToRefs } from "pinia";
-import { useFiltersStore, type FilterValue } from "@/stores/filters";
+import { useFiltersStore, type FilterChainPayload, type FilterValue } from "@/stores/filters";
 import { useColumnsStore } from "@/stores/columns";
 
 export function useFilterSeparation() {
   const filtersStore = useFiltersStore();
   const columnStore = useColumnsStore();
   const { filters } = storeToRefs(filtersStore);
+  const filterChainVersion = computed(() => filtersStore.filterChainVersion);
 
   /**
    * Gene/Transcript filters: filters that apply to row-level data
@@ -82,13 +83,19 @@ export function useFilterSeparation() {
     });
   }
 
+  function getFilterChainPayload(filterPayload: Record<string, FilterValue>): FilterChainPayload | null {
+    return filtersStore.buildFilterChainPayload(filterPayload);
+  }
+
   return {
     filters,
     geneFilters,
     sampleFilters,
     hasSampleFilters,
     hasGeneFilters,
+    filterChainVersion,
     getMergedGeneFilters,
     getMergedAllFilters,
+    getFilterChainPayload,
   };
 }

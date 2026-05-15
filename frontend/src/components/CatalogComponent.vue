@@ -341,6 +341,7 @@ async function downloadCatalogEntry(entry: CatalogMeta) {
     const dataResp = await axios.post(`${API_BASE_URL}/api/data`, {
       table_name: entry.table_name,
       filters: filtersStore.filters,
+      filter_chain: filtersStore.buildFilterChainPayload(filtersStore.filters),
     });
     const data = Array.isArray(dataResp.data) ? dataResp.data : (dataResp.data?.data ?? []);
 
