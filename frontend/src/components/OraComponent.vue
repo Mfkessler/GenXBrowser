@@ -74,6 +74,18 @@
 
         <button
           v-if="showSharedActions"
+          aria-label="Export data"
+          @click="showExportModal = true"
+          class="p-2 rounded-md text-primary-500 border border-primary-500 hover:bg-primary-500 hover:text-white"
+          v-tooltip="'Export data'"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-1m-4-4-4 4m0 0-4-4m4 4V4" />
+          </svg>
+        </button>
+
+        <button
+          v-if="showSharedActions"
           aria-label="Open settings"
           @click="openSettingsOverlay"
           class="p-2 rounded-md text-white bg-accent1-900 border border-accent1-900 hover:bg-white hover:text-accent1-900"
@@ -208,6 +220,19 @@
       :htmlContainer="ref(visualizationRoot)"
       @close="showShareOverlay = false"
     />
+
+    <ExportModal
+      v-if="showExportModal"
+      :data="oraExportPayload.data"
+      :columns="oraExportPayload.columns"
+      :metaColumns="oraExportPayload.metaColumns"
+      :sampleColumns="oraExportPayload.sampleColumns"
+      :filename="oraExportPayload.filename"
+      :hasFilters="oraExportPayload.hasFilters"
+      :totalCount="oraExportPayload.data.length"
+      dataColumnLabel="metrics"
+      @close="showExportModal = false"
+    />
     
     <OraTooltipModal
       :show="showOraTooltipModal"
@@ -244,6 +269,7 @@ import type { MetaFormat } from "@/shared/MetaFormat";
 import NoDataComponent from "./NoDataComponent.vue";
 import type { RowType } from "@/shared/RowType";
 import ShareOverlay from "./ShareOverlay.vue";
+import ExportModal from "./ExportModal.vue";
 import OraTooltipModal from "./OraTooltipModal.vue";
 import { beautifyLabel, compareValues, exact_nc } from "@/shared/utils";
 import { useVisualizationStore } from "@/stores/visualization";
@@ -289,6 +315,7 @@ const tableNameOptions = computed(() => {
 const loading = ref(true);
 const renderReady = ref(false);
 const showShareOverlay = ref(false);
+const showExportModal = ref(false);
 const showOraTooltipModal = ref(false);
 const selectedTerm = ref<PValueEntry | null>(null);
 const oraInfoOpen = ref(false);
@@ -379,6 +406,66 @@ interface PValueEntry {
   go_namespace?: string;
   go_depth?: number;
 }
+
+const oraExportMetaColumns = computed(() => {
+  const columns = ['attribute'];
+  if (isGoTermEnrichment.value) {
+    columns.push('go_name', 'go_namespace', 'go_depth');
+  }
+  return columns;
+});
+
+const oraExportMetricColumns = [
+  'subset_count',
+  'background_count',
+  'expected_count',
+  'fold_enrichment',
+  'gene_ratio',
+  'p_value',
+  'q_value',
+  'combined_score',
+  'odds_ratio',
+];
+
+const oraExportPayload = computed(() => {
+  const metaColumns = oraExportMetaColumns.value;
+  const sampleColumns = oraExportMetricColumns;
+  const columns = [...metaColumns, ...sampleColumns];
+  const data = pValueEntries.value.map((entry) => {
+    const row: RowType = {
+      attribute: entry.attr,
+      subset_count: entry.subset_count,
+      background_count: entry.background_count,
+      expected_count: entry.expected_count,
+      fold_enrichment: entry.fold_enrichment,
+      gene_ratio: entry.gene_ratio,
+      p_value: entry.p_value,
+      q_value: entry.q_value,
+      combined_score: entry.combined_score,
+      odds_ratio: entry.odds_ratio ?? null,
+    };
+    if (isGoTermEnrichment.value) {
+      row.go_name = entry.go_name ?? null;
+      row.go_namespace = entry.go_namespace ?? null;
+      row.go_depth = entry.go_depth ?? null;
+    }
+    return row;
+  });
+
+  return {
+    data,
+    columns,
+    metaColumns,
+    sampleColumns,
+    filename: `ora_${props.tableName}_${visualizationStore.oraColumnName}`,
+    hasFilters: Object.keys(mergedFilters.value).length > 0,
+    dataset: props.tableName,
+  };
+});
+
+defineExpose({
+  getExportPayload: () => oraExportPayload.value,
+});
 
 // GO term info cache (includes name, namespace, and depth)
 const goTermInfoCache = ref<Record<string, { name: string; namespace: string; depth: number }>>({});

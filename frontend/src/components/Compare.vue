@@ -334,9 +334,7 @@ const plotTypeOptions = [
 ];
 
 // Export modal computed properties
-const hasActiveFilters = computed(() => {
-  return Object.keys(filters.value).length > 0;
-});
+const hasActiveFilters = computed(() => Object.keys(filters.value).length > 0);
 
 const exportFilename = computed(() => {
   return `compare_${selectedOrthogroupLabel.value}_${expressionDisplayOption.value}`;
@@ -354,7 +352,7 @@ const exportColumns = computed(() => {
   return [...exportMetaColumns.value, ...exportSampleColumns.value];
 });
 
-const exportData = computed(() => {
+const exportData = computed<RowType[]>(() => {
   if (!processedData.value) return [];
   
   // Export all transcripts from all species - no filter
@@ -363,14 +361,14 @@ const exportData = computed(() => {
   const filteredTissues = processedData.value.tissues;
   
   return filteredTranscripts.map((t) => {
-    const row: Record<string, unknown> = {
+    const row: RowType = {
       species: beautifyLabel(t.species),
       gene_id: t.geneId,
     };
     filteredTissues.forEach((tissue) => {
       const vals = t.values[tissue];
       if (vals && vals.length > 0) {
-        const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+        const mean = vals.reduce((sum, sample) => sum + sample.value, 0) / vals.length;
         row[tissue] = parseFloat(mean.toFixed(4));
       } else {
         row[tissue] = null;
@@ -1079,7 +1077,7 @@ async function renderPlot() {
           opacity: 0.6,
           hovertemplate: '%{text}<extra></extra>',
           text: hoverText,
-        } as Plotly.Data);
+        } as unknown as Plotly.Data);
       });
 
       // Species mean trace (thick bold line) — uses only filtered transcripts
@@ -1128,7 +1126,7 @@ async function renderPlot() {
         },
         hovertemplate: '%{text}<extra></extra>',
         text: meanHoverText,
-      } as Plotly.Data);
+      } as unknown as Plotly.Data);
 
       // Unfiltered transcript traces (dashed, reduced opacity)
       if (showAll && unmatchedTranscripts.length > 0) {
@@ -1179,7 +1177,7 @@ async function renderPlot() {
             opacity: 0.3,
             hovertemplate: '%{text}<extra></extra>',
             text: hoverText,
-          } as Plotly.Data);
+          } as unknown as Plotly.Data);
         });
       }
     } else if (plotType.value === 'box' || plotType.value === 'violin') {
@@ -1223,7 +1221,7 @@ async function renderPlot() {
           pointpos: 0,
           hovertemplate: '%{text}<extra></extra>',
           text: hoverTexts,
-        } as Plotly.Data);
+        } as unknown as Plotly.Data);
       } else {
         // Violin plot
         traces.push({
@@ -1242,7 +1240,7 @@ async function renderPlot() {
           scalemode: "width",
           hovertemplate: '%{text}<extra></extra>',
           text: hoverTexts,
-        } as Plotly.Data);
+        } as unknown as Plotly.Data);
       }
 
       // Unfiltered transcripts as separate overlay traces (box/violin)
@@ -1285,7 +1283,7 @@ async function renderPlot() {
             pointpos: 0,
             hovertemplate: '%{text}<extra></extra>',
             text: uHoverTexts,
-          } as Plotly.Data);
+          } as unknown as Plotly.Data);
         } else {
           traces.push({
             x: uxValues,
@@ -1303,7 +1301,7 @@ async function renderPlot() {
             scalemode: "width",
             hovertemplate: '%{text}<extra></extra>',
             text: uHoverTexts,
-          } as Plotly.Data);
+          } as unknown as Plotly.Data);
         }
       }
     }
@@ -1345,7 +1343,7 @@ async function renderPlot() {
       categoryorder: "array",
       categoryarray: filteredTissues,
       automargin: true,
-    },
+    } as any,
     yaxis: {
       title: {
         text: yAxisTitles[expressionDisplayOption.value] || "Expression Value",
@@ -1355,7 +1353,7 @@ async function renderPlot() {
       zeroline: true,
       zerolinecolor: "#e0e0e0",
       gridcolor: "#f0f0f0",
-    },
+    } as any,
     legend: {
       orientation: "h",
       yanchor: "bottom",
@@ -1374,7 +1372,7 @@ async function renderPlot() {
     // Box/Violin grouping mode
     boxmode: plotType.value === 'box' ? 'group' : undefined,
     violinmode: plotType.value === 'violin' ? 'group' : undefined,
-  };
+  } as any;
 
   const config: Partial<Plotly.Config> = {
     responsive: true,

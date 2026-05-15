@@ -17,6 +17,16 @@
           </svg>
         </button>
         <button
+          aria-label="Export data"
+          @click="showExportModal = true"
+          class="p-2 rounded-md text-primary-500 border border-primary-500 hover:bg-primary-500 hover:text-white"
+          v-tooltip="'Export data'"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-1m-4-4-4 4m0 0-4-4m4 4V4" />
+          </svg>
+        </button>
+        <button
           aria-label="Configure all ORA results"
           @click="openSettingsOverlay"
           class="p-2 rounded-md text-white bg-accent1-900 border border-accent1-900 hover:bg-white hover:text-accent1-900"
@@ -39,6 +49,7 @@
         class="min-w-0 flex flex-col"
       >
         <OraComponent
+          ref="oraRefs"
           :table-name="tableName"
           :existing-tables="visibleTableNames"
           :all-tables="allTables"
@@ -72,6 +83,18 @@
       :htmlContainer="ref(viewContentRoot)"
       @close="showShareOverlay = false"
     />
+    <ExportModal
+      v-if="showExportModal"
+      :data="globalExportPayload.data"
+      :columns="globalExportPayload.columns"
+      :metaColumns="globalExportPayload.metaColumns"
+      :sampleColumns="globalExportPayload.sampleColumns"
+      :filename="globalExportPayload.filename"
+      :hasFilters="globalExportPayload.hasFilters"
+      :totalCount="globalExportPayload.data.length"
+      dataColumnLabel="metrics"
+      @close="showExportModal = false"
+    />
   </div>
 </template>
 
@@ -85,11 +108,13 @@ import { type CatalogMeta } from "@/shared/CatalogMeta";
 import { SharedColorRegistry } from "@/shared/colorMapping";
 import OraComponent from "@/components/OraComponent.vue";
 import ShareOverlay from "@/components/ShareOverlay.vue";
+import ExportModal from "@/components/ExportModal.vue";
 import { useFiltersStore } from "@/stores/filters";
 import { useVisualizationStore } from "@/stores/visualization";
 import VisualizationSettings from "@/components/VisualizationSettings.vue";
 import { useDatasetEmptinessFilter } from "@/shared/useDatasetEmptinessFilter";
 import { beautifyLabel } from "@/shared/utils";
+import type { RowType } from "@/shared/RowType";
 
 const route = useRoute();
 const router = useRouter();
@@ -99,7 +124,9 @@ const visualizationStore = useVisualizationStore();
 
 const showSettingsOverlay = ref(false);
 const showShareOverlay = ref(false);
+const showExportModal = ref(false);
 const viewContentRoot = ref<HTMLDivElement | null>(null);
+const oraRefs = ref<any[]>([]);
 const allTables = ref<Record<string, string>>({});
 const hashLoading = ref(true);
 
@@ -122,6 +149,31 @@ const oraGridStyle = computed(() => ({
     ? "minmax(0, 1fr)"
     : "repeat(auto-fit, minmax(min(100%, 38rem), 1fr))",
 }));
+
+const globalExportPayload = computed(() => {
+  const payloads = (oraRefs.value || [])
+    .map((component) => component?.getExportPayload?.())
+    .filter(Boolean);
+  const columns = uniqueColumns(['dataset', ...payloads.flatMap((payload: any) => payload.columns)]);
+  const metaColumns = uniqueColumns(['dataset', ...payloads.flatMap((payload: any) => payload.metaColumns)]);
+  const sampleColumns = uniqueColumns(payloads.flatMap((payload: any) => payload.sampleColumns));
+  const data = payloads.flatMap((payload: any) =>
+    payload.data.map((row: RowType) => ({ dataset: beautifyLabel(payload.dataset), ...row })),
+  );
+
+  return {
+    data,
+    columns,
+    metaColumns,
+    sampleColumns,
+    filename: `ora_${visibleTableNames.value.join('_')}_${visualizationStore.oraColumnName}`,
+    hasFilters: Object.keys(filtersStore.filters).length > 0,
+  };
+});
+
+function uniqueColumns(columns: string[]): string[] {
+  return [...new Set(columns.filter(Boolean))];
+}
 
 const openSettingsOverlay = () => {
   showSettingsOverlay.value = true;

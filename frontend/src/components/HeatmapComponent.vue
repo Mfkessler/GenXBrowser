@@ -92,6 +92,18 @@
 
         <button
           v-if="showSharedActions"
+          aria-label="Export data"
+          @click="showExportModal = true"
+          class="p-2 rounded-md text-primary-500 border border-primary-500 hover:bg-primary-500 hover:text-white"
+          v-tooltip="'Export data'"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-1m-4-4-4 4m0 0-4-4m4 4V4" />
+          </svg>
+        </button>
+
+        <button
+          v-if="showSharedActions"
           aria-label="Configure the visuals of the heatmap"
           @click="openSettingsOverlay"
           class="p-2 rounded-md text-white bg-accent1-900 border border-accent1-900 hover:bg-white hover:text-accent1-900"
@@ -142,6 +154,18 @@
       :htmlContainer="ref(heatmapContainer)"
       @close="showShareOverlay = false"
     />
+
+    <ExportModal
+      v-if="showExportModal"
+      :data="heatmapExportPayload.data"
+      :columns="heatmapExportPayload.columns"
+      :metaColumns="heatmapExportPayload.metaColumns"
+      :sampleColumns="heatmapExportPayload.sampleColumns"
+      :filename="heatmapExportPayload.filename"
+      :hasFilters="heatmapExportPayload.hasFilters"
+      :totalCount="heatmapExportPayload.data.length"
+      @close="showExportModal = false"
+    />
     
     <!-- Tooltip Modal for detailed metadata -->
     <TooltipModal
@@ -185,6 +209,7 @@ import NoDataComponent from "./NoDataComponent.vue";
 import type {RowType} from "@/shared/RowType";
 import {beautifyLabel, compareValues} from "@/shared/utils";
 import ShareOverlay from "./ShareOverlay.vue";
+import ExportModal from "./ExportModal.vue";
 import {useVisualizationStore} from "@/stores/visualization";
 import TooltipModal from "./TooltipModal.vue";
 import { getDisplayName, sequenceFields, verboseFields } from "@/shared/metadataDisplayNames";
@@ -234,6 +259,7 @@ const tableNameOptions = computed(() => {
 
 const loading = ref(false);
 const showShareOverlay = ref(false);
+const showExportModal = ref(false);
 const showTooltipModal = ref(false);
 const selectedRowData = ref<RowType | null>(null);
 const selectedColumnValue = ref("");
@@ -298,6 +324,37 @@ const visibleColumns = computed(() => {
 // Reactive references for TooltipModal
 const idColumn = computed(() => config.visualization.id_column);
 const heatmapCols = computed(() => visibleColumns.value);
+
+const heatmapExportMetaColumns = computed(() =>
+  columnNames.value.filter((col) => !dataColumnNames.value.includes(col) && !String(col).startsWith('_')),
+);
+
+const heatmapExportPayload = computed(() => {
+  const metaColumns = heatmapExportMetaColumns.value;
+  const sampleColumns = visibleColumns.value;
+  const columnsForExport = [...metaColumns, ...sampleColumns];
+  const data = sortedRows.value.map((row) => {
+    const exportRow: RowType = {};
+    for (const column of columnsForExport) {
+      exportRow[column] = row[column];
+    }
+    return exportRow;
+  });
+
+  return {
+    data,
+    columns: columnsForExport,
+    metaColumns,
+    sampleColumns,
+    filename: `heatmap_${props.tableName}_${visualizationStore.expressionDisplay.optionId}`,
+    hasFilters: Object.keys(filters.value).length > 0,
+    dataset: props.tableName,
+  };
+});
+
+defineExpose({
+  getExportPayload: () => heatmapExportPayload.value,
+});
 
 // Helper
 function getColumnKeys(dataRows: RowType[]): string[] {

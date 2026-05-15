@@ -229,6 +229,19 @@ function closeOverlay() {
   emit("close");
 }
 
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    URL.revokeObjectURL(url);
+    a.remove();
+  }, 500);
+}
+
 async function generateHashLink(): Promise<string> {
   // Get the current state from stores
   const filtersData = filtersStore.toObject();
@@ -442,7 +455,7 @@ async function downloadPDF() {
       
       const imgData = canvas.toDataURL("image/png");
       pdf.addImage(imgData, "PNG", 20, 20, imgWidth, imgHeight);
-      pdf.save(filename);
+      downloadBlob(pdf.output("blob"), filename);
       return;
     }
 
@@ -477,7 +490,7 @@ async function downloadPDF() {
         });
         
         pdf.addImage(pngData, "PNG", 20, 20, imgWidth, imgHeight);
-        pdf.save(filename);
+        downloadBlob(pdf.output("blob"), filename);
         return;
       } catch (plotlyError) {
         console.warn("Plotly PDF export failed, falling back:", plotlyError);
@@ -504,7 +517,7 @@ async function downloadPDF() {
 
     const imgData = snapshot.toDataURL("image/png");
     pdf.addImage(imgData, "PNG", 20, 20, imgWidth, imgHeight);
-    pdf.save(filename);
+    downloadBlob(pdf.output("blob"), filename);
     
   } catch (e) {
     alert("Failed to download PDF. Make sure jsPDF is installed.");

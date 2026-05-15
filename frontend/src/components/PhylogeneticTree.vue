@@ -36,6 +36,16 @@
             </svg>
           </button>
           <button
+            aria-label="Export data"
+            @click="showExportModal = true"
+            class="p-2 rounded-md text-primary-500 border border-primary-500 hover:bg-primary-500 hover:text-white transition"
+            v-tooltip="'Export data'"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-1m-4-4-4 4m0 0-4-4m4 4V4" />
+            </svg>
+          </button>
+          <button
             class="p-2 rounded-md text-white bg-accent1-900 border border-accent1-900 hover:bg-white hover:text-accent1-900 transition"
             @click="emit('openSettingsOverlay')"
           >
@@ -70,6 +80,18 @@
       :showLink="true"
       :htmlContainer="ref(phylotreeContainer)"
       @close="showShareOverlay = false"
+    />
+
+    <ExportModal
+      v-if="showExportModal"
+      :data="phyloExportPayload.data"
+      :columns="phyloExportPayload.columns"
+      :metaColumns="phyloExportPayload.metaColumns"
+      :sampleColumns="phyloExportPayload.sampleColumns"
+      :filename="phyloExportPayload.filename"
+      :hasFilters="phyloExportPayload.hasFilters"
+      :totalCount="phyloExportPayload.data.length"
+      @close="showExportModal = false"
     />
 
     <!-- Tooltip Modal for detailed cell info -->
@@ -125,11 +147,13 @@ import {useVisualizationStore} from "@/stores/visualization.ts";
 import {useColumnsStore} from "@/stores/columns.ts";
 import {getExpressionOption} from "@/shared/ExpressionDisplay.ts";
 import ShareOverlay from "@/components/ShareOverlay.vue";
+import ExportModal from "@/components/ExportModal.vue";
 import LoadingOverlay from "@/components/LoadingOverlay.vue";
 import NoNewickComponent from "@/components/NoNewickComponent.vue";
 import TooltipModal from "@/components/TooltipModal.vue";
 import DropdownMenu from "@/components/DropdownMenu.vue";
 import { getDisplayName, sequenceFields, verboseFields } from "@/shared/metadataDisplayNames";
+import { beautifyLabel } from "@/shared/utils";
 import { getEntityIdLabel } from "@/shared/dataTypeLabels";
 import {
   buildOrthogroupOnlyFilters,
@@ -144,6 +168,7 @@ import { useRoute, useRouter } from 'vue-router';
 const config = inject("config") as Config;
 const phylotreeContainer = ref<HTMLDivElement | null>(null);
 const showShareOverlay = ref(false);
+const showExportModal = ref(false);
 const filtersStore = useFiltersStore();
 const visualizationStore = useVisualizationStore();
 const columnStore = useColumnsStore();
@@ -234,6 +259,52 @@ defineExpose({
   collapseAll: () => collapseAllClades(),
   expandAll: () => visualizationStore.resetPhyloTreeState(),
   collapseToSpecies: () => collapseToSpecies(),
+});
+
+const phyloExportPayload = computed(() => {
+  const selectedKey = selectedOrthogroupKey();
+  const rowsForExport: RowType[] = [];
+  const sampleColumnSet = new Set<string>();
+  const metaColumnSet = new Set<string>(['dataset']);
+
+  for (const [dataset, datasetData] of Object.entries(tableData.value)) {
+    const items = (datasetData as { items?: RowType[] })?.items ?? [];
+    for (const row of items) {
+      const rowOrthogroup = String(row.ortho_id ?? '').trim().toLowerCase();
+      if (selectedKey && rowOrthogroup !== selectedKey) continue;
+
+      const exportRow: RowType = { dataset: beautifyLabel(dataset) };
+      for (const [key, value] of Object.entries(row)) {
+        if (key.startsWith('tissue_type_') || key.startsWith('_')) continue;
+        exportRow[key] = value;
+        if (dataColumnNames.value.includes(key)) {
+          sampleColumnSet.add(key);
+        } else {
+          metaColumnSet.add(key);
+        }
+      }
+      rowsForExport.push(exportRow);
+    }
+  }
+
+  const sampleColumns = dataColumnNames.value.filter((column) => sampleColumnSet.has(column));
+  const metaColumns = [...metaColumnSet].filter((column) => column !== 'newick_str');
+  const columns = [...metaColumns, ...sampleColumns];
+
+  return {
+    data: rowsForExport.map((row) => {
+      const exportRow: RowType = {};
+      for (const column of columns) {
+        exportRow[column] = row[column];
+      }
+      return exportRow;
+    }),
+    columns,
+    metaColumns,
+    sampleColumns,
+    filename: `phylotree_${selectedOrthogroup.value || props.tableName}_${visualizationStore.expressionDisplay.optionId}`,
+    hasFilters: Object.keys(filters.value).length > 0,
+  };
 });
 
 // URL state management

@@ -434,6 +434,7 @@ export const useVisualizationStore = defineStore("visualization", {
         significance: this.significance,
         oraTopN: this.oraTopN,
         oraMinCount: this.oraMinCount,
+        oraTopologicalFilter: this.oraTopologicalFilter,
         oraTooltipFields: [...this.oraTooltipFields],
         ...(this.tooltipFields !== null ? { tooltipFields: [...this.tooltipFields] } : {}),
         showSequencesInTooltip: this.showSequencesInTooltip,

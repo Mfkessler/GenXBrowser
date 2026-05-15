@@ -121,6 +121,7 @@ export const useFiltersStore = defineStore("filters", {
         table_names: Array.from(this.table_names),
         filters: { ...this.filters },
         datasetIdFilters: { ...this.datasetIdFilters },
+        idColumnName: this.idColumnName,
       };
     },
   },
