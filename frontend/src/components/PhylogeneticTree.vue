@@ -1,5 +1,5 @@
 <template>
-  <main class="relative flex flex-col flex-1 min-h-[34rem] w-full min-w-0">
+  <main class="relative flex flex-col flex-1 min-h-[34rem] w-full min-w-0 border border-gray-300 rounded-lg sm:rounded-2xl bg-white shadow-sm overflow-hidden">
 
     <div v-if="loading" class="absolute inset-0 z-50">
       <LoadingOverlay v-if="loading"/>
@@ -70,7 +70,7 @@
       <div
         ref="phylotreeContainer"
         id="phylotreeContainer"
-        class="border border-gray-300 rounded-lg sm:rounded-2xl bg-white p-1 w-full shadow-sm min-w-0 overflow-hidden flex-1 min-h-[28rem] relative"
+        class="bg-white p-1 w-full min-w-0 overflow-hidden flex-1 min-h-[28rem] relative"
       ></div>
     </div>
 

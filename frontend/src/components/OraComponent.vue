@@ -115,7 +115,7 @@
       v-if="loading || !renderReady || (rowCount <= 5000 && rowCount > 0)"
       ref="plotShell"
       data-testid="ora-plot-shell"
-      class="relative flex flex-col overflow-hidden"
+      class="relative flex flex-col overflow-hidden border border-gray-300 rounded-md bg-white"
       :style="plotShellStyle"
     >
       <LoadingOverlay v-if="loading || !renderReady" />
@@ -190,7 +190,7 @@
 
         <div
           ref="visualizationRoot"
-          class="flex-1 min-h-0 bg-white border border-gray-300 rounded-md flex flex-row overflow-hidden"
+          class="flex-1 min-h-0 bg-white flex flex-row overflow-hidden"
         >
           <div class="flex-grow relative w-full overflow-hidden">
             <div ref="dotplotContainer" class="w-full h-full"></div>
