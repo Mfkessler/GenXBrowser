@@ -1,6 +1,9 @@
 <template>
   <main class="flex flex-col h-full min-h-0 overflow-hidden">
-    <div class="flex justify-between gap-2 px-2 items-start mb-2 flex-shrink-0 flex-wrap">
+    <div
+      class="flex justify-between gap-2 px-2 items-start mb-2 flex-shrink-0 flex-wrap"
+      data-export-ignore="true"
+    >
       <div class="text-gray-500 font-medium flex items-center gap-2 min-w-0 flex-wrap">
         <DropdownMenu
           :modelValue="localTableName"

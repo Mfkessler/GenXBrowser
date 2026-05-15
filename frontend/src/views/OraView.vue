@@ -40,6 +40,7 @@
       </div>
     </div>
     <div
+      ref="visualizationExportRoot"
       class="grid gap-4 p-2 overflow-visible [container-type:inline-size]"
       :style="oraGridStyle"
     >
@@ -80,7 +81,7 @@
       v-if="showShareOverlay"
       :show="true"
       :showLink="true"
-      :htmlContainer="ref(viewContentRoot)"
+      :htmlContainer="ref(visualizationExportRoot)"
       @close="showShareOverlay = false"
     />
     <ExportModal
@@ -126,6 +127,7 @@ const showSettingsOverlay = ref(false);
 const showShareOverlay = ref(false);
 const showExportModal = ref(false);
 const viewContentRoot = ref<HTMLDivElement | null>(null);
+const visualizationExportRoot = ref<HTMLDivElement | null>(null);
 interface ExportPayload {
   dataset: string;
   columns: string[];

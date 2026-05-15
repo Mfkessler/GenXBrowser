@@ -1,7 +1,8 @@
 <template>
   <div
     v-if="show"
-    class="fixed inset-0 flex justify-center items-center z-50"
+    class="fixed inset-0 flex justify-center items-center z-50 share-overlay"
+    data-export-ignore="true"
     style="background-color: rgba(0, 0, 0, 0.5)"
   >
     <div
@@ -12,7 +13,8 @@
         <h1 class="text-xl font-bold cursor-default">Share Visualization</h1>
         <button
           @click="closeOverlay"
-          class="text-gray-700 rounded-full p-2 hover:bg-gray-100"
+          :disabled="activeDownload !== null"
+          class="text-gray-700 rounded-full p-2 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
           aria-label="Close overlay"
         >
           <svg
@@ -45,14 +47,14 @@
             type="text"
             readonly
             :value="isGeneratingLink ? 'Generating link...' : shareUrl"
-            :disabled="isGeneratingLink"
+            :disabled="isGeneratingLink || activeDownload !== null"
             class="flex-grow p-2 border rounded-md text-sm cursor-pointer select-all"
-            :class="{ 'bg-gray-100 text-gray-500': isGeneratingLink }"
+            :class="{ 'bg-gray-100 text-gray-500': isGeneratingLink || activeDownload !== null }"
             @click="copyToClipboard"
           />
           <button
             @click="copyToClipboard"
-            :disabled="isGeneratingLink"
+            :disabled="isGeneratingLink || activeDownload !== null"
             class="p-2 border-1 border-accent2-900 bg-accent2-100 hover:bg-accent2-900 text-accent2-900 hover:text-accent2-100 rounded-md disabled:opacity-50"
             :aria-label="copied ? 'Copied' : 'Copy link'"
           >
@@ -73,32 +75,54 @@
         <div class="flex flex-col space-y-2">
           <button
             @click="downloadPNG"
-            class="w-full p-2 border rounded-md hover:bg-primary-100"
+            :disabled="activeDownload !== null"
+            class="w-full p-2 border rounded-md hover:bg-primary-100 disabled:cursor-not-allowed disabled:opacity-70 disabled:bg-primary-50 disabled:border-primary-300 disabled:text-primary-800 flex items-center justify-center gap-2"
           >
-            Download PNG
+            <svg
+              v-if="activeDownload === 'png'"
+              class="w-4 h-4 animate-spin text-primary-700"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none" />
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8v4a4 4 0 0 0-4 4H4z" />
+            </svg>
+            <span>{{ activeDownload === 'png' ? 'Preparing PNG...' : 'Download PNG' }}</span>
           </button>
           <button
             @click="downloadPDF"
-            class="w-full p-2 border rounded-md hover:bg-primary-100"
+            :disabled="activeDownload !== null"
+            class="w-full p-2 border rounded-md hover:bg-primary-100 disabled:cursor-not-allowed disabled:opacity-70 disabled:bg-primary-50 disabled:border-primary-300 disabled:text-primary-800 flex items-center justify-center gap-2"
           >
-            Download PDF
+            <svg
+              v-if="activeDownload === 'pdf'"
+              class="w-4 h-4 animate-spin text-primary-700"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none" />
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8v4a4 4 0 0 0-4 4H4z" />
+            </svg>
+            <span>{{ activeDownload === 'pdf' ? 'Preparing PDF...' : 'Download PDF' }}</span>
           </button>
           <button
             @click="downloadSVG"
-            class="w-full p-2 border rounded-md hover:bg-primary-100"
+            :disabled="activeDownload !== null"
+            class="w-full p-2 border rounded-md hover:bg-primary-100 disabled:cursor-not-allowed disabled:opacity-70 disabled:bg-primary-50 disabled:border-primary-300 disabled:text-primary-800 flex items-center justify-center gap-2"
           >
-            Download SVG
+            <svg
+              v-if="activeDownload === 'svg'"
+              class="w-4 h-4 animate-spin text-primary-700"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none" />
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8v4a4 4 0 0 0-4 4H4z" />
+            </svg>
+            <span>{{ activeDownload === 'svg' ? 'Preparing SVG...' : 'Download SVG' }}</span>
           </button>
         </div>
       </div>
-
-      <!-- Close Button (Bottom) -->
-      <button
-        @click="closeOverlay"
-        class="mt-2 border border-accent1-900 bg-accent1-100 text-accent1-900 hover:text-accent1-100 hover:bg-accent1-900 py-2 rounded-md w-full"
-      >
-        Close
-      </button>
     </div>
   </div>
 </template>
@@ -211,8 +235,12 @@ function generateFilename(extension: string): string {
 const copied = ref(false);
 const shareUrl = ref("");
 const isGeneratingLink = ref(false);
+type DownloadKind = 'png' | 'pdf' | 'svg';
+const activeDownload = ref<DownloadKind | null>(null);
+const EXPORT_IGNORE_SELECTOR = '[data-export-ignore="true"], .share-overlay, .modal, .modal-overlay, .modal-container, [aria-modal="true"]';
 
 function copyToClipboard() {
+  if (activeDownload.value) return;
   if (!shareUrl.value) return;
   navigator.clipboard.writeText(shareUrl.value).then(() => {
     copied.value = true;
@@ -223,6 +251,7 @@ function copyToClipboard() {
 }
 
 function closeOverlay() {
+  if (activeDownload.value) return;
   emit("close");
 }
 
@@ -237,6 +266,50 @@ function downloadBlob(blob: Blob, filename: string) {
     URL.revokeObjectURL(url);
     a.remove();
   }, 500);
+}
+
+function downloadUrl(url: string, filename: string) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+}
+
+function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) {
+        resolve(blob);
+      } else {
+        reject(new Error("Failed to create PNG blob."));
+      }
+    }, "image/png");
+  });
+}
+
+function shouldIgnoreExportElement(element: Element): boolean {
+  return element.matches(EXPORT_IGNORE_SELECTOR) || element.closest(EXPORT_IGNORE_SELECTOR) !== null;
+}
+
+function getExportContainer(): HTMLElement | null {
+  const container = props.htmlContainer?.value;
+  if (!container) return null;
+
+  if (shouldIgnoreExportElement(container)) {
+    return null;
+  }
+
+  return container;
+}
+
+function html2canvasExportOptions() {
+  return {
+    scale: 2,
+    useCORS: true,
+    scrollX: 0,
+    scrollY: -window.scrollY,
+    ignoreElements: (element: Element) => shouldIgnoreExportElement(element),
+  };
 }
 
 async function generateHashLink(): Promise<string> {
@@ -324,11 +397,13 @@ async function renderSvgToCanvas(svgString: string, scale: number = 2): Promise<
 }
 
 async function downloadPNG() {
+  if (activeDownload.value) return;
+  activeDownload.value = 'png';
   try {
     // Generate a filename based on current page
     const filename = generateFilename('png');
 
-    const container = props.htmlContainer?.value;
+    const container = getExportContainer();
     if (!container) {
       alert("Visualization container not found.");
       return;
@@ -348,15 +423,8 @@ async function downloadPNG() {
       const svgString = serializer.serializeToString(exportedSvg);
       
       const canvas = await renderSvgToCanvas(svgString, 2);
-      
-      canvas.toBlob((blob) => {
-        if (!blob) return;
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
-        a.download = filename;
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(a.href), 500);
-      }, "image/png");
+
+      downloadBlob(await canvasToPngBlob(canvas), filename);
       return;
     }
 
@@ -373,11 +441,7 @@ async function downloadPNG() {
           scale: 2,
         });
         
-        // Download the PNG
-        const a = document.createElement("a");
-        a.href = pngData;
-        a.download = filename;
-        a.click();
+        downloadUrl(pngData, filename);
         return;
       } catch (plotlyError) {
         console.warn("Plotly PNG export failed, falling back:", plotlyError);
@@ -385,35 +449,27 @@ async function downloadPNG() {
     }
 
     // --- Standard PNG download using html2canvas ---
-    const snapshot = await html2canvasPro(container, {
-      scale: 2,
-      useCORS: true,
-      scrollX: 0,
-      scrollY: -window.scrollY,
-    });
+    const snapshot = await html2canvasPro(container, html2canvasExportOptions());
     
-    snapshot.toBlob((blob) => {
-      if (!blob) return;
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = filename;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 500);
-    }, "image/png");
+    downloadBlob(await canvasToPngBlob(snapshot), filename);
     
   } catch (e) {
     alert("Failed to download PNG.");
     console.error(e);
+  } finally {
+    activeDownload.value = null;
   }
 }
 
 async function downloadPDF() {
+  if (activeDownload.value) return;
+  activeDownload.value = 'pdf';
   try {
     // Generate a filename based on current page
     const filename = generateFilename('pdf');
 
     const jsPDF = (await import("jspdf")).jsPDF;
-    const container = props.htmlContainer?.value;
+    const container = getExportContainer();
     if (!container) {
       alert("Visualization container not found.");
       return;
@@ -495,12 +551,7 @@ async function downloadPDF() {
     }
 
     // --- Standard PDF download using html2canvas ---
-    const snapshot = await html2canvasPro(container, {
-      scale: 2,
-      useCORS: true,
-      scrollX: 0,
-      scrollY: -window.scrollY,
-    });
+    const snapshot = await html2canvasPro(container, html2canvasExportOptions());
 
     // Create jsPDF with appropriate dimensions
     const imgWidth = snapshot.width / 2;
@@ -519,6 +570,8 @@ async function downloadPDF() {
   } catch (e) {
     alert("Failed to download PDF. Make sure jsPDF is installed.");
     console.error(e);
+  } finally {
+    activeDownload.value = null;
   }
 }
 
@@ -951,7 +1004,8 @@ function mergeAllSvgsInContainer(container: HTMLElement): string {
   }
   
   // Non-Plotly containers
-  let svgs = Array.from(container.querySelectorAll<SVGSVGElement>(":scope > svg, svg"));
+  let svgs = Array.from(container.querySelectorAll<SVGSVGElement>(":scope > svg, svg"))
+    .filter((svg) => !shouldIgnoreExportElement(svg));
   // Deduplicate in case of nested selectors
   svgs = [...new Set(svgs)];
   
@@ -1044,11 +1098,13 @@ function mergeAllSvgsInContainer(container: HTMLElement): string {
 
 
 async function downloadSVG() {
+  if (activeDownload.value) return;
+  activeDownload.value = 'svg';
   try {
     // Generate filename
     const filename = generateFilename('svg');
     
-    const container = props.htmlContainer?.value;
+    const container = getExportContainer();
     if (!container) {
       alert("Visualization SVG not found.");
       return;
@@ -1072,12 +1128,7 @@ async function downloadSVG() {
       });
       const svgUrl = URL.createObjectURL(svgBlob);
 
-      const svgLink = document.createElement("a");
-      svgLink.href = svgUrl;
-      svgLink.download = filename;
-      document.body.appendChild(svgLink);
-      svgLink.click();
-      svgLink.remove();
+      downloadUrl(svgUrl, filename);
 
       setTimeout(() => URL.revokeObjectURL(svgUrl), 500);
       return;
@@ -1102,12 +1153,7 @@ async function downloadSVG() {
         const blob = await response.blob();
         
         const svgUrl = URL.createObjectURL(blob);
-        const svgLink = document.createElement("a");
-        svgLink.href = svgUrl;
-        svgLink.download = filename;
-        document.body.appendChild(svgLink);
-        svgLink.click();
-        svgLink.remove();
+        downloadUrl(svgUrl, filename);
         
         setTimeout(() => URL.revokeObjectURL(svgUrl), 500);
         return;
@@ -1130,18 +1176,15 @@ async function downloadSVG() {
     });
     const svgUrl = URL.createObjectURL(svgBlob);
 
-    const svgLink = document.createElement("a");
-    svgLink.href = svgUrl;
-    svgLink.download = filename;
-    document.body.appendChild(svgLink);
-    svgLink.click();
-    svgLink.remove();
+    downloadUrl(svgUrl, filename);
 
     setTimeout(() => URL.revokeObjectURL(svgUrl), 500);
 
   } catch (e) {
     alert("Failed to download SVG.");
     console.error(e);
+  } finally {
+    activeDownload.value = null;
   }
 }
 </script>

@@ -1,7 +1,10 @@
 <template>
   <main class="min-w-0">
     <!-- Top control bar -->
-    <div class="flex justify-between gap-2 px-2 items-start mb-2 flex-wrap">
+    <div
+      class="flex justify-between gap-2 px-2 items-start mb-2 flex-wrap"
+      data-export-ignore="true"
+    >
       <div class="text-gray-500 font-medium flex items-center gap-2 min-w-0 flex-wrap">
         <DropdownMenu
           :modelValue="localTableName"
