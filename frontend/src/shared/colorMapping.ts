@@ -231,44 +231,4 @@ export class SharedColorRegistry {
     this.cachedMappings.clear();
     this.colTypes.clear();
   }
-
-  // ---------------------------------------------------------------------
-  // Cross-instance row-color click pulse
-  // ---------------------------------------------------------------------
-  /** Event broadcast when a user clicks a row-color cell in any heatmap. */
-  // Using a plain function list instead of an EventTarget to keep this
-  // tree-shakeable and to allow synchronous fanout.
-  private clickSubscribers: Array<
-    (event: { column: string; value: SideColorValue }) => void
-  > = [];
-
-  /**
-   * Subscribe to row-color click events from any heatmap sharing this registry.
-   * Returns an unsubscribe function. Subscribers receive the same payload
-   * synchronously every time `broadcastClick` is invoked.
-   */
-  subscribeClick(
-    fn: (event: { column: string; value: SideColorValue }) => void,
-  ): () => void {
-    this.clickSubscribers.push(fn);
-    return () => {
-      const i = this.clickSubscribers.indexOf(fn);
-      if (i >= 0) this.clickSubscribers.splice(i, 1);
-    };
-  }
-
-  /** Notify every subscriber that a row-color cell was clicked. */
-  broadcastClick(
-    column: string,
-    value: SideColorValue,
-  ): void {
-    const evt = { column, value };
-    for (const fn of [...this.clickSubscribers]) {
-      try {
-        fn(evt);
-      } catch {
-        // Subscribers must not break the broadcast loop
-      }
-    }
-  }
 }
