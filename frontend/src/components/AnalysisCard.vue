@@ -27,34 +27,37 @@
       <svg
         v-if="type === 'heatmap'"
         class="w-6 h-6"
+        viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
         stroke-width="2"
-        viewBox="0 0 24 24"
+        stroke-linecap="round"
+        stroke-linejoin="round"
       >
-        <rect x="3" y="12" width="4" height="8" rx="1" stroke="currentColor" />
-        <rect x="10" y="8" width="4" height="12" rx="1" stroke="currentColor" />
-        <rect x="17" y="4" width="4" height="16" rx="1" stroke="currentColor" />
+        <rect x="3" y="3" width="5" height="5" opacity="0.3" fill="currentColor"/>
+        <rect x="10" y="3" width="5" height="5" opacity="0.8" fill="currentColor"/>
+        <rect x="17" y="3" width="5" height="5" opacity="0.1" fill="currentColor"/>
+        <rect x="3" y="10" width="5" height="5" opacity="0.6" fill="currentColor"/>
+        <rect x="10" y="10" width="5" height="5" opacity="0.4" fill="currentColor"/>
+        <rect x="17" y="10" width="5" height="5" opacity="0.9" fill="currentColor"/>
+        <rect x="3" y="17" width="5" height="5" opacity="0.1" fill="currentColor"/>
+        <rect x="10" y="17" width="5" height="5" opacity="0.7" fill="currentColor"/>
+        <rect x="17" y="17" width="5" height="5" opacity="0.5" fill="currentColor"/>
       </svg>
 
       <!-- Compare Expression Icon -->
       <svg
         v-else-if="type === 'compare'"
         class="w-6 h-6"
+        viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
-        stroke-width="1.5"
+        stroke-width="2.5"
         stroke-linecap="round"
         stroke-linejoin="round"
-        viewBox="0 0 24 24"
       >
-        <line x1="4" y1="4" x2="4" y2="20" />
-        <line x1="4" y1="20" x2="20" y2="20" />
-        <polyline points="6,16 10,10 14,13 18,7" />
-        <circle cx="6" cy="16" r="0.8" />
-        <circle cx="10" cy="10" r="0.8" />
-        <circle cx="14" cy="13" r="0.8" />
-        <circle cx="18" cy="7" r="0.8" />
+        <path d="M3 17c4-1 6-12 10-12s6 8 8 10" opacity="0.4" />
+        <path d="M3 12c3 0 7 10 11 10s5-15 7-15" />
       </svg>
 
       <!-- Phylogenetic Tree Icon -->
