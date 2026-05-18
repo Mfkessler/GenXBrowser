@@ -148,17 +148,6 @@
             </div>
           </div>
 
-          <!-- Heatmap: Hide empty columns -->
-          <div
-            class="flex items-center gap-2 mb-2"
-            :hidden="context !== 'heatmap'"
-          >
-            <h3 class="text-md font-semibold cursor-default text-primary-900">
-              Hide empty columns
-            </h3>
-            <ToggleSwitch v-model="store.hideEmpty" />
-          </div>
-
           <!-- Expression (for Heatmap/PhyloTree - uses expressionDisplay in store) -->
           <div v-if="context !== 'compare' && context !== 'ora'">
             <div class="flex items-center gap-2 mb-2">
@@ -508,7 +497,7 @@
             </p>
           </div>
 
-          <div class="mb-4" :class="store.clustering.clusterCols ? 'opacity-50' : ''">
+          <div class="mb-4">
             <h3
               class="text-md font-semibold mb-2 cursor-default text-primary-900"
             >
@@ -517,7 +506,7 @@
             <div class="border border-gray-200 rounded-md p-3 bg-gray-50 space-y-3">
               <div class="flex items-center justify-between">
                 <span class="text-sm font-medium text-gray-700">Enable custom order</span>
-                <ToggleSwitch v-model="customOrderEnabled" :disabled="store.clustering.clusterCols" />
+                <ToggleSwitch v-model="customOrderEnabled" />
               </div>
               <template v-if="store.customColOrder.enabled">
                 <div v-if="!axisOnlyCustomOrder" class="grid grid-cols-2 gap-2">
@@ -758,7 +747,7 @@
                 Maximum Results (Top N)
               </h3>
               <InfoTooltip 
-                description="Number of top enriched terms to show, ranked by combined score (-log10(q-value) x gene_ratio). Higher values show more terms but may clutter the plot." 
+                description="Applied after significance, transcript count, and GO depth filters. Shows the top enriched terms from the entries that pass those criteria, ranked by combined score (-log10(q-value) x gene_ratio)." 
               />
             </div>
             <div class="flex items-center mb-4">
@@ -801,15 +790,22 @@
               </h3>
               <InfoTooltip 
                 title="GO Depth Visual Filtering"
-                description="Filters the current plotted GO enrichment results by ontology depth without recalculating statistics. Selecting depth 3 shows terms with GO depth 3 or deeper and hides broader parent-level terms."
+                description="Applied before Top N. Depth 0 turns this filter off; higher values keep terms at that GO depth or deeper before the final Top N entries are selected."
               />
             </div>
-            <div class="flex items-center mb-4">
-              <DropdownMenu
-                v-model="store.oraGoDepthFilter"
-                :options="goDepthOptions"
-                class="mr-2"
+            <div class="flex items-center mb-4 gap-3">
+              <input
+                type="range"
+                :value="goDepthValue"
+                @input="(e) => store.setOraGoDepthFilter(Number((e.target as HTMLInputElement).value))"
+                min="0"
+                :max="maxGoDepth"
+                step="1"
+                class="w-full accent-primary-600"
               />
+              <span class="text-sm font-semibold text-primary-900 min-w-[3rem] text-right">
+                {{ goDepthValue === 0 ? 'Off' : goDepthValue }}
+              </span>
             </div>
           </div>
         </CollapseWrapper>
@@ -1067,11 +1063,12 @@ const isGoTermColumn = computed(() => {
          colName.startsWith('go_');
 });
 
-const showGoDepthFilter = computed(() => isGoTermColumn.value && store.oraAvailableGoDepths.length > 0);
-const goDepthOptions = computed(() => ({
-  "": "All depths",
-  ...Object.fromEntries(store.oraAvailableGoDepths.map((depth) => [String(depth), depth])),
-}));
+const maxGoDepth = computed(() => Math.max(0, ...store.oraAvailableGoDepths));
+const showGoDepthFilter = computed(() => isGoTermColumn.value && maxGoDepth.value > 0);
+const goDepthValue = computed(() => {
+  const depth = Number(store.oraGoDepthFilter);
+  return Number.isInteger(depth) && depth > 0 ? Math.min(depth, maxGoDepth.value) : 0;
+});
 
 // Tooltip configuration
 const availableTooltipFields = computed(() => {
@@ -1291,10 +1288,17 @@ const customOrderMetadataOptions = computed<Record<string, string>>(() => toOpti
 const customOrderEnabled = computed({
   get: () => store.customColOrder.enabled,
   set: (enabled: boolean) => {
+    const replacedClustering = enabled && store.clustering.clusterCols;
+    const replacedColumnOrder = enabled && Boolean(store.colOrder.name);
     store.setCustomColOrderState(axisOnlyCustomOrder.value
       ? { enabled, mode: "metadata", metadataColumn: "tissue_types" }
       : { enabled });
     ensureCustomOrderLists();
+    if (replacedClustering) {
+      showOrderFeedback("col", "Column clustering is off. Custom order is active now.");
+    } else if (replacedColumnOrder) {
+      showOrderFeedback("col", "Column order is off. Custom order is active now.");
+    }
   },
 });
 

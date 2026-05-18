@@ -1963,8 +1963,9 @@ class GenXBrowserService:
         filters: List[Dict],
         filter_chain: Optional[Dict[str, Any]] = None,
         significance: float = 0.01,
-        top_n: int = 50,
+        top_n: int = 10,
         min_count: int = 3,
+        go_depth_min: int = 0,
         column_type: str = 'array',
         go_hierarchy = None,
         max_subset_size: int = 0,
@@ -1988,7 +1989,7 @@ class GenXBrowserService:
             column_name: Attribute column (e.g., 'ortho_id', 'go_terms')
             filters: Filter list defining gene subset
             significance: FDR q-value threshold (default: 0.01)
-            top_n: Maximum results to return (default: 50)
+            top_n: Maximum results to return (default: 10)
             min_count: Minimum genes in subset with attribute (default: 3)
             column_type: 'array' or 'text' (affects parsing)
             go_hierarchy: GOHierarchyHelper instance for GO depth metadata
@@ -2270,9 +2271,42 @@ class GenXBrowserService:
         
         logger.info(f"ORA: {len(significant_results)}/{n_tests} significant (q < {significance})")
         
-        # 8. Sort by combined score (descending) and take top N
-        significant_results.sort(key=lambda x: x['combined_score'], reverse=True)
-        top_results = significant_results[:top_n]
+        # Add GO metadata before final Top N so GO depth participates in the
+        # same filter sequence as significance and min_count.
+        go_terms = {}
+        available_go_depths = []
+        is_go = 'go' in column_name.lower() or column_name.lower() == 'go_term'
+        has_go_service = go_service and hasattr(go_service, 'get_term') and go_service.is_available()
+        if is_go and (go_hierarchy or has_go_service):
+            for entry in significant_results:
+                go_id = entry.get('attribute', '')
+                if has_go_service:
+                    term = go_service.get_term(go_id)
+                    if term:
+                        entry['go_name'] = term.get('name')
+                        entry['go_namespace'] = term.get('namespace')
+                        go_terms[go_id] = term
+                if go_hierarchy:
+                    depth = go_hierarchy.get_depth(go_id)
+                    if isinstance(depth, int) and depth >= 0:
+                        entry['go_depth'] = depth
+                        available_go_depths.append(depth)
+                        if go_id in go_terms:
+                            go_terms[go_id]['depth'] = depth
+
+        depth_filtered_results = significant_results
+        if is_go and go_depth_min > 0:
+            depth_filtered_results = [
+                result for result in significant_results
+                if isinstance(result.get('go_depth'), int) and result.get('go_depth') >= go_depth_min
+            ]
+
+        # 8. Sort by combined score (descending) and take top N after all filters
+        depth_filtered_results.sort(key=lambda x: x['combined_score'], reverse=True)
+        top_results = depth_filtered_results[:top_n]
+        if go_terms:
+            top_ids = {entry.get('attribute', '') for entry in top_results}
+            go_terms = {go_id: term for go_id, term in go_terms.items() if go_id in top_ids}
         
         # Build metadata
         metadata = {
@@ -2284,30 +2318,17 @@ class GenXBrowserService:
             'unannotated_background_count': raw_background_size - background_size,
             'total_tests': n_tests,
             'significant_count': len(significant_results),
+            'filtered_count': len(depth_filtered_results),
             'column_type': column_type,
             'filters_applied': len(filters),
             'significance_threshold': significance,
             'min_count_threshold': min_count,
+            'go_depth_min': go_depth_min,
+            'available_go_depths': sorted(set(available_go_depths)),
+            'max_go_depth': max(available_go_depths) if available_go_depths else 0,
             'top_n': top_n,
             'count': raw_subset_size,
         }
-        
-        # Inline GO term details if go_service is available
-        go_terms = {}
-        is_go = 'go' in column_name.lower() or column_name.lower() == 'go_term'
-        if is_go and go_service and hasattr(go_service, 'get_term') and go_service.is_available():
-            for entry in top_results:
-                go_id = entry.get('attribute', '')
-                term = go_service.get_term(go_id)
-                if term:
-                    entry['go_name'] = term.get('name')
-                    entry['go_namespace'] = term.get('namespace')
-                    if go_hierarchy:
-                        depth = go_hierarchy.get_depth(go_id)
-                        if isinstance(depth, int) and depth >= 0:
-                            term['depth'] = depth
-                            entry['go_depth'] = depth
-                    go_terms[go_id] = term
         
         result = {
             'results': top_results,

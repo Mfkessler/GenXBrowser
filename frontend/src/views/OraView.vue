@@ -41,9 +41,15 @@
     </div>
     <div
       ref="visualizationExportRoot"
-      class="grid gap-4 p-2 overflow-visible [container-type:inline-size]"
+      class="relative grid gap-4 p-2 overflow-visible [container-type:inline-size]"
       :style="oraGridStyle"
     >
+      <LoadingOverlay
+        v-if="showBatchLoadingOverlay"
+        label="Loading ORA"
+        cancellable
+        @cancel="cancelBatchLoading"
+      />
       <div
         v-for="tableName in visibleTableNames"
         :key="tableName"
@@ -56,8 +62,10 @@
           :all-tables="allTables"
           :hash-loading="hashLoading"
           :show-shared-actions="visibleTableNames.length <= 1"
+          :defer-loading-overlay="visibleTableNames.length > 1"
           @openSettingsOverlay="openSettingsOverlay"
           @update:tableName="onUpdateTableName(tableName, $event)"
+          @loading-change="onOraLoadingChange"
         />
       </div>
     </div>
@@ -108,6 +116,7 @@ import { useRoute, useRouter } from "vue-router";
 import { type CatalogMeta } from "@/shared/CatalogMeta";
 import { SharedColorRegistry } from "@/shared/colorMapping";
 import OraComponent from "@/components/OraComponent.vue";
+import LoadingOverlay from "@/components/LoadingOverlay.vue";
 import ShareOverlay from "@/components/ShareOverlay.vue";
 import ExportModal from "@/components/ExportModal.vue";
 import { useFiltersStore } from "@/stores/filters";
@@ -138,11 +147,19 @@ interface ExportPayload {
 
 interface ExportPayloadProvider {
   getExportPayload?: () => ExportPayload | null;
+  cancelActiveLoad?: () => void;
+}
+
+interface OraLoadingState {
+  tableName: string;
+  loading: boolean;
+  progress: number | null;
 }
 
 const oraRefs = ref<ExportPayloadProvider[]>([]);
 const allTables = ref<Record<string, string>>({});
 const hashLoading = ref(true);
+const oraLoadingStates = ref<Record<string, OraLoadingState>>({});
 
 // Shared color registry for consistent side-color mapping across multiple ORA plots
 const sharedColorRegistry = new SharedColorRegistry();
@@ -163,6 +180,14 @@ const oraGridStyle = computed(() => ({
     ? "minmax(0, 1fr)"
     : "repeat(auto-fit, minmax(min(100%, 38rem), 1fr))",
 }));
+
+const activeOraLoadingStates = computed(() =>
+  Object.values(oraLoadingStates.value).filter((state) => state.loading),
+);
+
+const showBatchLoadingOverlay = computed(() =>
+  visibleTableNames.value.length > 1 && activeOraLoadingStates.value.length > 0,
+);
 
 const globalExportPayload = computed(() => {
   const payloads = (oraRefs.value || [])
@@ -187,6 +212,19 @@ const globalExportPayload = computed(() => {
 
 function uniqueColumns(columns: string[]): string[] {
   return [...new Set(columns.filter(Boolean))];
+}
+
+function onOraLoadingChange(state: OraLoadingState) {
+  oraLoadingStates.value = {
+    ...oraLoadingStates.value,
+    [state.tableName]: state,
+  };
+}
+
+function cancelBatchLoading() {
+  for (const component of oraRefs.value || []) {
+    component?.cancelActiveLoad?.();
+  }
 }
 
 const openSettingsOverlay = () => {

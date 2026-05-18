@@ -122,7 +122,7 @@
       :style="plotShellStyle"
     >
       <LoadingOverlay
-        v-if="loading || !renderReady"
+        v-if="(loading || !renderReady) && !props.deferLoadingOverlay"
         label="Loading ORA"
         cancellable
         @cancel="cancelActiveLoad"
@@ -177,16 +177,18 @@
               (FDR q-value &lt; {{ visualizationStore.significance }})
             </div>
             <div>
-              <strong>Results Shown:</strong> Top {{ visualizationStore.oraTopN }} by combined score
-              (minimum {{ visualizationStore.oraMinCount }} {{ getEntityLabelPluralLower() }} per term)
+              <strong>Results Shown:</strong>
+              Top {{ visualizationStore.oraTopN }} by combined score after significance,
+              minimum {{ visualizationStore.oraMinCount }} {{ getEntityLabelPluralLower() }} per term,
+              and GO depth filters are applied.
             </div>
             <div v-if="goDepthFilterStatus" class="text-blue-700 bg-blue-100 rounded px-2 py-1 mt-1">
-              💡 <strong>GO Depth Filtering:</strong>
+              <strong>GO Depth Filtering:</strong>
               Displaying only terms with GO depth at least {{ goDepthFilterStatus.depth }}.
-              {{ goDepthFilterStatus.hiddenCount }} terms at shallower depths are hidden for visual clarity.
+              {{ goDepthFilterStatus.hiddenCount }} terms at shallower depths were filtered before Top N was selected.
             </div>
             <div class="text-xs text-blue-600 mt-2">
-              💡 <strong>Combined Score</strong> = -log₁₀(q-value) × gene_ratio
+              <strong>Combined Score</strong> = -log10(q-value) x gene_ratio
               | Accounts for both statistical significance and effect size
             </div>
           </div>
@@ -303,9 +305,11 @@ const props = withDefaults(defineProps<{
   allTables: Record<string, string>;
   hashLoading?: boolean;
   showSharedActions?: boolean;
+  deferLoadingOverlay?: boolean;
 }>(), {
   hashLoading: false,
   showSharedActions: true,
+  deferLoadingOverlay: false,
 });
 
 const localTableName = ref(props.tableName);
@@ -342,9 +346,20 @@ let activeAbortController: AbortController | null = null;
 const availablePlotHeight = ref(600);
 const maxBubbleRadius = 15;
 const minimumBubbleGap = 4;
-const minimumOraRowHeight = maxBubbleRadius * 2 + minimumBubbleGap;
 const plotVerticalChrome = 126;
 const collapsedOraInfoHeight = 58;
+
+function getLargestBubbleDiameter(entries: PValueEntry[]): number {
+  if (!entries.length) return maxBubbleRadius * 2;
+  const counts = entries.map((entry) => entry.subset_count);
+  const minSubsetCount = d3.min(counts) ?? 0;
+  const maxSubsetCount = d3.max(counts) ?? 1;
+  const sizeScale = d3
+    .scaleSqrt()
+    .domain([minSubsetCount, maxSubsetCount])
+    .range([6, maxBubbleRadius]);
+  return Math.ceil((d3.max(entries, (entry) => sizeScale(entry.subset_count)) ?? maxBubbleRadius) * 2);
+}
 
 function updateAvailablePlotHeight() {
   if (typeof window === "undefined") return;
@@ -381,9 +396,10 @@ function cancelActiveLoad() {
 
 const finalPlotHeight = computed(() => {
   const visibleRows = Math.max(pValueEntries.value.length, 1);
-  const minimumHeight = visualizationStore.legend ? 360 : 300;
-  const bubbleSafeHeight = visibleRows * minimumOraRowHeight + plotVerticalChrome + collapsedOraInfoHeight;
-  return Math.max(minimumHeight, availablePlotHeight.value, bubbleSafeHeight);
+  const rowHeight = getLargestBubbleDiameter(pValueEntries.value) + minimumBubbleGap;
+  const minimumHeight = visualizationStore.legend ? 300 : 240;
+  const bubbleSafeHeight = visibleRows * rowHeight + plotVerticalChrome + collapsedOraInfoHeight;
+  return Math.max(minimumHeight, bubbleSafeHeight);
 });
 const hasPreparedPlotData = computed(() => pValueEntries.value.length > 0 || oraMetadata.value !== null);
 const activePlotHeight = computed(() => loading.value && !hasPreparedPlotData.value ? availablePlotHeight.value : finalPlotHeight.value);
@@ -442,6 +458,9 @@ interface OraMetadata {
   background_size?: number;
   unannotated_subset_count?: number;
   unannotated_background_count?: number;
+  filtered_count?: number;
+  available_go_depths?: number[];
+  max_go_depth?: number;
   message?: string;
   [key: string]: unknown;
 }
@@ -511,6 +530,7 @@ const oraExportPayload = computed(() => {
 
 defineExpose({
   getExportPayload: () => oraExportPayload.value,
+  cancelActiveLoad,
 });
 
 // GO term info cache (includes name, namespace, and depth)
@@ -539,7 +559,16 @@ const pValueEntries = computed(() => {
   return rawPValueEntries.value.filter((entry) => typeof entry.go_depth === 'number' && entry.go_depth >= selectedDepth);
 });
 
-const goDepthHiddenCount = computed(() => rawPValueEntries.value.length - pValueEntries.value.length);
+const goDepthHiddenCount = computed(() => {
+  if (activeGoDepthFilter.value !== null) {
+    const significantCount = Number(oraMetadata.value?.significant_count);
+    const filteredCount = Number(oraMetadata.value?.filtered_count);
+    if (Number.isFinite(significantCount) && Number.isFinite(filteredCount)) {
+      return Math.max(0, significantCount - filteredCount);
+    }
+  }
+  return rawPValueEntries.value.length - pValueEntries.value.length;
+});
 const goDepthFilterStatus = computed(() => {
   const depth = activeGoDepthFilter.value;
   if (depth === null || goDepthHiddenCount.value <= 0) return null;
@@ -551,10 +580,17 @@ function syncAvailableGoDepths() {
     visualizationStore.setOraAvailableGoDepths([]);
     return;
   }
+  const metadataDepths = Array.isArray(oraMetadata.value?.available_go_depths)
+    ? oraMetadata.value.available_go_depths
+    : null;
+  if (metadataDepths) {
+    visualizationStore.setOraAvailableGoDepths([0, ...metadataDepths]);
+    return;
+  }
   visualizationStore.setOraAvailableGoDepths(
-    rawPValueEntries.value
+    [0, ...rawPValueEntries.value
       .map((entry) => entry.go_depth)
-      .filter((depth): depth is number => typeof depth === 'number' && Number.isInteger(depth) && depth > 0),
+      .filter((depth): depth is number => typeof depth === 'number' && Number.isInteger(depth) && depth > 0)],
   );
 }
 
@@ -622,6 +658,7 @@ async function fetchAndPrepareData() {
       significance: visualizationStore.significance,
       top_n: visualizationStore.oraTopN,
       min_count: visualizationStore.oraMinCount,
+      go_depth_min: activeGoDepthFilter.value ?? 0,
       max_subset_size: 5000,
     };
     
@@ -646,8 +683,8 @@ async function fetchAndPrepareData() {
     // Check for count-exceeded or empty subset
     if (parsedResponse.metadata?.message || !parsedResponse.results?.length) {
       rawPValueEntries.value = [];
-      syncAvailableGoDepths();
       oraMetadata.value = parsedResponse.metadata;
+      syncAvailableGoDepths();
       await nextTick();
       await syncPlotHeightWithViewport();
       await drawDotPlot();
@@ -1622,14 +1659,26 @@ function openSettingsOverlay() {
   emit("openSettingsOverlay");
 }
 
-const emit = defineEmits(["update:tableName", "openSettingsOverlay"]);
+const emit = defineEmits(["update:tableName", "openSettingsOverlay", "loading-change"]);
+
+watch(
+  () => loading.value,
+  () => {
+    emit("loading-change", {
+      tableName: props.tableName,
+      loading: loading.value,
+      progress: null,
+    });
+  },
+  { immediate: true },
+);
 
 watch(
   [() => visualizationStore.oraColumnName],
   async () => {
     if (props.hashLoading) return;
     visualizationStore.setOraAvailableGoDepths([]);
-    visualizationStore.oraGoDepthFilter = "";
+    visualizationStore.setOraGoDepthFilter(0);
     await fetchAndPrepareData();
   },
   { immediate: true },
@@ -1650,6 +1699,7 @@ watch(
     () => visualizationStore.significance,
     () => visualizationStore.oraTopN,
     () => visualizationStore.oraMinCount,
+    () => visualizationStore.oraGoDepthFilter,
   ],
   async () => {
     if (props.hashLoading) return;
@@ -1667,7 +1717,6 @@ watch(
     () => visualizationStore.oraRowSideColor,
     () => visualizationStore.colorScale,
     () => visualizationStore.oraOrder,
-    () => visualizationStore.oraGoDepthFilter,
   ],
   async () => {
     if (props.hashLoading) return;

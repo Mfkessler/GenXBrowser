@@ -83,7 +83,6 @@ const ALLOWED_PATCH_PATHS: Record<string, (value: unknown) => unknown> = {
   rowLabel: booleanValue,
   colLabel: booleanValue,
   legend: booleanValue,
-  hideEmpty: booleanValue,
   colorScale: enumValue(COLOR_SCALES, "colorScale"),
   rowSideColors: stringArrayValue("rowSideColors"),
   colSideColors: stringArrayValue("colSideColors"),

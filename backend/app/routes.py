@@ -1068,7 +1068,7 @@ def calculate_ora():
             "column_name": "ortho_id",  // Column containing attributes (e.g., GO terms, orthogroups)
             "filters": [...],              // Filters defining the gene subset (e.g., TF Family = MIKC)
             "significance": 0.01,          // FDR threshold (default: 0.01)
-            "top_n": 50,                   // Max results to return (default: 50)
+            "top_n": 10,                   // Max results to return (default: 10)
             "min_count": 3                 // Minimum genes in subset with attribute (default: 3)
         }
     
@@ -1119,8 +1119,9 @@ def calculate_ora():
         
         # Optional parameters with defaults
         significance = float(data.get('significance', 0.01))
-        top_n = int(data.get('top_n', 50))
+        top_n = int(data.get('top_n', 10))
         min_count = int(data.get('min_count', 3))
+        go_depth_min = int(data.get('go_depth_min', 0) or 0)
         
         # Validate table and column
         validate_table_name([table_name], service.get_tables)
@@ -1169,6 +1170,7 @@ def calculate_ora():
             significance=significance,
             top_n=top_n,
             min_count=min_count,
+            go_depth_min=go_depth_min,
             column_type=column_type,
             go_hierarchy=go_hierarchy,
             max_subset_size=max_subset_size,

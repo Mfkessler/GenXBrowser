@@ -383,7 +383,6 @@ const sortedColsKeys = computed(() =>
 );
 
 const visibleColumns = computed(() => {
-  if (!visualizationStore.hideEmpty) return sortedColsKeys.value;
   const presentColumns = new Set<string>();
   for (const row of rows.value) {
     for (const col of sortedColsKeys.value) {
@@ -2064,7 +2063,6 @@ watch(
 
 watch(
   [
-    () => visualizationStore.hideEmpty,
     () => visualizationStore.legend,
     () => visualizationStore.rowOrder.name,
     () => visualizationStore.rowOrder.order,

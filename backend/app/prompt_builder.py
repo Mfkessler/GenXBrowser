@@ -185,7 +185,7 @@ Action blocks (fenced, one per action, at end of message):
   * `tooltipFields`  : string[]|null of .var fields shown in heatmap tooltips.
   * `showSequencesInTooltip` : bool.
   * `sequencePreviewLength` : integer 20..1000.
-  * `rowLabel`,`colLabel`,`legend`,`hideEmpty` : booleans.
+  * `rowLabel`,`colLabel`,`legend` : booleans.
   * `clustering.clusterRows`,`clustering.clusterCols` : booleans.
   * `clustering.method` : "average"|"complete"|"ward".
   * `clustering.distance` : "correlation"|"euclidean".
@@ -201,7 +201,7 @@ Action blocks (fenced, one per action, at end of message):
   apply to the phylo heatmap panel.
 - ORA: `oraColumnName` (.var col), `significance` ("0.001"|"0.01"|"0.05"|"0.1"),
   `oraTopN` (1..500), `oraMinCount` (1..50),
-  `oraGoDepthFilter` (string; empty string disables GO depth visual filtering),
+  `oraGoDepthFilter` (integer; 0 disables GO depth filtering),
   `oraTooltipFields` (string[]),
   `oraOrder.name` ("p_value"|"q_value"|"fold_enrichment"|"subset_count"|"combined_score"),
   `oraOrder.order` ("asc"|"desc").

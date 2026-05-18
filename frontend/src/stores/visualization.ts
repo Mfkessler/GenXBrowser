@@ -56,7 +56,6 @@ export interface VisualizationState {
   };
   colorScale: string;
   expressionDisplay: ExpressionDisplayState;
-  hideEmpty: boolean;
   legend: boolean;
   oraRowSideColor: boolean;
   oraColumnName: string;
@@ -144,13 +143,12 @@ function getDefaultState(): VisualizationState {
       layer: "tpm",
       transform: "raw"
     },
-    hideEmpty: true,  // Default: hide empty columns
     legend: true,
     oraRowSideColor: true,
     oraColumnName: "ortho_id",
     oraOrder: { name: "", order: "asc" },
     significance: "0.01",
-    oraTopN: 50,
+    oraTopN: 10,
     oraMinCount: 3,
     oraGoDepthFilter: "",
     oraAvailableGoDepths: [],
@@ -241,11 +239,13 @@ export const useVisualizationStore = defineStore("visualization", {
       this.colOrder.name = name;
       if (name) {
         this.setClusterCols(false);
+        this.customColOrder.enabled = false;
       }
     },
     setCustomColOrderState(state: Partial<VisualizationState["customColOrder"]>) {
       if (state.enabled) {
         this.setClusterCols(false);
+        this.colOrder.name = "";
       }
       this.customColOrder = {
         ...this.customColOrder,
@@ -271,9 +271,6 @@ export const useVisualizationStore = defineStore("visualization", {
         transform
       };
     },
-    toggleHideEmpty() {
-      this.hideEmpty = !this.hideEmpty;
-    },
     toggleLegend() {
       this.legend = !this.legend;
     },
@@ -284,11 +281,15 @@ export const useVisualizationStore = defineStore("visualization", {
       this.oraTooltipFields = fields;
     },
     setOraAvailableGoDepths(depths: number[]) {
-      const uniqueDepths = Array.from(new Set(depths.filter((depth) => Number.isInteger(depth) && depth > 0))).sort((a, b) => a - b);
+      const uniqueDepths = Array.from(new Set(depths.filter((depth) => Number.isInteger(depth) && depth >= 0))).sort((a, b) => a - b);
       this.oraAvailableGoDepths = uniqueDepths;
       if (this.oraGoDepthFilter && !uniqueDepths.includes(Number(this.oraGoDepthFilter))) {
-        this.oraGoDepthFilter = "";
+        this.oraGoDepthFilter = "0";
       }
+    },
+    setOraGoDepthFilter(depth: string | number) {
+      const numericDepth = Number(depth);
+      this.oraGoDepthFilter = Number.isInteger(numericDepth) && numericDepth > 0 ? String(numericDepth) : "0";
     },
     toggleShowSequencesInTooltip() {
       this.showSequencesInTooltip = !this.showSequencesInTooltip;
@@ -504,7 +505,6 @@ export const useVisualizationStore = defineStore("visualization", {
         },
         colorScale: this.colorScale,
         expressionDisplay: { ...this.expressionDisplay },
-        hideEmpty: this.hideEmpty,
         legend: this.legend,
         oraRowSideColor: this.oraRowSideColor,
         oraColumnName: this.oraColumnName,
