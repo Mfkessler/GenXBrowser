@@ -186,7 +186,7 @@ const rowFilterColumnNames = computed(() => new Set(filteredRowColumns.value.map
 
 const activeRowFilters = computed(() => Object.fromEntries(
   Object.entries(filtersStore.filters).filter(([key, filter]) => (
-    rowFilterColumnNames.value.has(key) && filter && String(filter.value ?? "").trim() !== ""
+    rowFilterColumnNames.value.has(key) && filter && (filter.has_value || String(filter.value ?? "").trim() !== "")
   )),
 ));
 
@@ -217,12 +217,12 @@ function cleanFilters(
   filters: Record<string, FilterValue>,
 ): Record<string, FilterValue> {
   return Object.fromEntries(
-    Object.entries(filters).filter(([, v]) => v && v.value !== ""),
+    Object.entries(filters).filter(([, v]) => v && (v.has_value || v.value !== "")),
   );
 }
 
 function isFilterEmpty(filter?: FilterValue): boolean {
-  return !filter || filter.value === "";
+  return !filter || (!filter.has_value && filter.value === "");
 }
 
 // Auto-apply: push local filter changes to the store with a debounce
@@ -368,7 +368,7 @@ watch(
     for (const col of columnsStore.allColumns) {
       const filterVal = filters.value[col.column_name];
       const refInstance = searchFilterRefs.value[col.column_name];
-      if (refInstance && filterVal && filterVal.value !== "") {
+      if (refInstance && filterVal && (filterVal.has_value || filterVal.value !== "")) {
         refInstance.uncollapse();
       }
     }

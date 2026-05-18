@@ -23,6 +23,17 @@ from h5ad_lib.core.registry import SpeciesRegistry
 from h5ad_lib.config.manager import ConfigManager
 from h5ad_lib.filters.storage import FilterStore
 
+try:
+    from . import filter_parser
+except ImportError:  # pragma: no cover - supports direct module loading in tests
+    import importlib.util
+
+    _filter_parser_path = Path(__file__).resolve().parent / "filter_parser.py"
+    _filter_parser_spec = importlib.util.spec_from_file_location("genxbrowser_filter_parser", _filter_parser_path)
+    assert _filter_parser_spec is not None and _filter_parser_spec.loader is not None
+    filter_parser = importlib.util.module_from_spec(_filter_parser_spec)
+    _filter_parser_spec.loader.exec_module(filter_parser)
+
 logger = logging.getLogger(__name__)
 
 VIRTUAL_GENE_COLUMNS = {'newick_str', 'protein_seq', 'rna_seq'}
@@ -1313,7 +1324,9 @@ class GenXBrowserService:
             
             op, value = filter_spec
             
-            if op == 'eq':
+            if op == 'has_value':
+                obs_df = obs_df[obs_df[actual_col].apply(filter_parser.is_non_missing_value)]
+            elif op == 'eq':
                 if isinstance(value, bool):
                     obs_df = obs_df[obs_df[actual_col] == value]
                 else:
@@ -1375,7 +1388,9 @@ class GenXBrowserService:
             
             op, value = filter_spec
 
-            if op == 'eq':
+            if op == 'has_value':
+                result = result[result[actual_col].apply(filter_parser.is_non_missing_value)]
+            elif op == 'eq':
                 if isinstance(value, bool):
                     result = result[result[actual_col] == value]
                 else:
@@ -1595,6 +1610,8 @@ class GenXBrowserService:
 
         op, value = filter_spec
 
+        if op == 'has_value':
+            return df[actual_col].apply(filter_parser.is_non_missing_value)
         if op == 'eq':
             if isinstance(value, bool):
                 return df[actual_col] == value

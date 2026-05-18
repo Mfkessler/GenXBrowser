@@ -3,7 +3,7 @@
     <div class="modal-container">
       <div class="modal-header">
         <h2>
-          {{ target === 'var' ? `Add ${getEntityLabel()} Metadata` : 'Add Sample Metadata' }}
+          {{ modalTitle }}
         </h2>
         <button class="close-btn" @click="close">✕</button>
       </div>
@@ -43,6 +43,7 @@
                 type="text"
                 class="form-control"
                 placeholder="e.g. my_annotation"
+                :readonly="mode === 'edit'"
                 @input="autoDisplayName"
               />
             </div>
@@ -249,8 +250,8 @@
           </div>
 
           <div v-else-if="confirmResult" class="confirm-success">
-            <h3>✅ Import Successful</h3>
-            <p>Column <strong>{{ form.columnName }}</strong> has been added.</p>
+            <h3>{{ mode === 'edit' ? 'Update Successful' : 'Import Successful' }}</h3>
+            <p>Column <strong>{{ form.columnName }}</strong> has been {{ mode === 'edit' ? 'updated' : 'added' }}.</p>
             <div class="results-summary">
               <div v-for="(res, code) in confirmResult.results" :key="code" class="result-row">
                 <code>{{ code }}</code>
@@ -262,7 +263,7 @@
           </div>
 
           <div v-else class="confirm-options">
-            <h3>Confirm Import</h3>
+            <h3>{{ mode === 'edit' ? 'Confirm Update' : 'Confirm Import' }}</h3>
 
             <div class="confirm-summary">
               <div class="confirm-item">
@@ -309,7 +310,7 @@
           class="btn btn-primary"
           @click="confirmImport"
         >
-          ✓ Import
+          {{ mode === 'edit' ? 'Update' : 'Import' }}
         </button>
         <button v-if="confirmResult" class="btn btn-primary" @click="close">
           Done
@@ -366,6 +367,9 @@ export default defineComponent({
   props: {
     visible: { type: Boolean, required: true },
     target: { type: String as PropType<'var' | 'obs'>, default: 'var' },
+    mode: { type: String as PropType<'add' | 'edit'>, default: 'add' },
+    initialColumnName: { type: String, default: '' },
+    initialDisplayName: { type: String, default: '' },
     datasets: { type: Array as PropType<Dataset[]>, default: () => [] },
     adminToken: { type: String, default: '' },
     apiBaseUrl: { type: String, default: '' },
@@ -395,6 +399,27 @@ export default defineComponent({
     const confirmError = ref('');
     const confirmResult = ref<ImportConfirmResult | null>(null);
     const persistToH5ad = ref(false);
+
+    const modalTitle = computed(() => {
+      if (props.mode === 'edit') {
+        return `Edit ${props.initialDisplayName || props.initialColumnName || 'Metadata'}`;
+      }
+      return props.target === 'var' ? `Add ${getEntityLabel()} Metadata` : 'Add Sample Metadata';
+    });
+
+    function seedEditFields() {
+      if (props.mode !== 'edit') return;
+      form.value.columnName = props.initialColumnName;
+      form.value.displayName = props.initialDisplayName || props.initialColumnName;
+    }
+
+    watch(
+      () => [props.visible, props.mode, props.initialColumnName, props.initialDisplayName] as const,
+      () => {
+        if (props.visible) seedEditFields();
+      },
+      { immediate: true },
+    );
 
     // Parse the header row from the current data
     const parsedHeaders = computed<string[]>(() => {
@@ -468,6 +493,7 @@ export default defineComponent({
     }
 
     function autoDisplayName() {
+      if (props.mode === 'edit') return;
       // Auto-generate display name from column name
       const name = form.value.columnName;
       form.value.displayName = name
@@ -599,6 +625,7 @@ export default defineComponent({
       confirmError,
       confirmResult,
       persistToH5ad,
+      modalTitle,
       dataLineCount,
       matchPercent,
       canValidate,

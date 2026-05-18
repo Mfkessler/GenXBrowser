@@ -17,6 +17,8 @@ export interface FilterValue {
   match_mode?: FilterMatchMode;
   /** Whether values must match exactly (true, default) or as substrings. */
   exact?: boolean;
+  /** When true, keep only rows/samples with a non-empty, non-null metadata value. */
+  has_value?: boolean;
 }
 
 export interface FilterChainPayload {
@@ -59,6 +61,7 @@ function pairKey(left: string, right: string): string {
 
 function isActiveFilter(filter?: FilterValue): boolean {
   if (!filter) return false;
+  if (filter.has_value) return true;
   return String(filter.value ?? "").trim() !== "";
 }
 

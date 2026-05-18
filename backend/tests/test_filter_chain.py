@@ -31,6 +31,12 @@ def _service():
     return service
 
 
+class DummyAnnData:
+    def __init__(self, obs):
+        self.obs = obs
+        self.obs_names = obs.index
+
+
 def test_filter_chain_applies_ordered_or_then_and():
     service = _service()
     df = pd.DataFrame({
@@ -112,3 +118,43 @@ def test_filter_chain_respects_explicit_parentheses():
     )
 
     assert result.index.tolist() == [0, 2]
+
+
+def test_apply_filters_has_value_excludes_null_like_values():
+    service = _service()
+    df = pd.DataFrame({
+        "tissue": ["leaf", "", None, "NA", "NaN", " root "],
+    })
+
+    result = service._apply_filters(df, {"tissue": ("has_value", True)})
+
+    assert result.index.tolist() == [0, 5]
+
+
+def test_filter_chain_has_value_mask():
+    service = _service()
+    df = pd.DataFrame({
+        "tissue": ["leaf", "", "root", "NA"],
+        "condition": ["control", "control", "stress", "stress"],
+    })
+    filters = {
+        "tissue": ("has_value", True),
+        "condition": ("eq", "stress"),
+    }
+
+    result = service._apply_filters(
+        df,
+        filters,
+        filter_chain={"columns": ["tissue", "condition"], "operators": ["and"]},
+    )
+
+    assert result.index.tolist() == [2]
+
+
+def test_filter_samples_has_value_excludes_null_like_values():
+    service = _service()
+    obs = pd.DataFrame({"batch": ["A", "", None, "NA", "B"]}, index=["S1", "S2", "S3", "S4", "S5"])
+
+    result = service._filter_samples(DummyAnnData(obs), {"batch": ("has_value", True)})
+
+    assert result == {"S1", "S5"}

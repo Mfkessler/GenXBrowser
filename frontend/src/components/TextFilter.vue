@@ -212,6 +212,14 @@
           />
           <span class="text-sm text-gray-700">Exact</span>
         </label>
+        <label class="flex items-center">
+          <input
+            type="checkbox"
+            v-model="hasValue"
+            class="cursor-pointer form-checkbox h-4 w-4 accent-primary-700 mr-2"
+          />
+          <span class="text-sm text-gray-700">Has value</span>
+        </label>
       </div>
       <!-- Batch Input Button -->
         <button
@@ -285,6 +293,7 @@ const matchMode = ref<'or' | 'and'>('or');
 // Whether to require exact value matches. Default true. When false,
 // substring matching is used in the backend.
 const exact = ref(true);
+const hasValue = ref(false);
 const showDropdown = ref(false);
 const showBatchModal = ref(false);
 
@@ -574,6 +583,7 @@ function reset() {
   pillItems.value = [];
   matchMode.value = 'or';
   exact.value = true;
+  hasValue.value = false;
 }
 
 //Handle file dragging
@@ -638,19 +648,20 @@ function toggleMatchMode() {
 watch(localInput, fetchSuggestions);
 
 watch(
-  [pillItems, matchMode, exact],
+  [pillItems, matchMode, exact, hasValue],
   () => {
     // Auto-reset match mode when fewer than 2 pills (toggle is hidden)
     if (pillItems.value.length < 2 && matchMode.value === 'and') {
       matchMode.value = 'or';
     }
-    if (pillItems.value.length === 0) {
+    if (pillItems.value.length === 0 && !hasValue.value) {
       emit("update:modelValue", null);
     } else {
       emit("update:modelValue", {
         value: pillItems.value.join("|"),
         match_mode: matchMode.value,
         exact: exact.value,
+        has_value: hasValue.value,
       });
     }
   },
@@ -665,14 +676,16 @@ watch(
         pillItems.value = newVal.value
           ? newVal.value.toString().split("|").filter(Boolean)
           : [];
-        const mv = newVal as unknown as { match_mode?: 'or' | 'and'; exact?: boolean };
+        const mv = newVal as unknown as { match_mode?: 'or' | 'and'; exact?: boolean; has_value?: boolean };
         matchMode.value = mv.match_mode ?? 'or';
         exact.value = mv.exact ?? true;
+        hasValue.value = mv.has_value ?? false;
       } else {
         // Clear pills if no modelValue
         pillItems.value = [];
         matchMode.value = 'or';
         exact.value = true;
+        hasValue.value = false;
       }
     }
   },
@@ -687,9 +700,10 @@ onMounted(() => {
     pillItems.value = props.modelValue.value
       ? props.modelValue.value.toString().split("|").filter(Boolean)
       : [];
-    const mv = props.modelValue as unknown as { match_mode?: 'or' | 'and'; exact?: boolean };
+    const mv = props.modelValue as unknown as { match_mode?: 'or' | 'and'; exact?: boolean; has_value?: boolean };
     matchMode.value = mv.match_mode ?? 'or';
     exact.value = mv.exact ?? true;
+    hasValue.value = mv.has_value ?? false;
   }
 });
 </script>

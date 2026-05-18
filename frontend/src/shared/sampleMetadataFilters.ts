@@ -3,6 +3,7 @@ export type MetadataFilterObject = {
   value?: string | boolean | number | [number, number] | unknown[] | null;
   match_mode?: "or" | "and";
   exact?: boolean;
+  has_value?: boolean;
 };
 export type MetadataFilterValue = MetadataFilterObject | string | boolean | number | [number, number] | unknown[] | null | undefined;
 
@@ -19,6 +20,16 @@ function cellValues(value: unknown): string[] {
   if (Array.isArray(value)) return value.map(String).map((v) => v.trim());
   if (value === null || value === undefined) return [];
   return [String(value).trim()];
+}
+
+const NULL_LIKE_VALUES = new Set(["", "null", "none", "na", "n/a", "nan", "nat"]);
+
+function isNonMissingMetadataValue(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "string") return !NULL_LIKE_VALUES.has(value.trim().toLowerCase());
+  if (Array.isArray(value)) return value.some(isNonMissingMetadataValue);
+  return true;
 }
 
 function matchesText(value: unknown, terms: string[], matchMode: "or" | "and", exact: boolean): boolean {
@@ -53,6 +64,7 @@ export function metadataRowMatchesFilter(row: MetadataRow, columnName: string, f
   if (typeof filter === "object" && !Array.isArray(filter) && "value" in filter) {
     const spec = filter as MetadataFilterObject;
     const value = spec.value;
+    if (spec.has_value && !isNonMissingMetadataValue(row[columnName])) return false;
     if (value === "") return true;
     if (Array.isArray(value) && value.length === 2 && value.every((item) => typeof item === "number")) {
       return matchesRange(row[columnName], value);
@@ -90,5 +102,11 @@ export function filterMetadataRows(
 }
 
 export function uniqueMetadataValues(rows: MetadataRow[], columnName: string): string[] {
-  return [...new Set(rows.flatMap((row) => cellValues(row[columnName])).filter(Boolean))].sort();
+  return [
+    ...new Set(
+      rows
+        .flatMap((row) => cellValues(row[columnName]))
+        .filter(isNonMissingMetadataValue),
+    ),
+  ].sort();
 }

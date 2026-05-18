@@ -55,12 +55,12 @@
           <p :class="['text-gray-400 text-sm transition-colors duration-500 text-center', countFlash ? 'count-flash' : '']"><b>Count: </b>{{ displayCount }} {{ entityLabelPlural }}</p>
           <div class="flex items-center justify-center">
             <p :class="['text-gray-400 text-sm transition-colors duration-500', tissueFlash ? 'count-flash' : '']">
-              <b>Tissues: </b>{{ tissues }}
+              <b>{{ defaultSampleColumnLabel }}: </b>{{ tissues }}
             </p>
             <!-- Help Icon -->
             <div
               class="relative inline-block ml-1.5"
-              v-tooltip:bottom="tissueTypes && tissueTypes.length > 0 ? 'Tissue types: ' + tissueTypes.join(', ') : (tissueTypes && tissueTypes.length === 0 ? 'No tissues match current filters' : 'Loading...')"
+              v-tooltip:bottom="defaultSampleColumnTooltip"
             >
               <div
                 class="w-3.5 h-3.5 rounded-full bg-gray-400 text-white font-bold text-[10px] flex items-center justify-center cursor-pointer"
@@ -80,13 +80,13 @@
         <p :class="['text-gray-400 text-sm transition-colors duration-500', countFlash ? 'count-flash' : '']"><b>Count: </b>{{ displayCount }} {{ entityLabelPlural }}</p>
         <div class="flex items-center">
           <p :class="['text-gray-400 text-sm transition-colors duration-500', tissueFlash ? 'count-flash' : '']">
-            <b>Tissues: </b>{{ tissues }}
+            <b>{{ defaultSampleColumnLabel }}: </b>{{ tissues }}
           </p>
 
           <!-- Help Icon -->
           <div
             class="relative inline-block ml-1.5"
-            v-tooltip:bottom="tissueTypes && tissueTypes.length > 0 ? 'Tissue types: ' + tissueTypes.join(', ') : (tissueTypes && tissueTypes.length === 0 ? 'No tissues match current filters' : 'Loading...')"
+            v-tooltip:bottom="defaultSampleColumnTooltip"
           >
             <div
               class="w-3.5 h-3.5 rounded-full bg-gray-400 text-white font-bold text-[10px] flex items-center justify-center cursor-pointer"
@@ -412,6 +412,26 @@ const tissues = computed(() => {
   return 0;
 });
 
+const defaultSampleColumn = computed(() => (
+  columnsStore.filterableColColumns.find((column) => column.is_tissue) ?? null
+));
+
+const defaultSampleColumnLabel = computed(() => (
+  defaultSampleColumn.value?.display_name
+  || (defaultSampleColumn.value?.column_name ? beautifyLabel(defaultSampleColumn.value.column_name) : 'Sample Metadata')
+));
+
+const defaultSampleColumnTooltip = computed(() => {
+  const label = defaultSampleColumnLabel.value;
+  if (tissueTypes.value && tissueTypes.value.length > 0) {
+    return `${label}: ${tissueTypes.value.join(', ')}`;
+  }
+  if (tissueTypes.value && tissueTypes.value.length === 0) {
+    return `No ${label} values match current filters`;
+  }
+  return 'Loading...';
+});
+
 // Photo URL: processed photo or initials placeholder
 const displayPhotoUrl = computed(() => {
   if (photoError.value || !props.photo) {
@@ -506,7 +526,7 @@ function closePhotoModal() {
 
 async function calculate_tissues(tableName: string, filters: Record<string, unknown>): Promise<string[]> {
   try {
-    const tissueColumnName = columnsStore.tissueColumnName;
+    const tissueColumnName = defaultSampleColumn.value?.column_name;
     if (!tissueColumnName) return [];
     const sampleMetadataColumns = new Set(columnsStore.filterableColColumns.map((column) => column.column_name));
     

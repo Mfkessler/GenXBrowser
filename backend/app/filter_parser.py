@@ -16,6 +16,7 @@ so it can be loaded standalone (e.g. by the test loader).
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,34 @@ def _parse_bool(value: Any) -> Optional[bool]:
         if val in {"false", "f"}:
             return False
     return None
+
+
+NULL_LIKE_STRINGS = frozenset({"", "null", "none", "na", "n/a", "nan", "nat"})
+
+
+def _parse_has_value(spec: Any) -> bool:
+    if not isinstance(spec, dict):
+        return False
+    raw = spec.get("has_value")
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() in {"true", "t", "1", "yes", "y"}
+    return False
+
+
+def is_non_missing_value(value: Any) -> bool:
+    """Return True when a metadata cell contains a user-meaningful value."""
+    if value is None:
+        return False
+    try:
+        if isinstance(value, float) and math.isnan(value):
+            return False
+    except TypeError:
+        pass
+    if isinstance(value, str):
+        return value.strip().lower() not in NULL_LIKE_STRINGS
+    return True
 
 
 def _parse_value(val: Any) -> Any:
@@ -127,6 +156,8 @@ def parse_filter_query(
         if value is None:
             continue
 
+        has_value = _parse_has_value(value)
+
         # Direct boolean.
         if isinstance(value, bool) and col_type == "boolean":
             out[key] = ("eq", value)
@@ -166,6 +197,8 @@ def parse_filter_query(
         if isinstance(value, dict) and "value" in value:
             values = _parse_value(value["value"])
             if values is None or values == [] or values == "":
+                if has_value:
+                    out[key] = ("has_value", True)
                 continue
             mode, exact = _resolve_match_options(value)
             if col_type == "text":
@@ -205,6 +238,9 @@ def parse_filter_query(
             values = value["values"]
             if not isinstance(values, list):
                 values = [values]
+            if not [v for v in values if str(v).strip()] and has_value:
+                out[key] = ("has_value", True)
+                continue
             mode, exact = _resolve_match_options(value)
             if col_type_from_filter == "array":
                 values, exact = _maybe_expand(key, values, exact)
@@ -231,6 +267,9 @@ def parse_filter_query(
         # Dict fallback (other keys, e.g. ``{value, match_mode}`` without ``value``).
         if isinstance(value, dict):
             values = _parse_value(value.get("value", ""))
+            if (values is None or values == [] or values == "") and has_value:
+                out[key] = ("has_value", True)
+                continue
             mode, exact = _resolve_match_options(value)
             if col_type == "text":
                 op = _text_op_for(values, mode, exact)
@@ -320,7 +359,9 @@ def apply_filter_query(
         op, value = spec
         s = result[col]
 
-        if op == "eq":
+        if op == "has_value":
+            result = result[s.apply(is_non_missing_value)]
+        elif op == "eq":
             if isinstance(value, bool):
                 result = result[s == value]
             else:

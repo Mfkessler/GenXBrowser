@@ -64,6 +64,8 @@ export interface ModelValue {
   match_mode?: "or" | "and";
   /** Exact match (true, default) vs substring match (false). */
   exact?: boolean;
+  /** Keep only entries where this metadata column has a real value. */
+  has_value?: boolean;
 }
 
 const props = defineProps<{

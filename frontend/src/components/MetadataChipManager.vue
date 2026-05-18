@@ -112,11 +112,17 @@
             Default{{ element.name === tissueColumn ? ' ✓' : '?' }}
           </button>
 
-          <!-- Delete button for custom columns -->
+          <!-- Edit / delete metadata columns -->
           <button
-            v-if="element.source === 'custom'"
+            class="chip-edit-action"
+            title="Edit metadata values"
+            @click="$emit('edit-column', element)"
+          >
+            Edit
+          </button>
+          <button
             class="chip-delete"
-            title="Remove custom column"
+            title="Remove metadata column"
             @click="$emit('delete-column', element.name)"
           >
             ✕
@@ -200,7 +206,7 @@ export default defineComponent({
       default: null,
     },
   },
-  emits: ['update:columns', 'add-metadata', 'delete-column', 'update:tissueColumn'],
+  emits: ['update:columns', 'add-metadata', 'edit-column', 'delete-column', 'update:tissueColumn'],
   setup(props, { emit }) {
     const activeTarget = ref<'var' | 'obs'>('var');
     const searchQuery = ref('');
@@ -660,6 +666,25 @@ export default defineComponent({
   text-transform: uppercase;
 }
 
+.chip-edit-action {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  cursor: pointer;
+  color: #1d4ed8;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  margin-left: auto;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.chip-edit-action:hover {
+  background: #dbeafe;
+  border-color: #93c5fd;
+}
+
 .chip-delete {
   background: none;
   border: none;
@@ -669,7 +694,6 @@ export default defineComponent({
   padding: 2px 4px;
   border-radius: 4px;
   flex-shrink: 0;
-  margin-left: auto;
   transition: background 0.2s;
 }
 

@@ -7,6 +7,7 @@ const rows = [
   { column_name: 's2', tissue: 'flower', assigned: true, pct_unmapped: 7 },
   { column_name: 's3', tissue: 'root', assigned: false, pct_unmapped: 12 },
   { column_name: 's4', tissue: 'seed', assigned: true, pct_unmapped: 20 },
+  { column_name: 's5', tissue: 'NA', assigned: true, pct_unmapped: 1 },
 ];
 
 describe('sample metadata filters', () => {
@@ -45,5 +46,20 @@ describe('sample metadata filters', () => {
     );
 
     expect(uniqueMetadataValues(filtered, 'tissue')).toEqual(['flower']);
+  });
+
+  it('supports has-value sample filters and excludes null-like default values', () => {
+    const filtered = filterMetadataRows(
+      [
+        ...rows,
+        { column_name: 's6', tissue: 'fruit', group: '' },
+        { column_name: 's7', tissue: 'fruit', group: 'Fruit' },
+        { column_name: 's8', tissue: 'seed', group: 'NA' },
+      ],
+      { group: { value: '', has_value: true } },
+      new Set(['group']),
+    );
+
+    expect(uniqueMetadataValues(filtered, 'tissue')).toEqual(['fruit']);
   });
 });

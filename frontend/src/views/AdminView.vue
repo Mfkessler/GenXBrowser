@@ -194,7 +194,7 @@
             <h2>Metadata Columns</h2>
             <p class="info">
               Manage visibility, display names, and order of metadata columns.
-              Drag chips to reorder — this controls how they appear in the sidebar and other column selectors.
+              Drag chips to reorder - this controls how they appear in the sidebar and other column selectors.
               Double-click a chip label to rename it.
             </p>
 
@@ -205,6 +205,7 @@
               @update:columns="onColumnsUpdate"
               @update:tissue-column="config.tissue_column = $event"
               @add-metadata="openMetadataImport"
+              @edit-column="openMetadataEdit"
               @delete-column="deleteColumn"
             />
           </div>
@@ -297,7 +298,7 @@
                   type="password"
                   class="form-control"
                   autocomplete="off"
-                  :placeholder="config.llm_config.api_key === REDACTED_PLACEHOLDER ? 'Already configured — leave blank to keep' : 'sk-…'"
+                  :placeholder="config.llm_config.api_key === REDACTED_PLACEHOLDER ? 'Already configured - leave blank to keep' : 'sk-…'"
                 />
                 <small class="hint">
                   Stored server-side only. Shown as <code>__set__</code> when already configured; leave empty on save to keep the existing key.
@@ -391,19 +392,26 @@
       <MetadataImportModal
         :visible="showImportModal"
         :target="importTarget"
+        :mode="importMode"
+        :initial-column-name="editColumnInfo?.name || ''"
+        :initial-display-name="editColumnInfo?.display_name || ''"
         :datasets="datasets"
         :admin-token="adminToken"
         :api-base-url="apiBaseUrl"
-        @close="showImportModal = false"
+        @close="closeMetadataImport"
         @imported="onMetadataImported"
       />
 
       <!-- Metadata Delete Confirmation Modal -->
       <div v-if="deleteModalColumn" class="modal-overlay" @click.self="closeDeleteModal">
         <div class="modal-sm">
-          <h3>Delete Custom Metadata</h3>
+          <h3>Delete Metadata Column</h3>
           <p style="color: #6b7280; font-size: 14px; margin: 0 0 16px 0;">
-            Delete <strong>{{ deleteModalColumn }}</strong> from the application metadata configuration.
+            Delete <strong>{{ deleteModalColumn }}</strong> from the application metadata configuration and current runtime state.
+            This can remove standard metadata columns as well as custom columns.
+          </p>
+          <p style="color: #b45309; background: #fffbeb; border: 1px solid #fde68a; border-radius: 6px; padding: 10px; font-size: 13px; margin: 0 0 16px 0;">
+            This is destructive for all enabled datasets. Enable H5AD deletion below only when you want the column removed from the underlying files too.
           </p>
           <label class="toggle-label" style="margin-bottom: 20px; display: flex; align-items: flex-start; gap: 8px;">
             <input type="checkbox" v-model="deleteFromH5ad" />
@@ -585,6 +593,8 @@ export default defineComponent({
     // Import modal state
     const showImportModal = ref(false);
     const importTarget = ref<'var' | 'obs'>('var');
+    const importMode = ref<'add' | 'edit'>('add');
+    const editColumnInfo = ref<{ name: string; display_name: string } | null>(null);
     const deleteModalColumn = ref<string | null>(null);
     const deleteFromH5ad = ref(false);
     const deleteRunning = ref(false);
@@ -853,7 +863,25 @@ export default defineComponent({
 
     function openMetadataImport(target: 'var' | 'obs') {
       importTarget.value = target;
+      importMode.value = 'add';
+      editColumnInfo.value = null;
       showImportModal.value = true;
+    }
+
+    function openMetadataEdit(column: { name: string; display_name?: string; is_sample_metadata?: boolean }) {
+      importTarget.value = column.is_sample_metadata ? 'obs' : 'var';
+      importMode.value = 'edit';
+      editColumnInfo.value = {
+        name: column.name,
+        display_name: column.display_name || column.name,
+      };
+      showImportModal.value = true;
+    }
+
+    function closeMetadataImport() {
+      showImportModal.value = false;
+      importMode.value = 'add';
+      editColumnInfo.value = null;
     }
 
     async function onMetadataImported() {
@@ -945,9 +973,9 @@ export default defineComponent({
       config, loading, error, statusMessage, statusType,
       activeTab, tabs, hasChanges, datasets,
       loadConfig, saveConfig, reloadConfig, restartBackend, updateTags, updateArray,
-      onColumnsUpdate, openMetadataImport, onMetadataImported, deleteColumn,
+      onColumnsUpdate, openMetadataImport, openMetadataEdit, closeMetadataImport, onMetadataImported, deleteColumn,
       deleteModalColumn, deleteFromH5ad, deleteRunning, closeDeleteModal, confirmDeleteColumn,
-      showImportModal, importTarget,
+      showImportModal, importTarget, importMode, editColumnInfo,
       profiles, showProfileMenu, showSaveProfileModal,
       profileName, profileDescription, openSaveProfile, saveProfile, loadProfile,
       columnsStore, showReloadConfirm, _doReload, apiBaseUrl,

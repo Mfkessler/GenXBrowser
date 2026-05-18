@@ -12,7 +12,7 @@ Endpoints:
 - GET  /admin/datasets       - Get all datasets with layer info
 - POST /admin/metadata/import          - Validate metadata import
 - POST /admin/metadata/import/confirm  - Confirm and apply metadata import
-- DELETE /admin/metadata/<column_name>  - Remove custom metadata column
+- DELETE /admin/metadata/<column_name>  - Remove metadata column
 - GET  /admin/config/profiles          - List config profiles
 - POST /admin/config/save-profile      - Save current config as profile
 - POST /admin/config/load-profile      - Load a config profile
@@ -699,11 +699,6 @@ def validate_metadata_import():
                 "success": False,
                 "error": f"Column '{column_name}' already exists for .{existing_target}. Choose a different name or import into .{existing_target}."
             }), 400
-        if existing_def.get('source') != 'custom':
-            return jsonify({
-                "success": False,
-                "error": f"Column '{column_name}' is auto-discovered and cannot be updated by metadata import."
-            }), 400
 
     legacy_axis_conflict = False
     try:
@@ -718,7 +713,7 @@ def validate_metadata_import():
     if legacy_axis_conflict:
         return jsonify({
             "success": False,
-            "error": f"Column '{column_name}' exists in the H5AD file but is not registered as custom metadata. Add it to the Admin metadata configuration before updating it."
+            "error": f"Column '{column_name}' exists in the H5AD file but is not registered in the Admin metadata configuration. Add it to the metadata configuration before updating it."
         }), 400
     
     try:
@@ -872,8 +867,18 @@ def confirm_metadata_import():
             if len(row) > max(id_idx, val_idx):
                 data_dict[row[id_idx].strip()] = row[val_idx].strip()
         
+        config_mgr = get_config_manager()
+        existing_cols = config_mgr.get_column_definitions()
+        existing_def = existing_cols.get(column_name, {})
+        existing_target = 'obs' if existing_def.get('is_sample_metadata', False) else 'var'
+        if existing_def and existing_target != target:
+            return jsonify({
+                "success": False,
+                "error": f"Column '{column_name}' already exists for .{existing_target}. Choose a different name or import into .{existing_target}."
+            }), 400
+
         # Determine type
-        inferred_type = type_override or "text"
+        inferred_type = type_override or existing_def.get("type") or "text"
         if not type_override:
             sample_values = list(data_dict.values())[:100]
             try:
@@ -888,7 +893,6 @@ def confirm_metadata_import():
                     inferred_type = "boolean"
         
         service = get_service()
-        config_mgr = get_config_manager()
         
         # Determine datasets to apply to
         datasets_to_apply = [dataset]
@@ -909,7 +913,12 @@ def confirm_metadata_import():
                 else:
                     existing_ids = set(adata.obs.index.astype(str))
                 
-                # Build values series, aligned to existing IDs
+                axis_df = adata.var if target == 'var' else adata.obs
+                column_exists = column_name in axis_df.columns
+
+                # Build values series, aligned to existing IDs. Existing
+                # columns are patched only for provided IDs so admin edits are
+                # true partial upserts; new columns still get typed defaults.
                 values = {}
                 for id_val in existing_ids:
                     if id_val in data_dict:
@@ -922,6 +931,8 @@ def confirm_metadata_import():
                             values[id_val] = raw_val.lower() in ("true", "1", "yes")
                         else:
                             values[id_val] = raw_val
+                    elif column_exists:
+                        values[id_val] = axis_df.loc[id_val, column_name]
                     else:
                         # Fill with default
                         if inferred_type in ("bigint", "double precision"):
@@ -935,9 +946,24 @@ def confirm_metadata_import():
                 if target == 'var':
                     series = pd.Series(values, index=adata.var.index, name=column_name)
                     adata.var[column_name] = series
+                    overlay_axis = adata.var
                 else:
                     series = pd.Series(values, index=adata.obs.index, name=column_name)
                     adata.obs[column_name] = series
+                    overlay_axis = adata.obs
+
+                overlay_values = {}
+                for idx, val in overlay_axis[column_name].items():
+                    try:
+                        missing = bool(pd.isna(val))
+                    except (TypeError, ValueError):
+                        missing = False
+                    if missing:
+                        overlay_values[str(idx)] = None
+                    elif isinstance(val, np.generic):
+                        overlay_values[str(idx)] = val.item()
+                    else:
+                        overlay_values[str(idx)] = val
 
                 # Register overlay so the column survives cache eviction /
                 # config reload / backend restart, even when the admin does
@@ -947,7 +973,7 @@ def confirm_metadata_import():
                         species_code=ds_code,
                         column_name=column_name,
                         target=target,
-                        values=data_dict,
+                        values=overlay_values,
                         dtype=inferred_type,
                     )
                 except Exception as oe:
@@ -1007,7 +1033,7 @@ def confirm_metadata_import():
             "visible": existing_def.get("visible", True),
             "sortable": existing_def.get("sortable", True),
             "order": existing_def.get("order", len(column_defs)),
-            "source": "custom",
+            "source": existing_def.get("source", "custom"),
         }
         
         # Add to meta_columns or sample_metadata_columns
@@ -1040,9 +1066,7 @@ def confirm_metadata_import():
 @require_admin_token
 def delete_metadata_column(column_name):
     """
-    Delete a custom metadata column.
-    
-    Only allows deleting columns with source="custom".
+    Delete a metadata column.
     
     Query params:
         persist: If "true", also removes from h5ad files
@@ -1058,11 +1082,6 @@ def delete_metadata_column(column_name):
         return jsonify({"success": False, "error": f"Column '{column_name}' not found"}), 404
     
     col_def = col_defs[column_name]
-    if col_def.get('source') != 'custom':
-        return jsonify({
-            "success": False,
-            "error": f"Column '{column_name}' is auto-discovered and cannot be deleted"
-        }), 400
     
     persist = request.args.get('persist', 'false').lower() == 'true'
     service = get_service()
