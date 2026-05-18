@@ -3,7 +3,12 @@
     <div class="border border-gray-300 rounded-lg sm:rounded-2xl bg-white p-2 sm:p-3 w-full shadow-sm min-w-0">
       <!-- Loading States -->
       <div v-if="loading || loadingMount" class="flex-grow relative h-[90vh] w-full">
-        <LoadingOverlay />
+        <LoadingOverlay
+          :progress="loadingProgress"
+          label="Loading comparison"
+          cancellable
+          @cancel="cancelActiveLoad"
+        />
       </div>
 
       <!-- Note: rowCount > 1000 check removed for Compare view.
@@ -210,6 +215,7 @@ const { filters, sampleFilters, filterChainVersion, getMergedGeneFilters, getFil
 // ============================================================================
 const loading = ref(false);
 const loadingMount = ref(true);
+const loadingProgress = ref<number | null>(null);
 const initialUrlParsing = ref(true); // Guard against watchers during URL parsing
 const showShareOverlay = ref(false);
 const showExportModal = ref(false);
@@ -237,6 +243,25 @@ const plotContainerRef = computed(() => ref(plotContainer.value));
 
 // Processed data for plotting
 const processedData = ref<ProcessedData | null>(null);
+let loadRequestSeq = 0;
+let activeAbortController: AbortController | null = null;
+
+function setLoadingProgress(step: number, totalSteps: number) {
+  loadingProgress.value = totalSteps > 0 ? (step / totalSteps) * 100 : null;
+}
+
+function isCanceledRequest(error: unknown) {
+  return axios.isCancel(error) || (axios.isAxiosError(error) && error.code === "ERR_CANCELED");
+}
+
+function cancelActiveLoad() {
+  loadRequestSeq += 1;
+  activeAbortController?.abort();
+  activeAbortController = null;
+  loading.value = false;
+  loadingMount.value = false;
+  loadingProgress.value = null;
+}
 
 // ============================================================================
 // Store-backed Computed Properties (Single Source of Truth)
@@ -419,7 +444,7 @@ function updateUrlFromState() {
 // ============================================================================
 // Data Fetching
 // ============================================================================
-async function fetchData(tableName: string) {
+async function fetchData(tableName: string, signal?: AbortSignal) {
   try {
     // Note: We don't check row count limit for Compare view because:
     // 1. Compare only displays ONE orthogroup at a time (selected via dropdown)
@@ -434,7 +459,7 @@ async function fetchData(tableName: string) {
       sample_filters: sampleFilters.value,
       layer: params.layer,
       transform: params.transform,
-    });
+    }, { signal });
 
     const data = responseData.data || responseData;
     
@@ -446,6 +471,7 @@ async function fetchData(tableName: string) {
     // Get data columns
     const columnRes = await axios.get<MetaFormat[]>(`${API_BASE_URL}/api/columns`, {
       params: { table_name: tableName, meta: false },
+      signal,
     });
     const dataColumnNames = columnRes.data.map((c) => c.column_name);
 
@@ -453,7 +479,7 @@ async function fetchData(tableName: string) {
     const { data: metaResponseData } = await axios.post(`${API_BASE_URL}/api/data`, {
       table_name: tableName + "_meta",
       filters: {},
-    });
+    }, { signal });
 
     const colData = metaResponseData.data || metaResponseData;
     const columns = (Array.isArray(colData) ? colData : []).filter((meta: RowType) =>
@@ -465,23 +491,36 @@ async function fetchData(tableName: string) {
 
     return { items: enrichedData, sampleMetadata: columns, tableName };
   } catch (e) {
+    if (isCanceledRequest(e)) return null;
     console.error("Error fetching data:", e);
   }
   return null;
 }
 
 async function fetchAllSelected() {
+  const requestId = ++loadRequestSeq;
+  activeAbortController?.abort();
+  const controller = new AbortController();
+  activeAbortController = controller;
   loading.value = true;
+  loadingProgress.value = 0;
 
   console.log('[Compare] fetchAllSelected - selectedTables:', selectedTables.value);
 
   try {
     const results: Record<string, any> = {};
+    const unfilteredCount = visualizationStore.compare.showAllTranscripts && selectedOrthogroup.value
+      ? selectedTables.value.length
+      : 0;
+    const totalSteps = Math.max(1, selectedTables.value.length + unfilteredCount + 2);
+    let completedSteps = 0;
     for (const tableName of selectedTables.value) {
       console.log('[Compare] Fetching data for table:', tableName);
-      const result = await fetchData(tableName);
+      const result = await fetchData(tableName, controller.signal);
+      if (requestId !== loadRequestSeq || controller.signal.aborted) return;
       console.log('[Compare] Fetched result for', tableName, ':', result ? 'success' : 'null');
       results[tableName] = result;
+      setLoadingProgress(++completedSteps, totalSteps);
     }
 
     console.log('[Compare] All results keys:', Object.keys(results));
@@ -502,8 +541,10 @@ async function fetchAllSelected() {
       console.log('[FetchAllSelected] Fetching unfiltered data for selected OG:', selectedOrthogroup.value);
       const unfilteredResults: Record<string, any> = {};
       for (const tableName of selectedTables.value) {
-        const result = await fetchUnfilteredData(tableName, [selectedOrthogroup.value]);
+        const result = await fetchUnfilteredData(tableName, [selectedOrthogroup.value], controller.signal);
+        if (requestId !== loadRequestSeq || controller.signal.aborted) return;
         unfilteredResults[tableName] = result;
+        setLoadingProgress(++completedSteps, totalSteps);
         if (result) {
           console.log('[FetchAllSelected] Got unfiltered data for', tableName, ':', result.items?.length || 0, 'items');
         } else {
@@ -533,8 +574,19 @@ async function fetchAllSelected() {
     } else {
       selectedOrthogroup.value = '';
     }
+    setLoadingProgress(totalSteps - 1, totalSteps);
+    await nextTick();
+    await renderPlot();
+    setLoadingProgress(totalSteps, totalSteps);
+  } catch (e) {
+    if (isCanceledRequest(e)) return;
+    console.error("Error loading comparison data:", e);
   } finally {
-    loading.value = false;
+    if (requestId === loadRequestSeq) {
+      activeAbortController = null;
+      loading.value = false;
+      loadingProgress.value = null;
+    }
   }
 }
 
@@ -574,7 +626,7 @@ function getAllOGs(dataRef: Record<string, any>): Set<string> {
  * Used by "All Transcripts" mode to get transcripts not passing the current filter
  * but belonging to matched orthogroups.
  */
-async function fetchUnfilteredData(tableName: string, ogIds: string[]) {
+async function fetchUnfilteredData(tableName: string, ogIds: string[], signal?: AbortSignal) {
   console.log('[FetchUnfiltered] Starting fetch for', tableName, 'with', ogIds.length, 'OGs');
   console.log('[FetchUnfiltered] OG IDs:', ogIds);
   try {
@@ -674,7 +726,7 @@ async function fetchUnfilteredData(tableName: string, ogIds: string[]) {
       sample_filters: {},     // Empty sample filters
       layer: params.layer,
       transform: params.transform,
-    });
+    }, { signal });
 
     console.log('[FetchUnfiltered] Response received for', tableName);
     const data = responseData.data || responseData;
@@ -707,6 +759,7 @@ async function fetchUnfilteredData(tableName: string, ogIds: string[]) {
     console.log('[FetchUnfiltered] Returning', enrichedData.length, 'enriched items for', tableName);
     return { items: enrichedData, sampleMetadata, tableName };
   } catch (e) {
+    if (isCanceledRequest(e)) return null;
     console.error('[FetchUnfiltered] Error fetching unfiltered data for', tableName, ':', e);
   }
   return null;
@@ -1601,6 +1654,7 @@ watch(
 );
 
 onUnmounted(() => {
+  activeAbortController?.abort();
   document.removeEventListener("click", handleClickOutside);
   if (resizeTimeout) {
     clearTimeout(resizeTimeout);

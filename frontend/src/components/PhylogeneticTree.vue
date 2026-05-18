@@ -2,7 +2,13 @@
   <main class="relative flex flex-col flex-1 min-h-[34rem] w-full min-w-0 border border-gray-300 rounded-lg sm:rounded-2xl bg-white shadow-sm overflow-hidden">
 
     <div v-if="loading" class="absolute inset-0 z-50">
-      <LoadingOverlay v-if="loading"/>
+      <LoadingOverlay
+        v-if="loading"
+        :progress="loadingProgress"
+        label="Loading tree"
+        cancellable
+        @cancel="cancelActiveLoad"
+      />
     </div>
 
     <div v-if="newickstr !== null" class="flex-grow relative w-full flex flex-col min-h-0">
@@ -125,7 +131,7 @@
 
 import axios from "axios";
 import { storeToRefs } from "pinia";
-import { onMounted, ref, computed, toRaw, watch, unref, inject, nextTick } from 'vue'
+import { onMounted, onUnmounted, ref, computed, toRaw, watch, unref, inject, nextTick } from 'vue'
 import '../assets/phylotree.css'
 import * as d3 from "d3";
 import { parseNewick } from "@/utils/newick";
@@ -226,12 +232,31 @@ const orthogroupCaseMap = ref<Record<string, string>>({});
 const highlightedGeneIds = ref<Record<string, Set<string>>>({});
 const newickstr = ref<string | null>(null);
 const loading = ref(true);
+const loadingProgress = ref<number | null>(null);
 const fullTreeAvailable = ref(false);
 const noNewickResolved = ref(false);
 const noNewickMessage = ref("");
 // Holds the full (unfiltered) Newick loaded via the "Show full tree" button.
 // Acts as fallback in renderTreeForSelectedOG so watchers don't wipe it out.
 const fullNewick = ref<string | null>(null);
+let loadRequestSeq = 0;
+let activeAbortController: AbortController | null = null;
+
+function setLoadingProgress(step: number, totalSteps: number) {
+  loadingProgress.value = totalSteps > 0 ? (step / totalSteps) * 100 : null;
+}
+
+function isCanceledRequest(error: unknown) {
+  return axios.isCancel(error) || (axios.isAxiosError(error) && error.code === "ERR_CANCELED");
+}
+
+function cancelActiveLoad() {
+  loadRequestSeq += 1;
+  activeAbortController?.abort();
+  activeAbortController = null;
+  loading.value = false;
+  loadingProgress.value = null;
+}
 
 const selectedGroupingColumn = computed(() => {
   const configured = visualizationStore.phyloTree.groupingColumn;
@@ -382,6 +407,7 @@ function waitForPaint(): Promise<void> {
 
 async function showLoadingFrame() {
   loading.value = true;
+  loadingProgress.value = null;
   noNewickResolved.value = false;
   noNewickMessage.value = "";
   await nextTick();
@@ -401,6 +427,7 @@ async function fetchData(
   tableName: string,
   rowCount: number,
   requestFilters: Record<string, any> = filtersStore.getMergedFilters(tableName),
+  signal?: AbortSignal,
 ) {
   try {
 
@@ -424,10 +451,11 @@ async function fetchData(
             layer: visualizationStore.expressionDisplay.layer,
             transform: visualizationStore.expressionDisplay.transform,
           },
+          { signal },
         ),
         axios.get<MetaFormat[]>(
           `${API_BASE_URL}/api/columns`,
-          {params: {table_name: tableName, meta: false}},
+          {params: {table_name: tableName, meta: false}, signal},
         ),
         axios.post(
           `${API_BASE_URL}/api/data`,
@@ -436,6 +464,7 @@ async function fetchData(
             filters: {},
             sample_filters: sampleFilters.value,
           },
+          { signal },
         ),
       ]);
 
@@ -473,6 +502,7 @@ async function fetchData(
     }
     return false;
   } catch (e) {
+    if (isCanceledRequest(e)) return null;
     console.error("Error fetching data:", e);
   } finally {
   }
@@ -523,74 +553,93 @@ function getAllOGs(dataRef: Record<string, any>, newicksRef: Record<string, stri
 
 
 async function fetchAllSelected(options: { keepLoading?: boolean } = {}) {
+  const requestId = ++loadRequestSeq;
+  activeAbortController?.abort();
+  const controller = new AbortController();
+  activeAbortController = controller;
   await showLoadingFrame();
-  
-  // Use catalog-selected datasets from existingTables prop
-  const selectedDatasets = props.existingTables && props.existingTables.length > 0 
-    ? [...props.existingTables] 
-    : [props.tableName];
-  
-  const results: Record<string, any> = {}
+  try {
+    // Use catalog-selected datasets from existingTables prop
+    const selectedDatasets = props.existingTables && props.existingTables.length > 0 
+      ? [...props.existingTables] 
+      : [props.tableName];
+    
+    const results: Record<string, any> = {}
 
-  // Clear newicks before fetching to avoid stale data
-  newicks.value = {};
+    // Clear newicks before fetching to avoid stale data
+    newicks.value = {};
+    const totalSteps = Math.max(1, selectedDatasets.length + 1);
+    let completedSteps = 0;
 
-  // Parallelize multi-species fetch instead of sequential for-loop
-  const entries = await Promise.all(
-    selectedDatasets.map(async (tableName) => {
-      const { data: count } = await axios.post(
-        `${API_BASE_URL}/api/count`,
-        {
-          table_name: tableName,
-          filters: filtersStore.getMergedFilters(tableName),
-          filter_chain: filtersStore.buildFilterChainPayload(filtersStore.getMergedFilters(tableName)),
-          sample_filters: sampleFilters.value,
-        },
-      );
-      const rowCount = count.count;
-      if (rowCount === 0) return null;
-      const data = await fetchData(tableName, rowCount);
-      return data ? { tableName, data } : null;
-    })
-  );
+    // Parallelize multi-species fetch instead of sequential for-loop
+    const entries = await Promise.all(
+      selectedDatasets.map(async (tableName) => {
+        const { data: count } = await axios.post(
+          `${API_BASE_URL}/api/count`,
+          {
+            table_name: tableName,
+            filters: filtersStore.getMergedFilters(tableName),
+            filter_chain: filtersStore.buildFilterChainPayload(filtersStore.getMergedFilters(tableName)),
+            sample_filters: sampleFilters.value,
+          },
+          { signal: controller.signal },
+        );
+        const rowCount = count.count;
+        if (rowCount === 0) {
+          setLoadingProgress(++completedSteps, totalSteps);
+          return null;
+        }
+        const data = await fetchData(tableName, rowCount, filtersStore.getMergedFilters(tableName), controller.signal);
+        setLoadingProgress(++completedSteps, totalSteps);
+        return data ? { tableName, data } : null;
+      })
+    );
 
-  for (const entry of entries) {
-    if (entry) results[entry.tableName] = entry.data;
-  }
-  tableData.value = results
+    if (requestId !== loadRequestSeq || controller.signal.aborted) return;
 
-  // Apply union (single dataset) or intersection (multiple datasets) logic
-  // Filter to only include OGs that have Newick tree data
-  const filteredOGs = getAllOGs(results, newicks.value);
-  commonOGs_array.value = [...filteredOGs].sort();
+    for (const entry of entries) {
+      if (entry) results[entry.tableName] = entry.data;
+    }
+    tableData.value = results
 
-  // Handle OG selection with persistence and fallback
-  // Priority: 1) initialOrthogroup from hash, 2) current store value, 3) first available
-  const hashOG = props.initialOrthogroup;
-  const currentSelection = hashOG || selectedOrthogroup.value;
-  
-  if (commonOGs_array.value.length > 0) {
-    // If current selection is still valid (case-insensitive), keep it; otherwise select first
-    const matchingOG = commonOGs_array.value.find(og => og.toLowerCase() === currentSelection?.toLowerCase());
-    if (matchingOG) {
-      // Use the exact case from commonOGs_array for consistency
-      selectedOrthogroup.value = matchingOG;
+    // Apply union (single dataset) or intersection (multiple datasets) logic
+    // Filter to only include OGs that have Newick tree data
+    const filteredOGs = getAllOGs(results, newicks.value);
+    commonOGs_array.value = [...filteredOGs].sort();
+
+    // Handle OG selection with persistence and fallback
+    // Priority: 1) initialOrthogroup from hash, 2) current store value, 3) first available
+    const hashOG = props.initialOrthogroup;
+    const currentSelection = hashOG || selectedOrthogroup.value;
+    
+    if (commonOGs_array.value.length > 0) {
+      // If current selection is still valid (case-insensitive), keep it; otherwise select first
+      const matchingOG = commonOGs_array.value.find(og => og.toLowerCase() === currentSelection?.toLowerCase());
+      if (matchingOG) {
+        // Use the exact case from commonOGs_array for consistency
+        selectedOrthogroup.value = matchingOG;
+      } else {
+        selectedOrthogroup.value = commonOGs_array.value[0];
+      }
     } else {
-      selectedOrthogroup.value = commonOGs_array.value[0];
+      // Keep the current selection when the species filter yields no matching OGs,
+      // so the "Show full tree" button can still call loadFullNewickForOG with the
+      // correct OG id. Only clear if there was truly nothing selected to begin with.
+      if (!currentSelection) {
+        selectedOrthogroup.value = '';
+      }
+      // else: leave selectedOrthogroup as-is so NoNewickComponent shows the right OG
+      // and loadFullNewickForOG doesn't bail out on the empty-string guard.
     }
-  } else {
-    // Keep the current selection when the species filter yields no matching OGs,
-    // so the "Show full tree" button can still call loadFullNewickForOG with the
-    // correct OG id. Only clear if there was truly nothing selected to begin with.
-    if (!currentSelection) {
-      selectedOrthogroup.value = '';
+    setLoadingProgress(totalSteps, totalSteps);
+  } catch (error) {
+    if (!isCanceledRequest(error)) console.error("Error loading phylogenetic tree data:", error);
+  } finally {
+    if (requestId === loadRequestSeq) {
+      if (!options.keepLoading) loading.value = false
+      loadingProgress.value = null;
+      activeAbortController = null;
     }
-    // else: leave selectedOrthogroup as-is so NoNewickComponent shows the right OG
-    // and loadFullNewickForOG doesn't bail out on the empty-string guard.
-  }
-
-  if (!options.keepLoading) {
-    loading.value = false
   }
 }
 
@@ -664,7 +713,7 @@ function buildSampleGroupMap(tableName: string): Record<string, string> {
   return groupMap
 }
 
-async function fetchOrthogroupDataForAllSpecies() {
+async function fetchOrthogroupDataForAllSpecies(signal?: AbortSignal) {
   if (!selectedOrthogroup.value) return false;
 
   const allDatasets = Object.keys(props.allTables);
@@ -679,12 +728,12 @@ async function fetchOrthogroupDataForAllSpecies() {
         table_name: tableName,
         filters: scopedFilters,
         filter_chain: filtersStore.buildFilterChainPayload(scopedFilters),
-      });
+      }, { signal });
 
       const rowCount = count.count;
       if (rowCount === 0) return null;
 
-      const data = await fetchData(tableName, rowCount, scopedFilters);
+      const data = await fetchData(tableName, rowCount, scopedFilters, signal);
       return data ? { tableName, data } : null;
     })
   );
@@ -702,7 +751,7 @@ async function fetchOrthogroupDataForAllSpecies() {
   return true;
 }
 
-async function fetchHighlightedGenesForAllSpecies() {
+async function fetchHighlightedGenesForAllSpecies(signal?: AbortSignal) {
   if (!selectedOrthogroup.value) {
     highlightedGeneIds.value = {};
     return;
@@ -733,6 +782,7 @@ async function fetchHighlightedGenesForAllSpecies() {
           filter_chain: filtersStore.buildFilterChainPayload(scopedFilters),
           columns: [config.visualization.id_column],
         },
+        { signal },
       );
 
       const rows = response.data.data || response.data;
@@ -749,18 +799,19 @@ async function fetchHighlightedGenesForAllSpecies() {
   );
 }
 
-async function fetchFullNewickForSelectedOG(): Promise<string | null> {
+async function fetchFullNewickForSelectedOG(signal?: AbortSignal): Promise<string | null> {
   if (!selectedOrthogroup.value) return null;
 
   const originalCaseOrthogroup = orthogroupCaseMap.value[selectedOrthogroupKey()] || selectedOrthogroup.value;
   try {
     const response = await axios.get<{ og_id: string; newick?: string | null; available?: boolean }>(
       `${API_BASE_URL}/api/gene_tree/${originalCaseOrthogroup}`,
-      { params: { allow_missing: 1 } }
+      { params: { allow_missing: 1 }, signal }
     );
     const newick = response.data.newick;
     return typeof newick === "string" && newick.trim() ? newick : null;
   } catch (error: any) {
+    if (isCanceledRequest(error)) return null;
     if (error?.response?.status !== 404) {
       console.error("Failed to check full gene tree:", error);
     }
@@ -1577,7 +1628,12 @@ function collapseToSpecies() {
 
 // Helper function to render tree for currently selected orthogroup
 async function renderTreeForSelectedOG() {
+  const requestId = ++loadRequestSeq;
+  activeAbortController?.abort();
+  const controller = new AbortController();
+  activeAbortController = controller;
   await showLoadingFrame();
+  setLoadingProgress(0, 4);
   const ogKey = selectedOrthogroupKey();
   if (!selectedOrthogroup.value || !newicks.value[ogKey]) {
     // Fall back to the directly-loaded full Newick (button was clicked)
@@ -1585,33 +1641,45 @@ async function renderTreeForSelectedOG() {
       fullTreeAvailable.value = false;
       noNewickMessage.value = "";
       await Promise.all([
-        fetchOrthogroupDataForAllSpecies(),
-        fetchHighlightedGenesForAllSpecies(),
+        fetchOrthogroupDataForAllSpecies(controller.signal),
+        fetchHighlightedGenesForAllSpecies(controller.signal),
       ]);
+      if (requestId !== loadRequestSeq || controller.signal.aborted) return;
+      setLoadingProgress(2, 4);
       const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
       lastMetrics.value = metrics;
       newickstr.value = fullNewick.value;
       await nextTick();
       initPhylotree(newickstr.value, metrics);
+      setLoadingProgress(4, 4);
+      loadingProgress.value = null;
+      activeAbortController = null;
       return;
     }
 
-    const availableFullNewick = await fetchFullNewickForSelectedOG();
+    const availableFullNewick = await fetchFullNewickForSelectedOG(controller.signal);
+    if (requestId !== loadRequestSeq || controller.signal.aborted) return;
+    setLoadingProgress(1, 4);
     if (availableFullNewick) {
       fullNewick.value = availableFullNewick;
       fullTreeAvailable.value = false;
       noNewickMessage.value = "";
 
       await Promise.all([
-        fetchOrthogroupDataForAllSpecies(),
-        fetchHighlightedGenesForAllSpecies(),
+        fetchOrthogroupDataForAllSpecies(controller.signal),
+        fetchHighlightedGenesForAllSpecies(controller.signal),
       ]);
+      if (requestId !== loadRequestSeq || controller.signal.aborted) return;
+      setLoadingProgress(2, 4);
 
       const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
       lastMetrics.value = metrics;
       newickstr.value = availableFullNewick;
       await nextTick();
       initPhylotree(newickstr.value, metrics);
+      setLoadingProgress(4, 4);
+      loadingProgress.value = null;
+      activeAbortController = null;
       return;
     }
 
@@ -1620,6 +1688,8 @@ async function renderTreeForSelectedOG() {
     newickstr.value = null;
     noNewickResolved.value = true;
     loading.value = false;
+    loadingProgress.value = null;
+    activeAbortController = null;
     return;
   }
 
@@ -1627,9 +1697,11 @@ async function renderTreeForSelectedOG() {
   noNewickMessage.value = "";
 
   await Promise.all([
-    fetchOrthogroupDataForAllSpecies(),
-    fetchHighlightedGenesForAllSpecies(),
+    fetchOrthogroupDataForAllSpecies(controller.signal),
+    fetchHighlightedGenesForAllSpecies(controller.signal),
   ]);
+  if (requestId !== loadRequestSeq || controller.signal.aborted) return;
+  setLoadingProgress(2, 4);
   
   const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
   lastMetrics.value = metrics;
@@ -1637,6 +1709,9 @@ async function renderTreeForSelectedOG() {
   if (newickstr.value !== null) {
     await nextTick();
     initPhylotree(newickstr.value, metrics);
+    setLoadingProgress(4, 4);
+    loadingProgress.value = null;
+    activeAbortController = null;
   }
 }
 
@@ -1645,9 +1720,14 @@ async function renderTreeForSelectedOG() {
 // no entry in the selected orthogroup).
 async function loadFullNewickForOG() {
   if (!selectedOrthogroup.value) return;
+  const requestId = ++loadRequestSeq;
+  activeAbortController?.abort();
+  const controller = new AbortController();
+  activeAbortController = controller;
   await showLoadingFrame();
   try {
-    const newick = await fetchFullNewickForSelectedOG();
+    const newick = await fetchFullNewickForSelectedOG(controller.signal);
+    if (requestId !== loadRequestSeq || controller.signal.aborted) return;
     if (!newick) {
       noNewickResolved.value = true;
       loading.value = false;
@@ -1660,17 +1740,24 @@ async function loadFullNewickForOG() {
     noNewickMessage.value = "";
 
     await Promise.all([
-      fetchOrthogroupDataForAllSpecies(),
-      fetchHighlightedGenesForAllSpecies(),
+      fetchOrthogroupDataForAllSpecies(controller.signal),
+      fetchHighlightedGenesForAllSpecies(controller.signal),
     ]);
+    if (requestId !== loadRequestSeq || controller.signal.aborted) return;
 
     const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
     lastMetrics.value = metrics;
     await nextTick();
     initPhylotree(newickstr.value, metrics);
   } catch (e) {
+    if (isCanceledRequest(e)) return;
     console.error("Failed to load full gene tree:", e);
     loading.value = false;
+  } finally {
+    if (requestId === loadRequestSeq) {
+      activeAbortController = null;
+      loadingProgress.value = null;
+    }
   }
 }
 
@@ -1866,6 +1953,10 @@ watch(
   },
   { deep: true }
 );
+
+onUnmounted(() => {
+  activeAbortController?.abort();
+});
 
 
 </script>

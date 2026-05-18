@@ -26,7 +26,7 @@
       </button>
       <!-- Sidebar -->
       <div
-        class="app-sidebar transition-all duration-300 relative flex-shrink-0 bg-gray-50"
+        class="app-sidebar transition-all duration-300 relative z-50 flex-shrink-0 bg-gray-50"
         :style="{
           width: sidebarOpen ? '320px' : '0',
           overflow: 'hidden'
@@ -44,7 +44,7 @@
       <!-- Main content area -->
       <div
         ref="mainScroll"
-        class="transition-all duration-300 flex-1 min-w-0 overflow-visible"
+        class="transition-all duration-300 flex-1 min-w-0 overflow-visible relative z-0"
       >
         <div class="p-4 min-h-full flex items-center flex-col overflow-visible">
           <RouterView class="mx-auto w-full" />

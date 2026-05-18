@@ -181,14 +181,27 @@
       class="border border-gray-300 rounded-md bg-white flex-grow flex flex-col min-h-0 overflow-hidden"
     >
       <div class="flex-grow relative w-full min-h-0 overflow-hidden">
-        <LoadingOverlay v-if="loading"/>
+        <LoadingOverlay
+          v-if="loading && !deferLoadingOverlay"
+          :progress="loadingProgress"
+          label="Loading heatmap"
+          cancellable
+          @cancel="cancelActiveLoad"
+        />
         <div ref="heatmapContainer" class="w-full h-full"></div>
       </div>
     </div>
 
     <!-- Show loading spinner when loading and rowCount is 0 or too high -->
     <div v-else-if="loading" class="flex-grow relative border border-gray-300 rounded-md bg-white min-h-[300px]">
-      <LoadingOverlay size="md" />
+      <LoadingOverlay
+        v-if="!deferLoadingOverlay"
+        size="md"
+        :progress="loadingProgress"
+        label="Loading heatmap"
+        cancellable
+        @cancel="cancelActiveLoad"
+      />
     </div>
 
     <div v-else>
@@ -289,9 +302,13 @@ const props = withDefaults(defineProps<{
   existingTables: string[];
   allTables: Record<string, string>;
   showSharedActions?: boolean;
+  deferLoadingOverlay?: boolean;
 }>(), {
   showSharedActions: true,
+  deferLoadingOverlay: false,
 });
+
+const emit = defineEmits(["openSettingsOverlay", "update:tableName", "loading-change"]);
 
 const localTableName = ref(props.tableName);
 const tableNameOptions = computed(() => {
@@ -303,6 +320,7 @@ const tableNameOptions = computed(() => {
 });
 
 const loading = ref(false);
+const loadingProgress = ref<number | null>(null);
 const showShareOverlay = ref(false);
 const showExportModal = ref(false);
 const showTooltipModal = ref(false);
@@ -350,6 +368,8 @@ let renderPending = false;
 let renderFrame: number | null = null;
 let renderTimer: ReturnType<typeof setTimeout> | null = null;
 let isUnmounting = false;
+let loadRequestSeq = 0;
+let activeAbortController: AbortController | null = null;
 
 const LEGEND_WIDTH = 30;
 const SIDE_COLOR_WIDTH = 18;
@@ -409,7 +429,37 @@ const heatmapExportPayload = computed(() => {
 
 defineExpose({
   getExportPayload: () => heatmapExportPayload.value,
+  cancelActiveLoad,
 });
+
+watch(
+  [loading, loadingProgress],
+  () => {
+    emit("loading-change", {
+      tableName: props.tableName,
+      loading: loading.value,
+      progress: loadingProgress.value,
+    });
+  },
+  { immediate: true },
+);
+
+function setLoadingProgress(step: number, totalSteps: number) {
+  loadingProgress.value = totalSteps > 0 ? (step / totalSteps) * 100 : null;
+}
+
+function isCanceledRequest(error: unknown) {
+  return axios.isCancel(error) || (axios.isAxiosError(error) && error.code === "ERR_CANCELED");
+}
+
+function cancelActiveLoad() {
+  loadRequestSeq += 1;
+  activeAbortController?.abort();
+  activeAbortController = null;
+  clearScheduledRender();
+  loading.value = false;
+  loadingProgress.value = null;
+}
 
 function getCurrentZoomWindow(rowTotal: number, colTotal: number): HeatmapZoomWindow {
   const current = zoomWindow.value;
@@ -488,8 +538,14 @@ function getColumnKeys(dataRows: RowType[]): string[] {
 
 // Fetch data
 async function fetchAndPrepareData() {
+  const requestId = ++loadRequestSeq;
+  activeAbortController?.abort();
+  const controller = new AbortController();
+  activeAbortController = controller;
   loading.value = true;
+  loadingProgress.value = 0;
   error.value = "";
+  const totalSteps = 7;
   try {
     //COUNT
     const {data: count} = await axios.post(
@@ -499,7 +555,10 @@ async function fetchAndPrepareData() {
         filters: mergedGeneFilters.value,
         filter_chain: getFilterChainPayload(mergedGeneFilters.value),
       },
+      { signal: controller.signal },
     );
+    if (requestId !== loadRequestSeq || controller.signal.aborted) return;
+    setLoadingProgress(1, totalSteps);
 
     rowCount.value = count.count;
 
@@ -522,7 +581,10 @@ async function fetchAndPrepareData() {
           layer: visualizationStore.expressionDisplay.layer,
           transform: visualizationStore.expressionDisplay.transform,
         },
+        { signal: controller.signal },
       );
+      if (requestId !== loadRequestSeq || controller.signal.aborted) return;
+      setLoadingProgress(2, totalSteps);
 
       // Extract data and layer metadata from response
       const data = responseData.data || responseData;
@@ -544,8 +606,10 @@ async function fetchAndPrepareData() {
       //DATA_COLUMNS
       const columnRes = await axios.get<MetaFormat[]>(
         `${API_BASE_URL}/api/columns`,
-        {params: {table_name: props.tableName, meta: false}},
+        {params: {table_name: props.tableName, meta: false}, signal: controller.signal},
       );
+      if (requestId !== loadRequestSeq || controller.signal.aborted) return;
+      setLoadingProgress(3, totalSteps);
       dataColumnNames.value = columnRes.data.map((c) => c.column_name);
 
       //METADATA
@@ -555,7 +619,10 @@ async function fetchAndPrepareData() {
           table_name: props.tableName + "_meta",
           filters: {},
         },
+        { signal: controller.signal },
       );
+      if (requestId !== loadRequestSeq || controller.signal.aborted) return;
+      setLoadingProgress(4, totalSteps);
 
       const colData = metaResponseData.data || metaResponseData;
       columns.value = (Array.isArray(colData) ? colData : []).filter((meta: RowType) =>
@@ -564,6 +631,7 @@ async function fetchAndPrepareData() {
       columnStore.setSampleMetadata(columns.value as Record<string, unknown>[], props.tableName);
 
       processedRows.value = calculateProcessedRows();
+      setLoadingProgress(5, totalSteps);
 
       // Initialize tooltip fields with all available metadata fields except sequences and verbose fields
       if (visualizationStore.tooltipFields === null && rows.value.length > 0) {
@@ -601,15 +669,22 @@ async function fetchAndPrepareData() {
         );
         recalculateData(); // recalc with new cluster order
       }
+      setLoadingProgress(6, totalSteps);
 
       await nextTick();
-      scheduleHeatmapRender();
+      await renderHeatmap();
+      setLoadingProgress(7, totalSteps);
     }
   } catch (e) {
+    if (isCanceledRequest(e)) return;
     console.error("Error fetching data:", e);
     error.value = "Failed to load data.";
   } finally {
-    loading.value = false;
+    if (requestId === loadRequestSeq) {
+      activeAbortController = null;
+      loading.value = false;
+      loadingProgress.value = null;
+    }
   }
 }
 
@@ -919,8 +994,6 @@ async function renderSideColors({
   )
     return;
 
-  loading.value = true;
-
   try {
     const isNumericSideColor = colType === "double precision" || colType === "bigint";
     const useSharedMapping = !(orientation === "col" && isNumericSideColor);
@@ -1156,8 +1229,6 @@ async function renderSideColors({
       .style("font-size", "0.75rem");
   } catch (err) {
     console.error(`Error rendering ${orientation} side colors:`, err);
-  } finally {
-    loading.value = false;
   }
 }
 
@@ -1971,8 +2042,6 @@ async function removeHeatmap() {
   emit("update:tableName", "");
 }
 
-const emit = defineEmits(["openSettingsOverlay", "update:tableName"]);
-
 watch(
   () => props.tableName,
   async (newTableName) => {
@@ -2098,6 +2167,7 @@ watch(heatmapContainer, (newContainer) => {
 
 onBeforeUnmount(() => {
   isUnmounting = true;
+  activeAbortController?.abort();
   clearScheduledRender();
   if (resizeObserver) {
     resizeObserver.disconnect();

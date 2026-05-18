@@ -121,7 +121,12 @@
       class="relative flex flex-col overflow-hidden border border-gray-300 rounded-md bg-white"
       :style="plotShellStyle"
     >
-      <LoadingOverlay v-if="loading || !renderReady" />
+      <LoadingOverlay
+        v-if="loading || !renderReady"
+        label="Loading ORA"
+        cancellable
+        @cancel="cancelActiveLoad"
+      />
 
       <div
         class="h-full flex flex-col"
@@ -333,6 +338,7 @@ const plotShell = ref<HTMLDivElement | null>(null);
 
 const visualizationRoot = ref<HTMLDivElement | null>(null);
 let oraRequestSeq = 0;
+let activeAbortController: AbortController | null = null;
 const availablePlotHeight = ref(600);
 const maxBubbleRadius = 15;
 const minimumBubbleGap = 4;
@@ -358,6 +364,19 @@ async function showLoadingFrame() {
   error.value = "";
   await nextTick();
   await waitForPaint();
+}
+
+function isCanceledRequest(error: unknown) {
+  return axios.isCancel(error) || (axios.isAxiosError(error) && error.code === "ERR_CANCELED");
+}
+
+function cancelActiveLoad() {
+  oraRequestSeq += 1;
+  activeAbortController?.abort();
+  activeAbortController = null;
+  resetDotplot();
+  loading.value = false;
+  renderReady.value = true;
 }
 
 const finalPlotHeight = computed(() => {
@@ -544,7 +563,7 @@ function syncAvailableGoDepths() {
  * Only called when oraColumnName is a GO term column.
  * Now includes depth information.
  */
-async function fetchGoTermDetails(goIds: string[]): Promise<void> {
+async function fetchGoTermDetails(goIds: string[], signal?: AbortSignal): Promise<void> {
   if (!goIds.length) return;
   
   // Filter out already cached IDs
@@ -555,7 +574,7 @@ async function fetchGoTermDetails(goIds: string[]): Promise<void> {
     const { data } = await axios.post(`${API_BASE_URL}/api/go/terms/batch`, {
       go_ids: uncachedIds,
       include_depth: true
-    });
+    }, { signal });
     
     if (data.available && data.terms) {
       for (const [goId, term] of Object.entries(data.terms)) {
@@ -568,6 +587,7 @@ async function fetchGoTermDetails(goIds: string[]): Promise<void> {
       }
     }
   } catch (error) {
+    if (isCanceledRequest(error)) return;
     console.warn('Failed to fetch GO term details:', error);
   }
 }
@@ -586,6 +606,9 @@ async function fetchGoTermDetails(goIds: string[]): Promise<void> {
  */
 async function fetchAndPrepareData() {
   const requestId = ++oraRequestSeq;
+  activeAbortController?.abort();
+  const controller = new AbortController();
+  activeAbortController = controller;
   await showLoadingFrame();
   if (requestId !== oraRequestSeq) return;
   try {
@@ -606,8 +629,9 @@ async function fetchAndPrepareData() {
     const { data: oraResponse } = await axios.post(
       `${API_BASE_URL}/api/ora`,
       oraRequest,
+      { signal: controller.signal },
     );
-    if (requestId !== oraRequestSeq) return;
+    if (requestId !== oraRequestSeq || controller.signal.aborted) return;
     
     // Parse response if it's a string (shouldn't happen with proper Content-Type)
     let parsedResponse = oraResponse as OraResponse;
@@ -673,8 +697,9 @@ async function fetchAndPrepareData() {
           }
         } else {
           const goIds = rawPValueEntries.value.map(e => e.attr);
-          await fetchGoTermDetails(goIds);
+          await fetchGoTermDetails(goIds, controller.signal);
         }
+        if (requestId !== oraRequestSeq || controller.signal.aborted) return;
         
         // Enrich entries with GO term info including depth
         rawPValueEntries.value = rawPValueEntries.value.map(entry => {
@@ -695,12 +720,14 @@ async function fetchAndPrepareData() {
       publishAnalysisContext();
       renderReady.value = true;
   } catch (e) {
+    if (isCanceledRequest(e)) return;
     if (requestId !== oraRequestSeq) return;
     console.error("Error fetching ORA data:", e);
     error.value = "Failed to load ORA data.";
     renderReady.value = true;
   } finally {
     if (requestId === oraRequestSeq) {
+      activeAbortController = null;
       loading.value = false;
     }
   }
@@ -1741,6 +1768,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  activeAbortController?.abort();
   window.removeEventListener("resize", handleWindowResize);
   if (resizeObserver) {
     resizeObserver.disconnect();

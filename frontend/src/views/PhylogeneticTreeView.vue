@@ -1,7 +1,7 @@
 <template>
   <div class="min-h-[100vh] flex flex-col relative">
     <div v-if="hashLoading" class="absolute inset-0 z-50">
-      <LoadingOverlay />
+      <LoadingOverlay label="Loading tree" cancellable @cancel="cancelHashLoading" />
     </div>
 
     <!-- PhyloTree Controls Bar -->
@@ -109,7 +109,7 @@
 <script setup lang="ts">
 import axios from "axios";
 import { API_BASE_URL } from "@/shared/Config";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { type CatalogMeta } from "@/shared/CatalogMeta";
@@ -138,6 +138,7 @@ type PhylogeneticTreeExpose = InstanceType<typeof PhylogeneticTree> & {
 const phyloTreeRefs = ref<PhylogeneticTreeExpose[] | null>(null);
 const hashLoading = ref(true); // Prevent child from fetching until hash is loaded
 const initialOrthogroup = ref<string | null>(null); // OG from hash load
+let activeHashAbortController: AbortController | null = null;
 
 // Get orthogroup options from the first PhyloTree instance
 const phyloTreeOrthogroupOptions = computed(() => {
@@ -165,6 +166,12 @@ function callOnAllTrees(method: 'expandAll' | 'collapseAll' | 'collapseToSpecies
   for (const r of refs) {
     r[method]?.();
   }
+}
+
+function cancelHashLoading() {
+  activeHashAbortController?.abort();
+  activeHashAbortController = null;
+  hashLoading.value = false;
 }
 
 const zoomLevel = computed(() => visualizationStore.phyloTree.zoomTransform.k);
@@ -233,10 +240,10 @@ function onUpdateTableName(oldTableName: string, newTableName: string) {
 // Re-load filter / visualization state whenever `?id=` changes — covers
 // both initial mount and assistant-driven re-navigations to the same
 // /p/<tables> path with a fresh hash.
-async function loadStateFromIdParam(idParam: unknown) {
+async function loadStateFromIdParam(idParam: unknown, signal?: AbortSignal) {
   if (typeof idParam !== "string" || idParam.length !== 16) return;
   try {
-    const response = await axios.post(`${API_BASE_URL}/api/id`, { id: idParam });
+    const response = await axios.post(`${API_BASE_URL}/api/id`, { id: idParam }, { signal });
     const data = response.data;
     if (data.filters && data.visualizations) {
       visualizationStore.replaceState(data.visualizations);
@@ -248,6 +255,7 @@ async function loadStateFromIdParam(idParam: unknown) {
       console.warn("Invalid data received from backend for ID", idParam);
     }
   } catch (error) {
+    if (axios.isCancel(error) || (axios.isAxiosError(error) && error.code === "ERR_CANCELED")) return;
     console.error("Error fetching filter data by ID", idParam, error);
   }
 }
@@ -255,18 +263,27 @@ async function loadStateFromIdParam(idParam: unknown) {
 watch(
   () => [route.query.id, route.query.filters, route.params.table_names],
   async (idParam) => {
+    activeHashAbortController?.abort();
+    const controller = new AbortController();
+    activeHashAbortController = controller;
     hashLoading.value = true;
-    await loadStateFromIdParam(Array.isArray(idParam) ? idParam[0] : idParam);
-    hashLoading.value = false;
+    await loadStateFromIdParam(Array.isArray(idParam) ? idParam[0] : idParam, controller.signal);
+    if (!controller.signal.aborted) {
+      hashLoading.value = false;
+      activeHashAbortController = null;
+    }
   },
   { flush: "sync" },
 );
 
 onMounted(async () => {
+  activeHashAbortController?.abort();
+  const controller = new AbortController();
+  activeHashAbortController = controller;
   // Fetch all possible table names for dropdown options:
   const tagsParam = [...filtersStore.tags].join(",");
   try {
-    await loadStateFromIdParam(route.query.id);
+    await loadStateFromIdParam(route.query.id, controller.signal);
 
     const response = await axios.get<CatalogMeta[]>(
       `${API_BASE_URL}/api/tables`,
@@ -274,6 +291,7 @@ onMounted(async () => {
         params: {
           tags: tagsParam,
         },
+        signal: controller.signal,
       },
     );
 
@@ -291,7 +309,14 @@ onMounted(async () => {
     speciesCodeMap.value = nextSpeciesCodeMap;
   } finally {
     // Child fetch/render starts only after hash state and species metadata are ready.
-    hashLoading.value = false;
+    if (!controller.signal.aborted) {
+      hashLoading.value = false;
+      activeHashAbortController = null;
+    }
   }
+});
+
+onUnmounted(() => {
+  activeHashAbortController?.abort();
 });
 </script>

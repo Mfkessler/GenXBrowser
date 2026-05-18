@@ -41,9 +41,16 @@
     </div>
     <div
       ref="visualizationExportRoot"
-      class="grid gap-4 p-2 overflow-visible items-stretch [container-type:inline-size]"
+      class="relative grid gap-4 p-2 overflow-visible items-stretch [container-type:inline-size]"
       :style="heatmapGridStyle"
     >
+      <LoadingOverlay
+        v-if="showBatchLoadingOverlay"
+        :progress="batchLoadingProgress"
+        label="Loading heatmaps"
+        cancellable
+        @cancel="cancelBatchLoading"
+      />
       <template v-if="hashStateLoaded">
         <div
           v-for="tableName in visibleTableNames"
@@ -57,8 +64,10 @@
             :existing-tables="visibleTableNames"
             :all-tables="allTables"
             :show-shared-actions="visibleTableNames.length <= 1"
+            :defer-loading-overlay="visibleTableNames.length > 1"
             @openSettingsOverlay="openSettingsOverlay"
             @update:tableName="onUpdateTableName(tableName, $event)"
+            @loading-change="onHeatmapLoadingChange"
           />
         </div>
       </template>
@@ -114,6 +123,7 @@ import { type CatalogMeta } from "@/shared/CatalogMeta";
 import { SharedColorRegistry } from "@/shared/colorMapping";
 import { getHeatmapCardMinHeight, getHeatmapGridTemplate } from "@/shared/heatmapLayout";
 import HeatmapComponent from "@/components/HeatmapComponent.vue";
+import LoadingOverlay from "@/components/LoadingOverlay.vue";
 import ShareOverlay from "@/components/ShareOverlay.vue";
 import ExportModal from "@/components/ExportModal.vue";
 import { useFiltersStore } from "@/stores/filters";
@@ -144,11 +154,19 @@ interface ExportPayload {
 
 interface ExportPayloadProvider {
   getExportPayload?: () => ExportPayload | null;
+  cancelActiveLoad?: () => void;
+}
+
+interface HeatmapLoadingState {
+  tableName: string;
+  loading: boolean;
+  progress: number | null;
 }
 
 const heatmapRefs = ref<ExportPayloadProvider[]>([]);
 const allTables = ref<Record<string, string>>({});
 const hashStateLoaded = ref(false);
+const heatmapLoadingStates = ref<Record<string, HeatmapLoadingState>>({});
 
 // Shared color registry for consistent side-color mapping across multiple Heatmap plots
 const sharedColorRegistry = new SharedColorRegistry();
@@ -172,6 +190,20 @@ const heatmapCardStyle = computed(() => ({
   minHeight: getHeatmapCardMinHeight(visibleTableNames.value.length),
   height: getHeatmapCardMinHeight(visibleTableNames.value.length),
 }));
+
+const activeHeatmapLoadingStates = computed(() =>
+  Object.values(heatmapLoadingStates.value).filter((state) => state.loading),
+);
+
+const showBatchLoadingOverlay = computed(() =>
+  visibleTableNames.value.length > 1 && activeHeatmapLoadingStates.value.length > 0,
+);
+
+const batchLoadingProgress = computed(() => {
+  const states = activeHeatmapLoadingStates.value;
+  if (!states.length || states.some((state) => typeof state.progress !== "number")) return null;
+  return states.reduce((sum, state) => sum + (state.progress ?? 0), 0) / states.length;
+});
 
 const globalExportPayload = computed(() => {
   const payloads = (heatmapRefs.value || [])
@@ -236,6 +268,19 @@ function onUpdateTableName(oldTableName: string, newTableName: string) {
     },
     query: { ...route.query },
   });
+}
+
+function onHeatmapLoadingChange(state: HeatmapLoadingState) {
+  heatmapLoadingStates.value = {
+    ...heatmapLoadingStates.value,
+    [state.tableName]: state,
+  };
+}
+
+function cancelBatchLoading() {
+  for (const component of heatmapRefs.value || []) {
+    component?.cancelActiveLoad?.();
+  }
 }
 
 // Re-load filter / visualization state whenever `?id=` changes. This
