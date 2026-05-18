@@ -299,109 +299,6 @@
 
         </CollapseWrapper>
 
-        <!-- Clustering -->
-        <CollapseWrapper
-          v-if="context === null || context === 'heatmap' || context === 'phylogeneticTree'"
-          v-model="clusteringIsOpen"
-          :disabled="false"
-          :deletable="false"
-          title="Clustering"
-          class="mb-2"
-        >
-          <div class="space-y-4">
-            <!-- Cluster Rows Toggle (not for phylogeneticTree - tree defines row order) -->
-            <div v-if="context !== 'phylogeneticTree'" class="flex items-center justify-between">
-              <div class="flex items-center gap-2">
-                <h3 class="text-md font-semibold cursor-default text-primary-900">
-                  Cluster Rows
-                </h3>
-                <InfoTooltip
-                  title="Row Clustering"
-                  description="Group similar genes/transcripts together using hierarchical clustering based on expression patterns across samples."
-                />
-              </div>
-              <ToggleSwitch
-                :modelValue="store.clustering.clusterRows"
-                @update:modelValue="store.setClusterRows"
-              />
-            </div>
-
-            <!-- Info for phylogeneticTree about row order -->
-            <div v-if="context === 'phylogeneticTree'" class="text-sm text-gray-600 italic">
-              Row order is defined by the phylogenetic tree topology.
-            </div>
-
-            <!-- Cluster Columns Toggle -->
-            <div class="flex items-center justify-between">
-              <div class="flex items-center gap-2">
-                <h3 class="text-md font-semibold cursor-default text-primary-900">
-                  Cluster {{ context === 'phylogeneticTree' ? 'Sample Groups' : 'Columns' }}
-                </h3>
-                <InfoTooltip
-                  title="Column Clustering"
-                  :description="context === 'phylogeneticTree' 
-                    ? 'Group similar sample metadata values together based on their expression profiles across species.'
-                    : 'Group similar samples together based on their expression profiles.'"
-                />
-              </div>
-              <ToggleSwitch
-                :modelValue="store.clustering.clusterCols"
-                @update:modelValue="store.setClusterCols"
-              />
-            </div>
-
-            <!-- Clustering Options (only show if at least one clustering is enabled) -->
-            <div v-if="(context !== 'phylogeneticTree' && (store.clustering.clusterRows || store.clustering.clusterCols)) || (context === 'phylogeneticTree' && store.clustering.clusterCols)" class="border-t border-gray-200 pt-4 space-y-4">
-              <!-- Linkage Method -->
-              <div>
-                <div class="flex items-center gap-2 mb-2">
-                  <h3 class="text-md font-semibold cursor-default text-primary-900">
-                    Linkage Method
-                  </h3>
-                  <InfoTooltip
-                    title="Clustering Linkage"
-                    description="Average (UPGMA): Recommended for gene expression. Complete: Produces compact clusters. Ward: Minimizes variance within clusters."
-                  />
-                </div>
-                <DropdownMenu
-                  :modelValue="store.clustering.method"
-                  @update:modelValue="store.setClusterMethod"
-                  :options="clusterMethodOptions"
-                  class="w-full"
-                />
-              </div>
-
-              <!-- Distance Metric -->
-              <div>
-                <div class="flex items-center gap-2 mb-2">
-                  <h3 class="text-md font-semibold cursor-default text-primary-900">
-                    Distance Metric
-                  </h3>
-                  <InfoTooltip
-                    title="Distance Metric"
-                    description="Correlation (1-r): Best for expression data, captures pattern similarity. Euclidean: Standard distance, sensitive to magnitude differences."
-                  />
-                </div>
-                <DropdownMenu
-                  :modelValue="store.clustering.distance"
-                  @update:modelValue="store.setClusterDistance"
-                  :options="clusterDistanceOptions"
-                  class="w-full"
-                />
-              </div>
-
-              <!-- Computing indicator -->
-              <div v-if="store.clustering.isComputing" class="flex items-center gap-2 text-sm text-gray-600">
-                <svg class="animate-spin h-4 w-4 text-primary-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                <span>Computing clusters...</span>
-              </div>
-            </div>
-          </div>
-        </CollapseWrapper>
-
         <!-- Rows -->
         <CollapseWrapper
           v-if="context === null || context === 'heatmap'"
@@ -440,6 +337,67 @@
             <p v-if="orderFeedback.axis === 'row'" class="-mt-2 mb-3 text-xs text-primary-700">
               {{ orderFeedback.message }}
             </p>
+          </div>
+
+          <div class="mb-4">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <h3 class="text-md font-semibold cursor-default text-primary-900">
+                  Cluster
+                </h3>
+                <InfoTooltip
+                  title="Transcript Clustering"
+                  description="Group similar transcripts together using hierarchical clustering based on expression patterns across samples."
+                />
+              </div>
+              <ToggleSwitch
+                :modelValue="store.clustering.clusterRows"
+                @update:modelValue="store.setClusterRows"
+              />
+            </div>
+            <div v-if="store.clustering.clusterRows" class="mt-3 border-t border-gray-200 pt-3 space-y-3">
+              <div>
+                <div class="flex items-center gap-2 mb-2">
+                  <h3 class="text-sm font-semibold cursor-default text-primary-900">
+                    Linkage Method
+                  </h3>
+                  <InfoTooltip
+                    title="Clustering Linkage"
+                    description="Average (UPGMA): Recommended for gene expression. Complete: Produces compact clusters. Ward: Minimizes variance within clusters."
+                  />
+                </div>
+                <DropdownMenu
+                  :modelValue="store.clustering.method"
+                  @update:modelValue="store.setClusterMethod"
+                  :options="clusterMethodOptions"
+                  class="w-full"
+                />
+              </div>
+              <div>
+                <div class="flex items-center gap-2 mb-2">
+                  <h3 class="text-sm font-semibold cursor-default text-primary-900">
+                    Distance Metric
+                  </h3>
+                  <InfoTooltip
+                    title="Distance Metric"
+                    description="Correlation (1-r): Best for expression data, captures pattern similarity. Euclidean: Standard distance, sensitive to magnitude differences."
+                  />
+                </div>
+                <DropdownMenu
+                  :modelValue="store.clustering.distance"
+                  @update:modelValue="store.setClusterDistance"
+                  :options="clusterDistanceOptions"
+                  class="w-full"
+                />
+              </div>
+              <div v-if="store.clustering.isComputing" class="flex items-center gap-2 text-sm text-gray-600">
+                <svg class="animate-spin h-4 w-4 text-primary-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span>Computing clusters...</span>
+              </div>
+            </div>
           </div>
 
           <div>
@@ -495,6 +453,69 @@
             <p v-if="orderFeedback.axis === 'col'" class="-mt-2 mb-3 text-xs text-primary-700">
               {{ orderFeedback.message }}
             </p>
+          </div>
+
+          <div class="mb-4">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <h3 class="text-md font-semibold cursor-default text-primary-900">
+                  Cluster
+                </h3>
+                <InfoTooltip
+                  title="Sample Clustering"
+                  :description="context === 'phylogeneticTree'
+                    ? 'Group similar sample metadata values together based on their expression profiles across species.'
+                    : 'Group similar samples together based on their expression profiles.'"
+                />
+              </div>
+              <ToggleSwitch
+                :modelValue="store.clustering.clusterCols"
+                @update:modelValue="store.setClusterCols"
+              />
+            </div>
+            <div v-if="store.clustering.clusterCols" class="mt-3 border-t border-gray-200 pt-3 space-y-3">
+              <div>
+                <div class="flex items-center gap-2 mb-2">
+                  <h3 class="text-sm font-semibold cursor-default text-primary-900">
+                    Linkage Method
+                  </h3>
+                  <InfoTooltip
+                    title="Clustering Linkage"
+                    description="Average (UPGMA): Recommended for gene expression. Complete: Produces compact clusters. Ward: Minimizes variance within clusters."
+                  />
+                </div>
+                <DropdownMenu
+                  :modelValue="store.clustering.method"
+                  @update:modelValue="store.setClusterMethod"
+                  :options="clusterMethodOptions"
+                  class="w-full"
+                />
+              </div>
+              <div>
+                <div class="flex items-center gap-2 mb-2">
+                  <h3 class="text-sm font-semibold cursor-default text-primary-900">
+                    Distance Metric
+                  </h3>
+                  <InfoTooltip
+                    title="Distance Metric"
+                    description="Correlation (1-r): Best for expression data, captures pattern similarity. Euclidean: Standard distance, sensitive to magnitude differences."
+                  />
+                </div>
+                <DropdownMenu
+                  :modelValue="store.clustering.distance"
+                  @update:modelValue="store.setClusterDistance"
+                  :options="clusterDistanceOptions"
+                  class="w-full"
+                />
+              </div>
+              <div v-if="store.clustering.isComputing" class="flex items-center gap-2 text-sm text-gray-600">
+                <svg class="animate-spin h-4 w-4 text-primary-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span>Computing clusters...</span>
+              </div>
+            </div>
           </div>
 
           <div class="mb-4">
@@ -1014,7 +1035,6 @@ function selectColOrder(name: string) {
 }
 
 const generalIsOpen = ref(true);
-const clusteringIsOpen = ref(false);
 const rowIsOpen = ref(false);
 const colIsOpen = ref(false);
 const tooltipIsOpen = ref(false);

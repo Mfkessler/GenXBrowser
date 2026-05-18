@@ -261,13 +261,25 @@ async function loadStateFromIdParam(idParam: unknown, signal?: AbortSignal) {
 }
 
 watch(
-  () => [route.query.id, route.query.filters, route.params.table_names],
-  async (idParam) => {
+  // Use a primitive string signature so Vue can dedupe by value.  A raw
+  // `() => [...]` getter returns a new array on every dependency tick,
+  // which makes the watcher fire on every router.replace (e.g. when the
+  // child writes `?orthogroup=` back into the URL).  That in turn
+  // bounces `hashLoading` and re-triggers downstream fetches that have
+  // nothing to do with the user's action.
+  () => {
+    const id = typeof route.query.id === "string" ? route.query.id : "";
+    const filters = typeof route.query.filters === "string" ? route.query.filters : "";
+    const tables = typeof route.params.table_names === "string" ? route.params.table_names : "";
+    return `${id}|${filters}|${tables}`;
+  },
+  async (_sig, _oldSig) => {
     activeHashAbortController?.abort();
     const controller = new AbortController();
     activeHashAbortController = controller;
     hashLoading.value = true;
-    await loadStateFromIdParam(Array.isArray(idParam) ? idParam[0] : idParam, controller.signal);
+    const idParam = typeof route.query.id === "string" ? route.query.id : "";
+    await loadStateFromIdParam(idParam, controller.signal);
     if (!controller.signal.aborted) {
       hashLoading.value = false;
       activeHashAbortController = null;

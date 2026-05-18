@@ -13,7 +13,7 @@
 
     <div v-if="newickstr !== null" class="flex-grow relative w-full flex flex-col min-h-0">
       <!-- Phylogenetic Tree Title + Buttons in same row -->
-      <div v-if="commonOGs_array.length > 0" class="flex flex-wrap items-center gap-3 mb-1 p-3 bg-gray-50 rounded-lg border border-gray-200 flex-shrink-0 min-w-0">
+      <div v-if="Object.keys(commonOGs_options).length > 0" class="flex flex-wrap items-center gap-3 mb-1 p-3 bg-gray-50 rounded-lg border border-gray-200 flex-shrink-0 min-w-0">
         <!-- Orthogroup Selector - same styling as Compare view -->
         <div class="flex-grow min-w-0 sm:min-w-48">
           <DropdownMenu
@@ -162,6 +162,7 @@ import { getDisplayName } from "@/shared/metadataDisplayNames";
 import { beautifyLabel } from "@/shared/utils";
 import { getEntityIdLabel } from "@/shared/dataTypeLabels";
 import {
+  omitFilterKey,
   buildOrthogroupOnlyFilters,
   buildOrthogroupScopedFilters,
   hasNonOrthogroupFilters,
@@ -188,8 +189,35 @@ const route = useRoute();
 const router = useRouter();
 const initialUrlParsing = ref(true);
 
-// Available orthogroups (extracted from newick data)
+// Available orthogroups (extracted from newick data).
+// This is the canonical dropdown source.  It is rebuilt ONLY when the
+// catalog filter context (sidebar filters + selected datasets) actually
+// changes — never when the user merely picks a different OG from the
+// dropdown.  We guard against accidental rebuilds with a signature.
 const commonOGs_array = ref<string[]>([]);
+let lastOgListFilterSig: string | null = null;
+
+function computeFilterSignature(): string {
+  // Sample the catalog filter context: per-dataset merged filters (minus
+  // ortho_id), sample filters, and the dataset id filters / filter-chain
+  // version.  Anything that changes the catalog-level OG list belongs
+  // here; anything that only affects the currently rendered OG (like
+  // selectedOrthogroup) does NOT.
+  const datasets = props.existingTables && props.existingTables.length > 0
+    ? [...props.existingTables]
+    : [props.tableName];
+  const perDataset = datasets.map((t) => {
+    const f = omitFilterKey(filtersStore.getMergedFilters(t));
+    return [t, f];
+  });
+  return JSON.stringify({
+    datasets,
+    perDataset,
+    sample: sampleFilters.value,
+    datasetIds: filtersStore.datasetIdFilters,
+    chain: filtersStore.filterChainVersion,
+  });
+}
 
 // Tooltip modal state
 const showTooltipModal = ref(false);
@@ -241,6 +269,14 @@ const noNewickMessage = ref("");
 const fullNewick = ref<string | null>(null);
 let loadRequestSeq = 0;
 let activeAbortController: AbortController | null = null;
+// Separate sequence + abort controller for the catalog-level orthogroup
+// index fetch (`fetchAllSelected`).  This MUST be independent of the
+// render-tree controller above: otherwise concurrent watchers (hashLoading
+// + tableNameOptions + selectedOrthogroup) cancel each other mid-flight
+// and `commonOGs_array` is never populated, leaving the dropdown empty.
+let ogListRequestSeq = 0;
+let activeOgListAbortController: AbortController | null = null;
+let suppressSelectedOrthogroupWatcher = false;
 
 function setLoadingProgress(step: number, totalSteps: number) {
   loadingProgress.value = totalSteps > 0 ? (step / totalSteps) * 100 : null;
@@ -254,6 +290,9 @@ function cancelActiveLoad() {
   loadRequestSeq += 1;
   activeAbortController?.abort();
   activeAbortController = null;
+  ogListRequestSeq += 1;
+  activeOgListAbortController?.abort();
+  activeOgListAbortController = null;
   loading.value = false;
   loadingProgress.value = null;
 }
@@ -290,6 +329,9 @@ const commonOGs_options = computed(() => {
   commonOGs_array.value.forEach((ogItem) => {
     record[ogItem] = ogItem.toUpperCase();
   });
+  if (selectedOrthogroup.value && !(selectedOrthogroup.value in record)) {
+    record[selectedOrthogroup.value] = selectedOrthogroup.value.toUpperCase();
+  }
   return record;
 });
 
@@ -428,6 +470,7 @@ async function fetchData(
   rowCount: number,
   requestFilters: Record<string, any> = filtersStore.getMergedFilters(tableName),
   signal?: AbortSignal,
+  options: { updateOrthogroupIndex?: boolean } = {},
 ) {
   try {
 
@@ -469,7 +512,7 @@ async function fetchData(
       ]);
 
       const data = exprRes.data.data || exprRes.data;
-      columnNames.value = getColumnKeys(rows.value);
+      columnNames.value = getColumnKeys(Array.isArray(data) ? data : Object.values(data));
 
       //DATA_COLUMNS
       dataColumnNames.value = columnRes.data.map((c) => c.column_name);
@@ -481,15 +524,17 @@ async function fetchData(
       );
       columnStore.setSampleMetadata(columns.value as Record<string, unknown>[], tableName);
 
-      Object.values(data).map((v) => {
-        // Store newick with lowercase OG key to match getAllOGs() filtering
-        const ogKey = String(v["ortho_id"]).trim().toLowerCase();
-        orthogroupCaseMap.value[ogKey] = String(v["ortho_id"]).trim();
-        const newickValue = typeof v["newick_str"] === "string" ? v["newick_str"].trim() : "";
-        if (newickValue || !(ogKey in newicks.value)) {
-          newicks.value[ogKey] = newickValue;
-        }
-      })
+      if (options.updateOrthogroupIndex) {
+        Object.values(data).map((v) => {
+          // Store newick with lowercase OG key to match getAllOGs() filtering
+          const ogKey = String(v["ortho_id"]).trim().toLowerCase();
+          orthogroupCaseMap.value[ogKey] = String(v["ortho_id"]).trim();
+          const newickValue = typeof v["newick_str"] === "string" ? v["newick_str"].trim() : "";
+          if (newickValue || !(ogKey in newicks.value)) {
+            newicks.value[ogKey] = newickValue;
+          }
+        })
+      }
 
       const data_full = ref({items: []});
       Object.keys(data).forEach((key) => {
@@ -553,10 +598,15 @@ function getAllOGs(dataRef: Record<string, any>, newicksRef: Record<string, stri
 
 
 async function fetchAllSelected(options: { keepLoading?: boolean } = {}) {
-  const requestId = ++loadRequestSeq;
-  activeAbortController?.abort();
+  // Uses its own abort controller / sequence (NOT the shared
+  // `activeAbortController` used by `renderTreeForSelectedOG`).  If we
+  // shared it, a subsequent `renderTreeForSelectedOG` call from the same
+  // watcher chain (or a concurrent watcher) would abort this fetch
+  // before `commonOGs_array` is assigned, leaving the dropdown empty.
+  const requestId = ++ogListRequestSeq;
+  activeOgListAbortController?.abort();
   const controller = new AbortController();
-  activeAbortController = controller;
+  activeOgListAbortController = controller;
   await showLoadingFrame();
   try {
     // Use catalog-selected datasets from existingTables prop
@@ -574,12 +624,13 @@ async function fetchAllSelected(options: { keepLoading?: boolean } = {}) {
     // Parallelize multi-species fetch instead of sequential for-loop
     const entries = await Promise.all(
       selectedDatasets.map(async (tableName) => {
+        const optionFilters = omitFilterKey(filtersStore.getMergedFilters(tableName));
         const { data: count } = await axios.post(
           `${API_BASE_URL}/api/count`,
           {
             table_name: tableName,
-            filters: filtersStore.getMergedFilters(tableName),
-            filter_chain: filtersStore.buildFilterChainPayload(filtersStore.getMergedFilters(tableName)),
+            filters: optionFilters,
+            filter_chain: filtersStore.buildFilterChainPayload(optionFilters),
             sample_filters: sampleFilters.value,
           },
           { signal: controller.signal },
@@ -589,13 +640,19 @@ async function fetchAllSelected(options: { keepLoading?: boolean } = {}) {
           setLoadingProgress(++completedSteps, totalSteps);
           return null;
         }
-        const data = await fetchData(tableName, rowCount, filtersStore.getMergedFilters(tableName), controller.signal);
+        const data = await fetchData(
+          tableName,
+          rowCount,
+          optionFilters,
+          controller.signal,
+          { updateOrthogroupIndex: true },
+        );
         setLoadingProgress(++completedSteps, totalSteps);
         return data ? { tableName, data } : null;
       })
     );
 
-    if (requestId !== loadRequestSeq || controller.signal.aborted) return;
+    if (requestId !== ogListRequestSeq || controller.signal.aborted) return;
 
     for (const entry of entries) {
       if (entry) results[entry.tableName] = entry.data;
@@ -605,40 +662,64 @@ async function fetchAllSelected(options: { keepLoading?: boolean } = {}) {
     // Apply union (single dataset) or intersection (multiple datasets) logic
     // Filter to only include OGs that have Newick tree data
     const filteredOGs = getAllOGs(results, newicks.value);
-    commonOGs_array.value = [...filteredOGs].sort();
+    const sortedOGs = [...filteredOGs].sort();
+    const currentSig = computeFilterSignature();
+    // Only rebuild the dropdown list when the catalog filter context
+    // actually changed.  This prevents harmless re-runs of
+    // `fetchAllSelected` (e.g. a router.replace that retriggers the
+    // parent's [id, filters, table_names] watcher and bounces
+    // `hashLoading`) from shrinking/clearing the dropdown after the user
+    // picks an OG.  We also keep the existing list if a new build came
+    // back empty while we already have entries — never silently lose
+    // the user's catalog-derived OG options.
+    if (lastOgListFilterSig !== currentSig) {
+      commonOGs_array.value = sortedOGs;
+      lastOgListFilterSig = currentSig;
+    } else if (sortedOGs.length > 0 && sortedOGs.length !== commonOGs_array.value.length) {
+      // Same filter signature but list size differs — trust the fresh
+      // result only if it is non-empty.
+      commonOGs_array.value = sortedOGs;
+    }
+    // else: keep existing commonOGs_array as-is
 
     // Handle OG selection with persistence and fallback
     // Priority: 1) initialOrthogroup from hash, 2) current store value, 3) first available
     const hashOG = props.initialOrthogroup;
     const currentSelection = hashOG || selectedOrthogroup.value;
     
-    if (commonOGs_array.value.length > 0) {
-      // If current selection is still valid (case-insensitive), keep it; otherwise select first
-      const matchingOG = commonOGs_array.value.find(og => og.toLowerCase() === currentSelection?.toLowerCase());
-      if (matchingOG) {
-        // Use the exact case from commonOGs_array for consistency
-        selectedOrthogroup.value = matchingOG;
+    suppressSelectedOrthogroupWatcher = true;
+    try {
+      if (commonOGs_array.value.length > 0) {
+        // If current selection is still valid (case-insensitive), keep it; otherwise select first
+        const matchingOG = commonOGs_array.value.find(og => og.toLowerCase() === currentSelection?.toLowerCase());
+        if (matchingOG) {
+          // Use the exact case from commonOGs_array for consistency
+          selectedOrthogroup.value = matchingOG;
+        } else {
+          selectedOrthogroup.value = commonOGs_array.value[0];
+        }
       } else {
-        selectedOrthogroup.value = commonOGs_array.value[0];
+        // Keep the current selection when the species filter yields no matching OGs,
+        // so the "Show full tree" button can still call loadFullNewickForOG with the
+        // correct OG id. Only clear if there was truly nothing selected to begin with.
+        if (!currentSelection) {
+          selectedOrthogroup.value = '';
+        }
+        // else: leave selectedOrthogroup as-is so NoNewickComponent shows the right OG
+        // and loadFullNewickForOG doesn't bail out on the empty-string guard.
       }
-    } else {
-      // Keep the current selection when the species filter yields no matching OGs,
-      // so the "Show full tree" button can still call loadFullNewickForOG with the
-      // correct OG id. Only clear if there was truly nothing selected to begin with.
-      if (!currentSelection) {
-        selectedOrthogroup.value = '';
-      }
-      // else: leave selectedOrthogroup as-is so NoNewickComponent shows the right OG
-      // and loadFullNewickForOG doesn't bail out on the empty-string guard.
+      await nextTick();
+    } finally {
+      suppressSelectedOrthogroupWatcher = false;
     }
     setLoadingProgress(totalSteps, totalSteps);
   } catch (error) {
     if (!isCanceledRequest(error)) console.error("Error loading phylogenetic tree data:", error);
   } finally {
-    if (requestId === loadRequestSeq) {
+    if (requestId === ogListRequestSeq) {
       if (!options.keepLoading) loading.value = false
       loadingProgress.value = null;
-      activeAbortController = null;
+      activeOgListAbortController = null;
     }
   }
 }
@@ -1634,84 +1715,87 @@ async function renderTreeForSelectedOG() {
   activeAbortController = controller;
   await showLoadingFrame();
   setLoadingProgress(0, 4);
-  const ogKey = selectedOrthogroupKey();
-  if (!selectedOrthogroup.value || !newicks.value[ogKey]) {
-    // Fall back to the directly-loaded full Newick (button was clicked)
-    if (fullNewick.value) {
-      fullTreeAvailable.value = false;
-      noNewickMessage.value = "";
-      await Promise.all([
-        fetchOrthogroupDataForAllSpecies(controller.signal),
-        fetchHighlightedGenesForAllSpecies(controller.signal),
-      ]);
+  try {
+    const ogKey = selectedOrthogroupKey();
+    if (!selectedOrthogroup.value || !newicks.value[ogKey]) {
+      // Fall back to the directly-loaded full Newick (button was clicked)
+      if (fullNewick.value) {
+        fullTreeAvailable.value = false;
+        noNewickMessage.value = "";
+        await Promise.all([
+          fetchOrthogroupDataForAllSpecies(controller.signal),
+          fetchHighlightedGenesForAllSpecies(controller.signal),
+        ]);
+        if (requestId !== loadRequestSeq || controller.signal.aborted) return;
+        setLoadingProgress(2, 4);
+        const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
+        lastMetrics.value = metrics;
+        newickstr.value = fullNewick.value;
+        await nextTick();
+        await initPhylotree(newickstr.value, metrics);
+        setLoadingProgress(4, 4);
+        return;
+      }
+
+      const availableFullNewick = await fetchFullNewickForSelectedOG(controller.signal);
       if (requestId !== loadRequestSeq || controller.signal.aborted) return;
-      setLoadingProgress(2, 4);
-      const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
-      lastMetrics.value = metrics;
-      newickstr.value = fullNewick.value;
-      await nextTick();
-      initPhylotree(newickstr.value, metrics);
-      setLoadingProgress(4, 4);
-      loadingProgress.value = null;
-      activeAbortController = null;
-      return;
-    }
+      setLoadingProgress(1, 4);
+      if (availableFullNewick) {
+        fullNewick.value = availableFullNewick;
+        fullTreeAvailable.value = false;
+        noNewickMessage.value = "";
 
-    const availableFullNewick = await fetchFullNewickForSelectedOG(controller.signal);
-    if (requestId !== loadRequestSeq || controller.signal.aborted) return;
-    setLoadingProgress(1, 4);
-    if (availableFullNewick) {
-      fullNewick.value = availableFullNewick;
+        await Promise.all([
+          fetchOrthogroupDataForAllSpecies(controller.signal),
+          fetchHighlightedGenesForAllSpecies(controller.signal),
+        ]);
+        if (requestId !== loadRequestSeq || controller.signal.aborted) return;
+        setLoadingProgress(2, 4);
+
+        const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
+        lastMetrics.value = metrics;
+        newickstr.value = availableFullNewick;
+        await nextTick();
+        await initPhylotree(newickstr.value, metrics);
+        setLoadingProgress(4, 4);
+        return;
+      }
+
       fullTreeAvailable.value = false;
-      noNewickMessage.value = "";
-
-      await Promise.all([
-        fetchOrthogroupDataForAllSpecies(controller.signal),
-        fetchHighlightedGenesForAllSpecies(controller.signal),
-      ]);
-      if (requestId !== loadRequestSeq || controller.signal.aborted) return;
-      setLoadingProgress(2, 4);
-
-      const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
-      lastMetrics.value = metrics;
-      newickstr.value = availableFullNewick;
-      await nextTick();
-      initPhylotree(newickstr.value, metrics);
-      setLoadingProgress(4, 4);
-      loadingProgress.value = null;
-      activeAbortController = null;
+      noNewickMessage.value = "No phylogenetic tree is available for this orthogroup.";
+      newickstr.value = null;
+      noNewickResolved.value = true;
+      loading.value = false;
       return;
     }
 
     fullTreeAvailable.value = false;
-    noNewickMessage.value = "No phylogenetic tree is available for this orthogroup.";
-    newickstr.value = null;
-    noNewickResolved.value = true;
+    noNewickMessage.value = "";
+
+    await Promise.all([
+      fetchOrthogroupDataForAllSpecies(controller.signal),
+      fetchHighlightedGenesForAllSpecies(controller.signal),
+    ]);
+    if (requestId !== loadRequestSeq || controller.signal.aborted) return;
+    setLoadingProgress(2, 4);
+    
+    const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
+    lastMetrics.value = metrics;
+    newickstr.value = newicks.value[ogKey];
+    if (newickstr.value !== null) {
+      await nextTick();
+      await initPhylotree(newickstr.value, metrics);
+      setLoadingProgress(4, 4);
+    }
+  } catch (error) {
+    if (isCanceledRequest(error)) return;
+    console.error("Error rendering phylogenetic tree:", error);
     loading.value = false;
-    loadingProgress.value = null;
-    activeAbortController = null;
-    return;
-  }
-
-  fullTreeAvailable.value = false;
-  noNewickMessage.value = "";
-
-  await Promise.all([
-    fetchOrthogroupDataForAllSpecies(controller.signal),
-    fetchHighlightedGenesForAllSpecies(controller.signal),
-  ]);
-  if (requestId !== loadRequestSeq || controller.signal.aborted) return;
-  setLoadingProgress(2, 4);
-  
-  const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
-  lastMetrics.value = metrics;
-  newickstr.value = newicks.value[ogKey];
-  if (newickstr.value !== null) {
-    await nextTick();
-    initPhylotree(newickstr.value, metrics);
-    setLoadingProgress(4, 4);
-    loadingProgress.value = null;
-    activeAbortController = null;
+  } finally {
+    if (requestId === loadRequestSeq) {
+      loadingProgress.value = null;
+      activeAbortController = null;
+    }
   }
 }
 
@@ -1831,11 +1915,18 @@ watch(
 watch(
   selectedOrthogroup,
   async () => {
+    if (suppressSelectedOrthogroupWatcher) return;
     if (initialUrlParsing.value) return;
     if (props.hashLoading) return;
-    await showLoadingFrame();
     fullNewick.value = null;  // clear full-tree override when user picks a new OG
     updateUrlFromState();
+    // Only re-render the tree/heatmap for the newly selected OG.  Do NOT call
+    // fetchAllSelected() here: that rebuilds `commonOGs_array` (the dropdown
+    // source) and would collapse the list to whatever the current view
+    // contains, breaking dropdown persistence.  The catalog-level OG list is
+    // refreshed only when sidebar filters / datasets actually change (see the
+    // [tableNameOptions, filters, datasetIdFilters, filterChainVersion]
+    // watcher below).
     await renderTreeForSelectedOG();
   }
 )

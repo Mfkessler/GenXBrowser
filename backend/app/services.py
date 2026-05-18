@@ -410,6 +410,7 @@ class GeneTreeStore:
     
     def __init__(self, path: str):
         self._trees: Dict[str, str] = {}
+        self._tree_key_lookup: Dict[str, str] = {}
         self._load(path)
     
     def _load(self, path: str) -> None:
@@ -441,11 +442,19 @@ class GeneTreeStore:
                     # Strip duplicated species prefixes if present
                     newick = _dup_prefix_re.sub(r'\1_', newick)
                     self._trees[og_id] = newick
+                    self._tree_key_lookup.setdefault(og_id.lower(), og_id)
         
         logger.info(f"Loaded {len(self._trees)} gene trees")
     
     def get(self, og_id: str) -> Optional[str]:
-        return self._trees.get(og_id)
+        normalized = str(og_id or '').strip()
+        if not normalized:
+            return None
+        direct = self._trees.get(normalized)
+        if direct is not None:
+            return direct
+        canonical = self._tree_key_lookup.get(normalized.lower())
+        return self._trees.get(canonical) if canonical else None
 
 
 # ============================================================================
@@ -2301,9 +2310,11 @@ class GenXBrowserService:
                 if isinstance(result.get('go_depth'), int) and result.get('go_depth') >= go_depth_min
             ]
 
-        # 8. Sort by combined score (descending) and take top N after all filters
+        # 8. Sort by combined score (descending) and take top N after all filters.
+        # top_n <= 0 is used by the frontend to fetch the full scored result set
+        # once and apply visualization-only filters locally.
         depth_filtered_results.sort(key=lambda x: x['combined_score'], reverse=True)
-        top_results = depth_filtered_results[:top_n]
+        top_results = depth_filtered_results if top_n <= 0 else depth_filtered_results[:top_n]
         if go_terms:
             top_ids = {entry.get('attribute', '') for entry in top_results}
             go_terms = {go_id: term for go_id, term in go_terms.items() if go_id in top_ids}

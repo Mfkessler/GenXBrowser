@@ -173,14 +173,14 @@
             </div>
             <div>
               <strong>Enrichment Tests:</strong> {{ oraMetadata.total_tests }} total,
-              <span class="font-semibold">{{ oraMetadata.significant_count }} significant</span>
+              <span class="font-semibold">{{ currentSignificantCount }} significant</span>
               (FDR q-value &lt; {{ visualizationStore.significance }})
             </div>
             <div>
               <strong>Results Shown:</strong>
-              Top {{ visualizationStore.oraTopN }} by combined score after significance,
+              {{ pValueEntries.length }} of {{ currentCriteriaCount }} passing terms after significance,
               minimum {{ visualizationStore.oraMinCount }} {{ getEntityLabelPluralLower() }} per term,
-              and GO depth filters are applied.
+              GO depth filtering, and Top {{ visualizationStore.oraTopN }} selection.
             </div>
             <div v-if="goDepthFilterStatus" class="text-blue-700 bg-blue-100 rounded px-2 py-1 mt-1">
               <strong>GO Depth Filtering:</strong>
@@ -553,19 +553,36 @@ const activeGoDepthFilter = computed(() => {
   return Number.isInteger(depth) && depth > 0 ? depth : null;
 });
 
-const pValueEntries = computed(() => {
-  const selectedDepth = activeGoDepthFilter.value;
-  if (selectedDepth === null) return rawPValueEntries.value;
-  return rawPValueEntries.value.filter((entry) => typeof entry.go_depth === 'number' && entry.go_depth >= selectedDepth);
+const significanceFilteredEntries = computed(() => {
+  const threshold = Number(visualizationStore.significance);
+  const significance = Number.isFinite(threshold) ? threshold : 1;
+  return rawPValueEntries.value.filter((entry) => entry.q_value < significance);
 });
+
+const criteriaFilteredEntries = computed(() => {
+  const selectedDepth = activeGoDepthFilter.value;
+  return significanceFilteredEntries.value.filter((entry) => {
+    if (entry.subset_count < visualizationStore.oraMinCount) return false;
+    if (selectedDepth === null) return true;
+    return typeof entry.go_depth === 'number' && entry.go_depth >= selectedDepth;
+  });
+});
+
+const pValueEntries = computed(() => {
+  return criteriaFilteredEntries.value
+    .slice()
+    .sort((a, b) => b.combined_score - a.combined_score)
+    .slice(0, visualizationStore.oraTopN);
+});
+const currentSignificantCount = computed(() => significanceFilteredEntries.value.length);
+const currentCriteriaCount = computed(() => criteriaFilteredEntries.value.length);
 
 const goDepthHiddenCount = computed(() => {
   if (activeGoDepthFilter.value !== null) {
-    const significantCount = Number(oraMetadata.value?.significant_count);
-    const filteredCount = Number(oraMetadata.value?.filtered_count);
-    if (Number.isFinite(significantCount) && Number.isFinite(filteredCount)) {
-      return Math.max(0, significantCount - filteredCount);
-    }
+    return significanceFilteredEntries.value.filter((entry) => {
+      if (entry.subset_count < visualizationStore.oraMinCount) return false;
+      return !(typeof entry.go_depth === 'number' && entry.go_depth >= activeGoDepthFilter.value!);
+    }).length;
   }
   return rawPValueEntries.value.length - pValueEntries.value.length;
 });
@@ -655,10 +672,10 @@ async function fetchAndPrepareData() {
       column_name: visualizationStore.oraColumnName,
       filters: mergedFilters.value,
       filter_chain: filtersStore.buildFilterChainPayload(mergedFilters.value),
-      significance: visualizationStore.significance,
-      top_n: visualizationStore.oraTopN,
-      min_count: visualizationStore.oraMinCount,
-      go_depth_min: activeGoDepthFilter.value ?? 0,
+      significance: 1.000001,
+      top_n: 0,
+      min_count: 1,
+      go_depth_min: 0,
       max_subset_size: 5000,
     };
     
@@ -800,7 +817,11 @@ function publishAnalysisContext() {
       significance: visualizationStore.significance,
       top_n_displayed: visualizationStore.oraTopN,
       min_count: visualizationStore.oraMinCount,
-      metadata: oraMetadata.value || null,
+      metadata: {
+        ...(oraMetadata.value || {}),
+        significant_count: significanceFilteredEntries.value.length,
+        filtered_count: criteriaFilteredEntries.value.length,
+      },
       n_results: pValueEntries.value.length,
       top_terms: top,
     });
@@ -1703,9 +1724,13 @@ watch(
   ],
   async () => {
     if (props.hashLoading) return;
-    // Re-fetch data when significance, topN, or minCount change
-    // (these affect backend filtering)
-    await fetchAndPrepareData();
+    if (loading.value || !renderReady.value) return;
+    await showLoadingFrame();
+    await syncPlotHeightWithViewport();
+    await drawDotPlot();
+    publishAnalysisContext();
+    renderReady.value = true;
+    loading.value = false;
   },
   { deep: true },
 );

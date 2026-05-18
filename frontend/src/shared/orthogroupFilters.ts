@@ -9,6 +9,7 @@ export function omitFilterKey(
   );
 }
 
+
 export function buildOrthogroupOnlyFilters(
   orthogroup: string,
   filterKey = 'ortho_id',
@@ -38,6 +39,7 @@ export function buildOrthogroupScopedFilters(
     ...baseFilters,
     [filterKey]: {
       value: trimmedOrthogroup,
+      exact: false,
     },
   };
 }

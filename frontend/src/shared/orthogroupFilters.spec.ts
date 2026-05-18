@@ -23,6 +23,7 @@ describe('orthogroup filter helper', () => {
       },
       ortho_id: {
         value: 'og0001',
+        exact: false,
       },
     });
     expect(baseFilters).not.toHaveProperty('ortho_id');
@@ -32,6 +33,7 @@ describe('orthogroup filter helper', () => {
     expect(buildOrthogroupOnlyFilters('OG0000078')).toEqual({
       ortho_id: {
         value: 'OG0000078',
+        exact: false,
       },
     });
   });

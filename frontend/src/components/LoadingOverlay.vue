@@ -1,6 +1,7 @@
 <template>
   <div
-    class="loading-overlay absolute inset-0 z-30 grid place-items-center bg-white/85 backdrop-blur-[1px]"
+    class="loading-overlay fixed inset-0 z-50 grid place-items-center bg-white/85 backdrop-blur-[1px]"
+    :style="overlayStyle"
     role="status"
     aria-live="polite"
   >
@@ -36,7 +37,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, inject, onMounted, onUnmounted, ref, type Ref } from "vue";
 
 const props = withDefaults(
   defineProps<{
@@ -56,6 +57,28 @@ const props = withDefaults(
 const emit = defineEmits<{
   cancel: [];
 }>();
+
+const sidebarOpen = inject<Ref<boolean> | undefined>("sidebarOpen", undefined);
+const viewportWidth = ref(typeof window !== "undefined" ? window.innerWidth : 1024);
+
+function updateViewportWidth() {
+  if (typeof window === "undefined") return;
+  viewportWidth.value = window.innerWidth;
+}
+
+onMounted(() => {
+  updateViewportWidth();
+  window.addEventListener("resize", updateViewportWidth);
+});
+
+onUnmounted(() => {
+  window.removeEventListener("resize", updateViewportWidth);
+});
+
+const overlayStyle = computed(() => {
+  const sidebarWidth = sidebarOpen?.value && viewportWidth.value >= 768 ? 320 : 0;
+  return { left: `${sidebarWidth}px` };
+});
 
 const hasProgress = computed(() => typeof props.progress === 'number' && Number.isFinite(props.progress));
 
