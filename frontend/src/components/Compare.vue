@@ -82,7 +82,7 @@
         </div>
         <div v-else class="mt-4 px-3 py-2 text-sm text-gray-600 border-t border-gray-200 flex flex-wrap gap-x-2 gap-y-1">
           <span class="font-medium">Legend:</span>
-          <span>{{ plotType === 'box' ? 'Box plots' : 'Violin plots' }} grouped by tissue, colored by species</span>
+          <span>{{ plotType === 'box' ? 'Box plots' : 'Violin plots' }} grouped by {{ groupingColumnLabel }}, colored by species</span>
           <span v-if="visualizationStore.compare.showAllTranscripts">| 30% opacity = unfiltered transcripts from same orthogroup</span>
         </div>
       </div>
@@ -174,13 +174,13 @@ interface SampleValue {
 interface TranscriptData {
   geneId: string;
   species: string;
-  values: Record<string, SampleValue[]>; // tissue -> [{value, sampleName}, ...]
+  values: Record<string, SampleValue[]>;
   filterMatched: boolean; // true if transcript passed the active filter
 }
 
 interface ProcessedData {
   transcripts: TranscriptData[];
-  tissues: string[];
+  groups: string[];
   species: string[];
 }
 
@@ -261,8 +261,21 @@ const expressionDisplayOption = computed({
   set: (v: string) => visualizationStore.setCompareState({ expression: v })
 });
 
+const selectedGroupingColumn = computed(() => {
+  const configured = visualizationStore.compare.groupingColumn;
+  if (configured && columnsStore.filterableColColumns.some((col) => col.column_name === configured)) {
+    return configured;
+  }
+  return columnsStore.tissueColumnName || columnsStore.filterableColColumns[0]?.column_name || 'tissue';
+});
+
+const groupingColumnLabel = computed(() => {
+  const column = columnsStore.filterableColColumns.find((col) => col.column_name === selectedGroupingColumn.value);
+  return (column?.display_name || selectedGroupingColumn.value || 'sample group').toString();
+});
+
 // Species visibility is controlled by Plotly's built-in legend click functionality
-// Tissues are now filtered via sampleFilters (Samples tab in sidebar)
+  // Sample groups are filtered via sampleFilters (Samples tab in sidebar)
 
 // ============================================================================
 // Computed Properties
@@ -320,8 +333,7 @@ const exportMetaColumns = computed(() => ['species', filtersStore.idColumnName])
 
 const exportSampleColumns = computed(() => {
   if (!processedData.value) return [];
-  // Use all available tissues (filtering is done via sampleFilters in data fetch)
-  return processedData.value.tissues;
+  return processedData.value.groups;
 });
 
 const exportColumns = computed(() => {
@@ -333,8 +345,7 @@ const exportData = computed<RowType[]>(() => {
   
   // Export all transcripts from all species - no filter
   const filteredTranscripts = processedData.value.transcripts;
-  // Use all available tissues (filtering is done via sampleFilters in data fetch)
-  const filteredTissues = processedData.value.tissues;
+  const filteredTissues = processedData.value.groups;
   
   return filteredTranscripts.map((t) => {
     const row: RowType = {
@@ -450,26 +461,9 @@ async function fetchData(tableName: string) {
     );
     columnsStore.setSampleMetadata(columns as Record<string, unknown>[], tableName);
 
-    // Create tissue mapping
-    // Backend returns obs column names directly (h5ad standard: 'tissue')
-    const tissueMap: Record<string, string> = {};
-    columns.forEach((item: RowType) => {
-      if ("column_name" in item) {
-        // Try 'tissue' first (h5ad standard), fall back to 'tissue_x_col' for old data
-        const tissueVal = (item as any).tissue ?? (item as any).tissue_x_col ?? null;
-        if (tissueVal != null) {
-          tissueMap[item.column_name as string] = String(tissueVal).toLowerCase();
-        }
-      }
-    });
+    const enrichedData = Object.keys(data).map((key) => ({ ...data[key] }));
 
-    // Combine data with tissue info
-    const enrichedData = Object.keys(data).map((key) => {
-      const row = { ...data[key], _tissueMap: tissueMap };
-      return row;
-    });
-
-    return { items: enrichedData, tissueMap, tableName };
+    return { items: enrichedData, sampleMetadata: columns, tableName };
   } catch (e) {
     console.error("Error fetching data:", e);
   }
@@ -703,18 +697,15 @@ async function fetchUnfilteredData(tableName: string, ogIds: string[]) {
       return null;
     }
 
-    // Reuse tissue map from filtered data
+    // Reuse sample metadata from filtered data
     const existingResult = tableData.value[tableName];
-    const tissueMap = existingResult?.tissueMap || {};
-    console.log('[FetchUnfiltered] Tissue map keys:', Object.keys(tissueMap).length);
+    const sampleMetadata = existingResult?.sampleMetadata || [];
+    console.log('[FetchUnfiltered] Sample metadata rows:', sampleMetadata.length);
 
-    const enrichedData = Object.keys(data).map((key) => {
-      const row = { ...data[key], _tissueMap: tissueMap };
-      return row;
-    });
+    const enrichedData = Object.keys(data).map((key) => ({ ...data[key] }));
 
     console.log('[FetchUnfiltered] Returning', enrichedData.length, 'enriched items for', tableName);
-    return { items: enrichedData, tissueMap, tableName };
+    return { items: enrichedData, sampleMetadata, tableName };
   } catch (e) {
     console.error('[FetchUnfiltered] Error fetching unfiltered data for', tableName, ':', e);
   }
@@ -736,7 +727,7 @@ function processDataForPlotting(og: string): ProcessedData | null {
   console.log('[ProcessData] raw keys:', Object.keys(raw).length);
 
   const transcripts: TranscriptData[] = [];
-  const tissueSet = new Set<string>();
+  const groupSet = new Set<string>();
   const speciesSet = new Set<string>();
 
   // Track gene IDs from filtered data to identify unfiltered-only transcripts
@@ -748,7 +739,7 @@ function processDataForPlotting(og: string): ProcessedData | null {
     const items = Array.isArray(tableInfo.items)
       ? tableInfo.items
       : Object.values(tableInfo.items);
-    const tissueMap = tableInfo.tissueMap || {};
+    const groupMap = buildSampleGroupMap(tableInfo.sampleMetadata || []);
 
     // Filter by orthogroup
     const matchingItems = items.filter((item: any) => {
@@ -762,14 +753,14 @@ function processDataForPlotting(og: string): ProcessedData | null {
       const values: Record<string, SampleValue[]> = {};
 
       Object.entries(item).forEach(([key, value]) => {
-        if (typeof value === "number" && tissueMap[key]) {
-          const tissue = tissueMap[key];
-          if (!values[tissue]) values[tissue] = [];
-          values[tissue].push({
+        if (typeof value === "number" && groupMap[key]) {
+          const group = groupMap[key];
+          if (!values[group]) values[group] = [];
+          values[group].push({
             value: value,
             sampleName: key
           });
-          tissueSet.add(tissue);
+          groupSet.add(group);
         }
       });
 
@@ -802,9 +793,9 @@ function processDataForPlotting(og: string): ProcessedData | null {
       const items = Array.isArray(tableInfo.items)
         ? tableInfo.items
         : Object.values(tableInfo.items);
-      const tissueMap = tableInfo.tissueMap || {};
+      const groupMap = buildSampleGroupMap(tableInfo.sampleMetadata || []);
       
-      console.log('[ProcessData] Table', tableName, '- items:', items.length, 'tissueMap keys:', Object.keys(tissueMap).length);
+      console.log('[ProcessData] Table', tableName, '- items:', items.length, 'groupMap keys:', Object.keys(groupMap).length);
 
       const matchingItems = items.filter((item: any) => {
         const ogVal = item?.ortho_id;
@@ -832,14 +823,14 @@ function processDataForPlotting(og: string): ProcessedData | null {
 
         const values: Record<string, SampleValue[]> = {};
         Object.entries(item).forEach(([k, value]) => {
-          if (typeof value === "number" && tissueMap[k]) {
-            const tissue = tissueMap[k];
-            if (!values[tissue]) values[tissue] = [];
-            values[tissue].push({
+          if (typeof value === "number" && groupMap[k]) {
+            const group = groupMap[k];
+            if (!values[group]) values[group] = [];
+            values[group].push({
               value: value as number,
               sampleName: k,
             });
-            tissueSet.add(tissue);
+            groupSet.add(group);
           }
         });
 
@@ -864,34 +855,47 @@ function processDataForPlotting(og: string): ProcessedData | null {
 
   return {
     transcripts,
-    tissues: orderTissueCategories([...tissueSet]),
+    groups: orderGroupCategories([...groupSet]),
     species: [...speciesSet].sort(),
   };
 }
 
-function orderTissueCategories(tissues: string[]): string[] {
+function buildSampleGroupMap(sampleMetadata: RowType[]): Record<string, string> {
+  const groupMap: Record<string, string> = {};
+  const groupColumn = selectedGroupingColumn.value;
+  sampleMetadata.forEach((item: RowType) => {
+    if (!("column_name" in item)) return;
+    const rawValue = (item as any)[groupColumn];
+    groupMap[item.column_name as string] = rawValue !== null && rawValue !== undefined && String(rawValue) !== ""
+      ? String(rawValue)
+      : "Unknown";
+  });
+  return groupMap;
+}
+
+function orderGroupCategories(groups: string[]): string[] {
   const customOrder = visualizationStore.customColOrder;
   if (customOrder.enabled && customOrder.metadataValues.length > 0) {
-    const tissueRank = getTissueRankFromAxis(customOrder.metadataValues);
-    return [...tissues].sort((a, b) => {
-      const aRank = tissueRank.get(a.toLowerCase()) ?? Number.MAX_SAFE_INTEGER;
-      const bRank = tissueRank.get(b.toLowerCase()) ?? Number.MAX_SAFE_INTEGER;
+    const groupRank = getGroupRankFromAxis(customOrder.metadataValues);
+    return [...groups].sort((a, b) => {
+      const aRank = groupRank.get(a.toLowerCase()) ?? Number.MAX_SAFE_INTEGER;
+      const bRank = groupRank.get(b.toLowerCase()) ?? Number.MAX_SAFE_INTEGER;
       if (aRank !== bRank) return aRank - bRank;
       return a.localeCompare(b);
     });
   }
   if (visualizationStore.colOrder.name && visualizationStore.colOrder.name !== "OLO") {
-    return orderAxisCategories(tissues, visualizationStore.colOrder.order);
+    return orderAxisCategories(groups, visualizationStore.colOrder.order);
   }
-  return orderAxisCategories(tissues, "asc");
+  return orderAxisCategories(groups, "asc");
 }
 
-function getTissueRankFromAxis(orderedValues: string[]): Map<string, number> {
+function getGroupRankFromAxis(orderedValues: string[]): Map<string, number> {
   return new Map(orderedValues.map((value, index) => [value.toLowerCase(), index]));
 }
 
-function orderAxisCategories(tissues: string[], direction: "asc" | "desc"): string[] {
-  return [...tissues].sort((a, b) => {
+function orderAxisCategories(groups: string[], direction: "asc" | "desc"): string[] {
+  return [...groups].sort((a, b) => {
     const comparison = a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
     return direction === "desc" ? -comparison : comparison;
   });
@@ -919,8 +923,8 @@ async function renderPlot() {
 
   // Always render ALL species - Plotly legend handles visibility
   const filteredTranscripts = data.transcripts;
-  // Use all available tissues from the data (already filtered by sampleFilters)
-  const filteredTissues = data.tissues;
+  // Use all available groups from the data (already filtered by sampleFilters)
+  const filteredTissues = data.groups;
 
   if (filteredTranscripts.length === 0 || filteredTissues.length === 0) {
     Plotly.purge(plotContainer.value);
@@ -974,7 +978,7 @@ async function renderPlot() {
           const mean = yValues[tissueIdx];
           let text = `<b>${transcript.geneId}</b><br>` +
             `Species: ${speciesLabelItalic}<br>` +
-            `Tissue: ${tissue}<br>` +
+            `${groupingColumnLabel.value}: ${tissue}<br>` +
             `Mean: ${mean !== null ? mean.toFixed(3) : 'N/A'}<br>`;
           if (data.nSamples > 0) {
             text += `<br><b>Samples (n=${data.nSamples}):</b><br>`;
@@ -1022,7 +1026,7 @@ async function renderPlot() {
           ? allVals.reduce((a, b) => a + b, 0) / allVals.length 
           : null;
         return `<b>${speciesLabelItalic} Mean</b><br>` +
-          `Tissue: ${tissue}<br>` +
+          `${groupingColumnLabel.value}: ${tissue}<br>` +
           `Mean: ${mean !== null ? mean.toFixed(3) : 'N/A'}<br>` +
           `Transcripts: ${matchedTranscripts.length}<br>` +
           `Samples: ${allVals.length}`;
@@ -1074,7 +1078,7 @@ async function renderPlot() {
               : null;
             let text = `<b>${transcript.geneId}</b> (unfiltered)<br>` +
               `Species: ${speciesLabelItalic}<br>` +
-              `Tissue: ${tissue}<br>` +
+              `${groupingColumnLabel.value}: ${tissue}<br>` +
               `Mean: ${mean !== null ? mean.toFixed(3) : 'N/A'}<br>`;
             if (vals && vals.length > 0) {
               text += `<br><b>Samples (n=${vals.length}):</b><br>`;
@@ -1109,7 +1113,7 @@ async function renderPlot() {
         });
       }
     } else if (plotType.value === 'box' || plotType.value === 'violin') {
-      // BOX/VIOLIN PLOT: One trace per species, grouped by tissue
+      // BOX/VIOLIN PLOT: One trace per species, grouped by selected sample metadata
       // Collect values from filtered transcripts
       const xValues: string[] = [];
       const yValues: number[] = [];
@@ -1125,7 +1129,7 @@ async function renderPlot() {
               hoverTexts.push(
                 `<b>${transcript.geneId}</b><br>` +
                 `Species: ${speciesLabelItalic}<br>` +
-                `Tissue: ${tissue}<br>` +
+                `${groupingColumnLabel.value}: ${tissue}<br>` +
                 `${sv.sampleName}: ${sv.value.toFixed(3)}`
               );
             });
@@ -1187,7 +1191,7 @@ async function renderPlot() {
                 uHoverTexts.push(
                   `<b>${transcript.geneId}</b> (unfiltered)<br>` +
                   `Species: ${speciesLabelItalic}<br>` +
-                  `Tissue: ${tissue}<br>` +
+                  `${groupingColumnLabel.value}: ${tissue}<br>` +
                   `${sv.sampleName}: ${sv.value.toFixed(3)}`
                 );
               });
@@ -1264,7 +1268,7 @@ async function renderPlot() {
       b: bottomMargin,
     },
     xaxis: {
-      title: { text: "Tissue", standoff: 15 },
+      title: { text: groupingColumnLabel.value, standoff: 15 },
       type: "category",
       tickangle: -45,
       tickfont: { size: isMobilePlot ? 10 : 11 },
@@ -1340,7 +1344,7 @@ watch([filters, () => filtersStore.datasetIdFilters, filterChainVersion], () => 
   fetchAllSelected();
 }, { deep: true });
 
-// Watch sampleFilters to refetch data when tissue/sample filters change
+// Watch sampleFilters to refetch data when sample filters change
 watch(sampleFilters, async () => {
   if (initialUrlParsing.value) return;
   await fetchAllSelected();
@@ -1367,9 +1371,9 @@ watch(selectedOrthogroup, async () => {
   }
 });
 
-// Watch for plot rendering changes (orthogroup, plotHeight, plotType)
+// Watch for plot rendering changes (orthogroup, plotHeight, plotType, grouping column)
 watch(
-  [selectedOrthogroupLabel, plotHeight, plotType],
+  [selectedOrthogroupLabel, plotHeight, plotType, selectedGroupingColumn],
   async () => {
     if (initialUrlParsing.value) return;
     updateUrlFromState();

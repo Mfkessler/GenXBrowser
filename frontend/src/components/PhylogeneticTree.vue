@@ -233,6 +233,19 @@ const noNewickMessage = ref("");
 // Acts as fallback in renderTreeForSelectedOG so watchers don't wipe it out.
 const fullNewick = ref<string | null>(null);
 
+const selectedGroupingColumn = computed(() => {
+  const configured = visualizationStore.phyloTree.groupingColumn;
+  if (configured && columnStore.filterableColColumns.some((col) => col.column_name === configured)) {
+    return configured;
+  }
+  return columnStore.tissueColumnName || columnStore.filterableColColumns[0]?.column_name || 'tissue';
+});
+
+const groupingColumnLabel = computed(() => {
+  const column = columnStore.filterableColColumns.find((col) => col.column_name === selectedGroupingColumn.value);
+  return (column?.display_name || selectedGroupingColumn.value || 'sample group').toString();
+});
+
 // Selected orthogroup - computed property linked to store
 const selectedOrthogroup = computed({
   get: () => visualizationStore.phyloTree.selectedOrthogroup,
@@ -449,23 +462,9 @@ async function fetchData(
         }
       })
 
-      const filteredColumns = Object.values(columns.value).reduce((acc, item) => {
-        if ('column_name' in item) {
-          // Use tissue column directly from h5ad
-          const tissue_type = item.tissue ?? "Unknown";
-          if (tissue_type && tissue_type !== "") {
-            acc['tissue_type_' + item.column_name] = tissue_type;
-          } else {
-            acc['tissue_type_' + item.column_name] = "Unknown";
-          }
-        }
-
-        return acc
-      }, {})
-
       const data_full = ref({items: []});
       Object.keys(data).forEach((key) => {
-        const concat_array = assign({}, data[key], filteredColumns);
+        const concat_array = assign({}, data[key]);
         data_full.value.items.push(concat_array);
 
       })
@@ -609,7 +608,8 @@ function computeMetrics(dataRef: any, calcOption: string, codeMap?: Record<strin
       // Look up species code for this group (e.g., "AT" for "arabidopsis_thaliana")
       const speciesCode = codeMap?.[groupName] ?? null
 
-      const perGene = Object.fromEntries(genes.flatMap((gene) => {
+        const groupMap = buildSampleGroupMap(groupName)
+        const perGene = Object.fromEntries(genes.flatMap((gene) => {
           const tissueExpression: Record<string, number[]> = {}
           const normalizationTissue: Record<string, number[]> = {}
 
@@ -618,10 +618,7 @@ function computeMetrics(dataRef: any, calcOption: string, codeMap?: Record<strin
           )
 
           for (const k of sampleKeys) {
-            const tissueKey = `tissue_type_${k}`
-            const tissue = typeof gene[tissueKey] === 'string' && gene[tissueKey]
-              ? String(gene[tissueKey])
-              : "Unknown"
+            const tissue = groupMap[k] || "Unknown"
             const value = gene[k]
 
             if (!tissueExpression[tissue]) tissueExpression[tissue] = []
@@ -650,6 +647,21 @@ function computeMetrics(dataRef: any, calcOption: string, codeMap?: Record<strin
       return [groupName, perGene]
     })
   )
+}
+
+function buildSampleGroupMap(tableName: string): Record<string, string> {
+  const groupMap: Record<string, string> = {}
+  const records = columnStore.sampleMetadataByTable[tableName] || []
+  const groupColumn = selectedGroupingColumn.value
+  for (const record of records) {
+    const sampleName = String(record.column_name ?? "")
+    if (!sampleName) continue
+    const rawValue = record[groupColumn]
+    groupMap[sampleName] = rawValue !== null && rawValue !== undefined && String(rawValue) !== ""
+      ? String(rawValue)
+      : "Unknown"
+  }
+  return groupMap
 }
 
 async function fetchOrthogroupDataForAllSpecies() {
@@ -1192,7 +1204,7 @@ async function initPhylotree(newick_str: string, metrics: any) {
           const selectedFields = visualizationStore.tooltipFields
           let tooltipHtml = `
             <b>${entityLabel}:</b> ${d.geneId}<br>
-            <b>Tissue:</b> ${d.tissue}<br>
+            <b>${groupingColumnLabel.value}:</b> ${d.tissue}<br>
             <b>Value:</b> ${typeof d.value === 'number' ? d.value.toFixed(3) : d.value}<br>
             <b>Species:</b> ${d.species}<br>
           `
@@ -1802,6 +1814,18 @@ watch(
     if (!newickstr.value || !lastMetrics.value) return;
     await nextTick();
     initPhylotree(newickstr.value, lastMetrics.value);
+  },
+);
+
+watch(
+  selectedGroupingColumn,
+  async () => {
+    if (props.hashLoading) return;
+    if (!newickstr.value) return;
+    const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
+    lastMetrics.value = metrics;
+    await nextTick();
+    initPhylotree(newickstr.value, metrics);
   },
 );
 

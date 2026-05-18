@@ -115,6 +115,39 @@
             </div>
           </div>
 
+          <!-- PhyloTree/Compare: Sample grouping column -->
+          <div v-if="context === 'phylogeneticTree' || context === 'compare'" class="mb-4">
+            <div class="flex items-center gap-2 mb-2">
+              <h3 class="text-md font-semibold cursor-default text-primary-900">
+                Group Samples By
+              </h3>
+              <InfoTooltip
+                title="Sample Grouping"
+                description="Select one sample metadata column used to aggregate and label expression values."
+              />
+            </div>
+            <div class="max-h-48 overflow-y-auto border border-gray-200 rounded-md p-2 bg-gray-50 space-y-1">
+              <label
+                v-for="(label, columnName) in groupingColumnOptions"
+                :key="columnName"
+                class="flex items-center gap-2 px-2 py-1 text-sm rounded cursor-pointer hover:bg-white"
+              >
+                <input
+                  type="radio"
+                  name="sample-grouping-column"
+                  :value="columnName"
+                  :checked="selectedGroupingColumn === columnName"
+                  @change="setGroupingColumn(String(columnName))"
+                  class="h-4 w-4 text-primary-600 border-gray-300 focus:ring-primary-500"
+                />
+                <span class="truncate">{{ label }}</span>
+              </label>
+              <div v-if="Object.keys(groupingColumnOptions).length === 0" class="text-sm text-gray-500 italic text-center py-3">
+                No sample metadata columns available
+              </div>
+            </div>
+          </div>
+
           <!-- Heatmap: Hide empty columns -->
           <div
             class="flex items-center gap-2 mb-2"
@@ -313,12 +346,12 @@
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-2">
                 <h3 class="text-md font-semibold cursor-default text-primary-900">
-                  Cluster {{ context === 'phylogeneticTree' ? 'Tissues' : 'Columns' }}
+                  Cluster {{ context === 'phylogeneticTree' ? 'Sample Groups' : 'Columns' }}
                 </h3>
                 <InfoTooltip
                   title="Column Clustering"
                   :description="context === 'phylogeneticTree' 
-                    ? 'Group similar tissue types together based on their expression profiles across species.'
+                    ? 'Group similar sample metadata values together based on their expression profiles across species.'
                     : 'Group similar samples together based on their expression profiles.'"
                 />
               </div>
@@ -1091,6 +1124,30 @@ const onCompareExpressionChange = (event: Event) => {
   const value = (event.target as HTMLSelectElement).value;
   store.setCompareState({ expression: value });
 };
+
+const groupingColumnOptions = computed<Record<string, string>>(() => toOptionsRecord(columnsStore.filterableColColumns));
+
+function defaultGroupingColumn(): string {
+  if (columnsStore.tissueColumnName) return columnsStore.tissueColumnName;
+  return columnsStore.filterableColColumns[0]?.column_name || '';
+}
+
+const selectedGroupingColumn = computed(() => {
+  const configured = props.context === 'compare'
+    ? store.compare.groupingColumn
+    : store.phyloTree.groupingColumn;
+  return configured && groupingColumnOptions.value[configured]
+    ? configured
+    : defaultGroupingColumn();
+});
+
+function setGroupingColumn(columnName: string) {
+  if (props.context === 'compare') {
+    store.setCompareState({ groupingColumn: columnName });
+  } else if (props.context === 'phylogeneticTree') {
+    store.setPhyloTreeState({ groupingColumn: columnName });
+  }
+}
 
 // Convert COLORSCALES keys into a Record<string, string> for DropdownMenu options
 const colorScaleDropdownOptions = Object.keys(COLORSCALES).reduce(

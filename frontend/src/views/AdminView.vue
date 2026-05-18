@@ -398,6 +398,29 @@
         @imported="onMetadataImported"
       />
 
+      <!-- Metadata Delete Confirmation Modal -->
+      <div v-if="deleteModalColumn" class="modal-overlay" @click.self="closeDeleteModal">
+        <div class="modal-sm">
+          <h3>Delete Custom Metadata</h3>
+          <p style="color: #6b7280; font-size: 14px; margin: 0 0 16px 0;">
+            Delete <strong>{{ deleteModalColumn }}</strong> from the application metadata configuration.
+          </p>
+          <label class="toggle-label" style="margin-bottom: 20px; display: flex; align-items: flex-start; gap: 8px;">
+            <input type="checkbox" v-model="deleteFromH5ad" />
+            <span>
+              <strong>Permanently delete from H5AD files</strong>
+              <span class="hint" style="display: block;">Removes the column from the underlying .h5ad file for each enabled dataset.</span>
+            </span>
+          </label>
+          <div class="modal-actions">
+            <button class="btn btn-outline" @click="closeDeleteModal">Cancel</button>
+            <button class="btn btn-danger" :disabled="deleteRunning" @click="confirmDeleteColumn">
+              {{ deleteRunning ? 'Deleting…' : 'Delete' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- Reload Confirmation Modal -->
       <div v-if="showReloadConfirm" class="modal-overlay" @click.self="showReloadConfirm = false">
         <div class="modal-sm">
@@ -562,6 +585,9 @@ export default defineComponent({
     // Import modal state
     const showImportModal = ref(false);
     const importTarget = ref<'var' | 'obs'>('var');
+    const deleteModalColumn = ref<string | null>(null);
+    const deleteFromH5ad = ref(false);
+    const deleteRunning = ref(false);
 
     const tabs = [
       { id: 'project', label: 'Project', icon: '⚙️' },
@@ -836,21 +862,35 @@ export default defineComponent({
       showStatus('Metadata imported successfully', 'success');
     }
 
-    async function deleteColumn(columnName: string) {
-      if (!confirm(`Delete custom column '${columnName}'? This cannot be undone.`)) return;
+    function deleteColumn(columnName: string) {
+      deleteModalColumn.value = columnName;
+      deleteFromH5ad.value = false;
+    }
 
-      const persistChoice = confirm('Also remove from H5AD files on disk? (Cancel = memory only)');
+    function closeDeleteModal() {
+      if (deleteRunning.value) return;
+      deleteModalColumn.value = null;
+      deleteFromH5ad.value = false;
+    }
 
+    async function confirmDeleteColumn() {
+      if (!deleteModalColumn.value) return;
+      const columnName = deleteModalColumn.value;
+      deleteRunning.value = true;
       try {
         await axios.delete(
-          `${adminBaseUrl}/metadata/${columnName}?persist=${persistChoice}`,
+          `${adminBaseUrl}/metadata/${columnName}?persist=${deleteFromH5ad.value}`,
           { headers: getAuthHeaders() }
         );
+        deleteModalColumn.value = null;
+        deleteFromH5ad.value = false;
         await loadConfig();
         await columnsStore.refreshColumns();
         showStatus(`Column '${columnName}' deleted`, 'success');
       } catch (err: unknown) {
         showStatus(getRequestErrorMessage(err, 'Delete failed'), 'error');
+      } finally {
+        deleteRunning.value = false;
       }
     }
 
@@ -906,6 +946,7 @@ export default defineComponent({
       activeTab, tabs, hasChanges, datasets,
       loadConfig, saveConfig, reloadConfig, restartBackend, updateTags, updateArray,
       onColumnsUpdate, openMetadataImport, onMetadataImported, deleteColumn,
+      deleteModalColumn, deleteFromH5ad, deleteRunning, closeDeleteModal, confirmDeleteColumn,
       showImportModal, importTarget,
       profiles, showProfileMenu, showSaveProfileModal,
       profileName, profileDescription, openSaveProfile, saveProfile, loadProfile,
@@ -1020,6 +1061,9 @@ export default defineComponent({
 
 .btn-warning { background: #f59e0b; color: white; }
 .btn-warning:hover { background: #d97706; }
+
+.btn-danger { background: #dc2626; color: white; }
+.btn-danger:hover:not(:disabled) { background: #b91c1c; }
 
 /* Profile Dropdown */
 .profile-dropdown { position: relative; }

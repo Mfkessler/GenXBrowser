@@ -689,13 +689,36 @@ def validate_metadata_import():
     if not data_str.strip():
         return jsonify({"success": False, "error": "Missing 'data' (TSV content)"}), 400
     
-    # Check for duplicate column names
     config_mgr = get_config_manager()
     existing_cols = config_mgr.get_column_definitions()
-    if column_name in existing_cols:
+    existing_def = existing_cols.get(column_name)
+    if existing_def:
+        existing_target = 'obs' if existing_def.get('is_sample_metadata', False) else 'var'
+        if existing_target != target:
+            return jsonify({
+                "success": False,
+                "error": f"Column '{column_name}' already exists for .{existing_target}. Choose a different name or import into .{existing_target}."
+            }), 400
+        if existing_def.get('source') != 'custom':
+            return jsonify({
+                "success": False,
+                "error": f"Column '{column_name}' is auto-discovered and cannot be updated by metadata import."
+            }), 400
+
+    legacy_axis_conflict = False
+    try:
+        service = get_service()
+        adata = service.registry.load(dataset)
+        if adata is not None:
+            axis = adata.var if target == 'var' else adata.obs
+            legacy_axis_conflict = column_name in axis.columns and column_name not in existing_cols
+    except Exception:
+        legacy_axis_conflict = False
+
+    if legacy_axis_conflict:
         return jsonify({
             "success": False,
-            "error": f"Column '{column_name}' already exists. Choose a different name."
+            "error": f"Column '{column_name}' exists in the H5AD file but is not registered as custom metadata. Add it to the Admin metadata configuration before updating it."
         }), 400
     
     try:
@@ -972,16 +995,19 @@ def confirm_metadata_import():
         is_sample_metadata = (target == 'obs')
         
         config = config_mgr.get_config()
-        config.setdefault('column_definitions', {})[column_name] = {
-            "display_name": display_name or column_name.replace("_", " ").title(),
-            "type": inferred_type,
-            "is_array": False,
+        column_defs = config.setdefault('column_definitions', {})
+        existing_def = column_defs.get(column_name, {})
+        column_defs[column_name] = {
+            "display_name": display_name or existing_def.get("display_name") or column_name.replace("_", " ").title(),
+            "type": type_override or existing_def.get("type") or inferred_type,
+            "is_array": existing_def.get("is_array", False),
+            "array_separator": existing_def.get("array_separator", ","),
             "is_meta": is_meta,
             "is_sample_metadata": is_sample_metadata,
-            "visible": True,
-            "sortable": True,
-            "order": len(config.get('column_definitions', {})),
-            "source": "custom",  # Mark as user-added
+            "visible": existing_def.get("visible", True),
+            "sortable": existing_def.get("sortable", True),
+            "order": existing_def.get("order", len(column_defs)),
+            "source": "custom",
         }
         
         # Add to meta_columns or sample_metadata_columns
@@ -1000,7 +1026,7 @@ def confirm_metadata_import():
         
         return jsonify({
             "success": True,
-            "message": f"Column '{column_name}' added successfully",
+            "message": f"Column '{column_name}' imported successfully",
             "results": results,
             "column_definition": config['column_definitions'][column_name]
         })
@@ -1050,10 +1076,15 @@ def delete_metadata_column(column_name):
             adata = service.registry.load(code)
             if adata is not None:
                 is_var = col_def.get('is_meta', False)
+                changed_memory = False
                 if is_var and column_name in adata.var.columns:
                     adata.var.drop(columns=[column_name], inplace=True)
+                    changed_memory = True
                 elif not is_var and column_name in adata.obs.columns:
                     adata.obs.drop(columns=[column_name], inplace=True)
+                    changed_memory = True
+                if changed_memory:
+                    logger.info(f"Removed metadata column '{column_name}' from cached {code} .{'var' if is_var else 'obs'}")
                 
                 # Optionally remove from h5ad file on disk
                 if persist:
@@ -1067,8 +1098,10 @@ def delete_metadata_column(column_name):
                             disk_adata = anndata.read_h5ad(str(h5ad_files[0]))
                             if is_var and column_name in disk_adata.var.columns:
                                 disk_adata.var.drop(columns=[column_name], inplace=True)
+                                logger.info(f"Removed metadata column '{column_name}' from {h5ad_files[0]} .var")
                             elif not is_var and column_name in disk_adata.obs.columns:
                                 disk_adata.obs.drop(columns=[column_name], inplace=True)
+                                logger.info(f"Removed metadata column '{column_name}' from {h5ad_files[0]} .obs")
                             disk_adata.write_h5ad(str(h5ad_files[0]))
                     except Exception as pe:
                         logger.error(f"Failed to persist deletion for {code}: {pe}")

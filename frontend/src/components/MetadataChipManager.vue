@@ -29,7 +29,7 @@
     <!-- Info Banner -->
     <div class="chip-info">
       <span class="info-icon">ℹ️</span>
-      Drag to reorder · Click 👁 to show/hide · Double-click label to rename · Change the green badge to override the data type · Click <strong>sep:</strong> badge on array columns to toggle the multi-value separator · Click <strong>🧬 tissue</strong> badge on sample columns to set/unset the tissue role
+      Drag to reorder · Click 👁 to show/hide · Double-click label to rename · Change the green badge to override the data type · Click <strong>sep:</strong> badge on array columns to toggle the multi-value separator · Click <strong>Default</strong> badge on sample columns to set/unset the default sample column
     </div>
 
     <!-- Draggable Chips -->
@@ -102,14 +102,14 @@
             sep:<code>{{ element.array_separator }}</code>
           </button>
 
-          <!-- Tissue Role Badge (only for obs/sample columns) -->
+          <!-- Default Sample Column Badge (only for obs/sample columns) -->
           <button
             v-if="element.is_sample_metadata"
             :class="['chip-tissue-badge', { active: element.name === tissueColumn }]"
-            :title="element.name === tissueColumn ? 'This is the tissue column — click to unset' : 'Click to set as tissue column'"
+            :title="element.name === tissueColumn ? 'This is the default sample column — click to unset' : 'Click to set as default sample column'"
             @click.stop="toggleTissueRole(element)"
           >
-            🧬 {{ element.name === tissueColumn ? 'tissue ✓' : 'tissue?' }}
+            Default{{ element.name === tissueColumn ? ' ✓' : '?' }}
           </button>
 
           <!-- Delete button for custom columns -->
@@ -194,7 +194,7 @@ export default defineComponent({
       type: Object as PropType<Record<string, ColumnDefinition>>,
       required: true,
     },
-    /** The currently configured tissue column name (from config.tissue_column) */
+    /** The currently configured default sample column name (stored as config.tissue_column for compatibility) */
     tissueColumn: {
       type: String as PropType<string | null>,
       default: null,
@@ -351,7 +351,7 @@ export default defineComponent({
     }
 
     function toggleTissueRole(chip: ChipItem) {
-      // If already the tissue column, unset it; otherwise set it
+      // If already the default sample column, unset it; otherwise set it
       const newVal = chip.name === props.tissueColumn ? null : chip.name;
       emit('update:tissueColumn', newVal);
     }

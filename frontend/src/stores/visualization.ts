@@ -25,6 +25,7 @@ export interface PhyloTreeState {
   resetCounter: number;  // Incremented on reset to trigger watcher
   selectedOrthogroup: string;  // Currently selected orthogroup for phylotree view
   branchLengthMode: 'cladogram' | 'phylogram';  // Tree x-axis interpretation
+  groupingColumn: string;  // Sample metadata column used to aggregate expression
 }
 
 export interface CompareState {
@@ -34,6 +35,7 @@ export interface CompareState {
   expression: string;
   selectedSpecies: string[];
   showAllTranscripts: boolean;
+  groupingColumn: string;
 }
 
 export interface VisualizationState {
@@ -91,6 +93,7 @@ function normalizePhyloTreeState(state?: Partial<PhyloTreeState> | null): PhyloT
     branchLengthMode: state?.branchLengthMode === 'phylogram' || state?.branchLengthMode === 'cladogram'
       ? state.branchLengthMode
       : defaults.branchLengthMode,
+    groupingColumn: typeof state?.groupingColumn === 'string' ? state.groupingColumn : defaults.groupingColumn,
     resetCounter: typeof state?.resetCounter === 'number' ? state.resetCounter : defaults.resetCounter,
   };
 }
@@ -103,6 +106,7 @@ function normalizeCompareState(state?: Partial<CompareState> | null): CompareSta
     ...state,
     selectedSpecies: Array.isArray(state?.selectedSpecies) ? [...state.selectedSpecies] : defaults.selectedSpecies,
     selectedOrthogroup: typeof state?.selectedOrthogroup === 'string' ? state.selectedOrthogroup : defaults.selectedOrthogroup,
+    groupingColumn: typeof state?.groupingColumn === 'string' ? state.groupingColumn : defaults.groupingColumn,
   };
 }
 
@@ -157,6 +161,7 @@ function getDefaultState(): VisualizationState {
       resetCounter: 0, // Incremented on reset to trigger watcher
       selectedOrthogroup: '',  // Will be auto-selected when OGs are loaded
       branchLengthMode: 'cladogram',  // Default: cladogram (better readability with skewed branch lengths)
+      groupingColumn: '',
     },
     // Compare view state
     compare: {
@@ -166,6 +171,7 @@ function getDefaultState(): VisualizationState {
       expression: 'tpm',
       selectedSpecies: [],
       showAllTranscripts: false,
+      groupingColumn: '',
     },
   };
 }
@@ -348,6 +354,9 @@ export const useVisualizationStore = defineStore("visualization", {
       if (state.showAllTranscripts !== undefined) {
         this.compare.showAllTranscripts = state.showAllTranscripts;
       }
+      if (state.groupingColumn !== undefined) {
+        this.compare.groupingColumn = state.groupingColumn;
+      }
     },
     /**
      * Initialize default SideColors after columns are available.
@@ -446,6 +455,7 @@ export const useVisualizationStore = defineStore("visualization", {
           resetCounter: this.phyloTree.resetCounter,
           selectedOrthogroup: this.phyloTree.selectedOrthogroup,
           branchLengthMode: this.phyloTree.branchLengthMode,
+          groupingColumn: this.phyloTree.groupingColumn,
         },
         compare: {
           plotType: this.compare.plotType,
@@ -454,6 +464,7 @@ export const useVisualizationStore = defineStore("visualization", {
           expression: this.compare.expression,
           selectedSpecies: [...this.compare.selectedSpecies],
           showAllTranscripts: this.compare.showAllTranscripts,
+          groupingColumn: this.compare.groupingColumn,
         },
       };
     },

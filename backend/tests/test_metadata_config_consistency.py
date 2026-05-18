@@ -63,6 +63,8 @@ def build_service(config, adata_by_species):
         "float64": "double precision",
         "bool": "boolean",
     }.get(dtype, "text")
+    service._custom_overlays = {}
+    service._save_custom_overlays = lambda: None
     service.reload_config = lambda: None
     return service
 
@@ -219,3 +221,69 @@ def test_delete_metadata_column_cleans_stale_config_references():
     assert updated["frontend_settings"]["hidden_columns"] == []
     assert updated["frontend_settings"]["column_order"] == ["description"]
     assert updated["tissue_column"] is None
+
+
+def test_metadata_import_upserts_existing_custom_sample_column_for_another_dataset():
+    at = build_adata()
+    ps = build_adata()
+    ps.obs.index = ["ps_sample_a", "ps_sample_b"]
+    config = {
+        "species": {"AT": {"enabled": True}, "PS": {"enabled": True}},
+        "tissue_column": "tissue",
+        "sample_metadata_columns": {
+            "enabled": True,
+            "columns": ["tissue", "Group"],
+            "default_visible_columns": [],
+        },
+        "column_definitions": {
+            "tissue": {
+                "display_name": "Tissue",
+                "type": "text",
+                "is_meta": False,
+                "is_sample_metadata": True,
+                "visible": True,
+                "order": 0,
+                "source": "auto",
+            },
+            "Group": {
+                "display_name": "Group",
+                "type": "text",
+                "is_meta": False,
+                "is_sample_metadata": True,
+                "visible": True,
+                "order": 1,
+                "source": "custom",
+            },
+        },
+    }
+
+    app = Flask(__name__)
+    app.register_blueprint(admin_bp)
+    app.config_manager = DummyConfigManager(config)
+    app.h5ad_service = build_service(config, {"AT": at, "PS": ps})
+
+    payload = {
+        "dataset": "PS",
+        "target": "obs",
+        "column_name": "Group",
+        "display_name": "Group",
+        "data": "sample_id\tgroup\nps_sample_a\ttreated\nps_sample_b\tcontrol\n",
+        "separator": "\t",
+        "id_column": "sample_id",
+        "value_column": "group",
+        "persist_to_h5ad": False,
+        "apply_to_all_datasets": False,
+    }
+
+    with app.test_client() as client:
+        validate_response = client.post("/api/admin/metadata/import", json=payload)
+        confirm_response = client.post("/api/admin/metadata/import/confirm", json=payload)
+
+    assert validate_response.status_code == 200
+    assert validate_response.get_json()["validation"]["matched"] == 2
+    assert confirm_response.status_code == 200
+    body = confirm_response.get_json()
+    assert body["success"] is True
+    assert body["results"]["PS"]["status"] == "applied"
+    assert list(ps.obs["Group"]) == ["treated", "control"]
+    assert app.config_manager.get_config()["column_definitions"]["Group"]["source"] == "custom"
