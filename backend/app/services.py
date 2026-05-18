@@ -2447,7 +2447,7 @@ class GenXBrowserService:
             if cluster_rows and n_genes > 1:
                 try:
                     gene_data = np.nan_to_num(expr_df.values.T, nan=0.0, posinf=0.0, neginf=0.0)
-                    row_dist    = pdist(gene_data, metric=dist_metric)
+                    row_dist    = np.nan_to_num(pdist(gene_data, metric=dist_metric), nan=0.0, posinf=0.0, neginf=0.0)
                     row_linkage = linkage(row_dist, method=linkage_method)
                     if n_genes <= OLO_THRESHOLD:
                         row_linkage = optimal_leaf_ordering(row_linkage, row_dist)
@@ -2460,7 +2460,7 @@ class GenXBrowserService:
             if cluster_cols and n_samples > 1:
                 try:
                     sample_data = np.nan_to_num(expr_df.values, nan=0.0, posinf=0.0, neginf=0.0)
-                    col_dist    = pdist(sample_data, metric=dist_metric)
+                    col_dist    = np.nan_to_num(pdist(sample_data, metric=dist_metric), nan=0.0, posinf=0.0, neginf=0.0)
                     col_linkage = linkage(col_dist, method=linkage_method)
                     if n_samples <= OLO_THRESHOLD:
                         col_linkage = optimal_leaf_ordering(col_linkage, col_dist)

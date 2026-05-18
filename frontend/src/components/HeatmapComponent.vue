@@ -656,7 +656,8 @@ function calculateSortedRows(processed: RowType[]): RowType[] {
   if (!processed || processed.length === 0) return [];
   
   // Check if clustering is enabled and we have cluster order
-  const { clusterRows, rowOrder: clusterRowOrder } = visualizationStore.clustering;
+  const { clusterRows } = visualizationStore.clustering;
+  const clusterRowOrder = visualizationStore.getClusterRowOrder(props.tableName);
   
   if (clusterRows && clusterRowOrder && clusterRowOrder.length === processed.length) {
     // Apply cluster ordering
@@ -684,7 +685,8 @@ function calculateSortedColumns(metaData: RowType[]): RowType[] {
   if (!metaData || metaData.length === 0) return [];
 
   // Check if clustering is enabled and we have cluster order
-  const { clusterCols, colOrder: clusterColOrder } = visualizationStore.clustering;
+  const { clusterCols } = visualizationStore.clustering;
+  const clusterColOrder = visualizationStore.getClusterColOrder(props.tableName);
   
   if (clusterCols && clusterColOrder && clusterColOrder.length === metaData.length) {
     // Apply cluster ordering
@@ -2058,6 +2060,8 @@ watch(
   [
     () => visualizationStore.clustering.rowOrder,
     () => visualizationStore.clustering.colOrder,
+    () => visualizationStore.clustering.rowOrdersByDataset[props.tableName],
+    () => visualizationStore.clustering.colOrdersByDataset[props.tableName],
   ],
   async () => {
     recalculateData();

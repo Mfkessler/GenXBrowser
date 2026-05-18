@@ -3,8 +3,9 @@
     <button
       type="button"
       @click="toggleDropdown"
-      :disabled="optionKeys.length === 0"
+      :disabled="isDisabled"
       class="flex items-center justify-between w-full border border-gray-300 rounded-md p-2 text-left"
+      :class="isDisabled ? 'cursor-not-allowed bg-gray-100 text-gray-400 opacity-70' : 'bg-white'"
     >
       <!-- Show the display value, not the key -->
       <!-- 🟢 Wenn kein Wert gewählt, zeige Placeholder -->
@@ -17,7 +18,7 @@
         fill="currentColor"
         :class="{
           'rotate-180': isOpen,
-          'opacity-50 cursor-not-allowed': optionKeys.length === 0,
+          'opacity-50 cursor-not-allowed': isDisabled,
         }"
       >
         <path
@@ -61,6 +62,7 @@ const props = defineProps<{
   modelValue: string;
   options: Record<string | number, string | number>;
   placeholder?: string;
+  disabled?: boolean;
 }>();
 
 const emit = defineEmits(["update:modelValue"]);
@@ -70,12 +72,14 @@ const isOpen = ref(false);
 const dropdownRoot = ref<HTMLElement | null>(null);
 
 const optionKeys = computed(() => Object.keys(props.options));
+const isDisabled = computed(() => props.disabled || optionKeys.value.length === 0);
 
 const selectedDisplayValue = computed(() =>
   selectedOption.value ? props.options[selectedOption.value] : "",
 );
 
 const toggleDropdown = async () => {
+  if (isDisabled.value) return;
   isOpen.value = !isOpen.value;
   if (isOpen.value) {
     await nextTick();

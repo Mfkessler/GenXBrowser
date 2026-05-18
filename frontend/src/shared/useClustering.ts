@@ -213,11 +213,12 @@ export function useClustering() {
     sampleFilters?: Record<string, unknown>
   ): Promise<void> {
     const { clusterRows, clusterCols, method, distance } = visualizationStore.clustering;
+    const datasetKey = tableName || undefined;
     
     // Nothing to cluster
     if (!clusterRows && !clusterCols) {
-      visualizationStore.setClusterRowOrder(null);
-      visualizationStore.setClusterColOrder(null);
+      visualizationStore.setClusterRowOrder(null, datasetKey);
+      visualizationStore.setClusterColOrder(null, datasetKey);
       return;
     }
     
@@ -248,10 +249,10 @@ export function useClustering() {
         );
         
         if (result.rowOrder && clusterRows) {
-          visualizationStore.setClusterRowOrder(result.rowOrder);
+          visualizationStore.setClusterRowOrder(result.rowOrder, datasetKey);
         }
         if (result.colOrder && clusterCols) {
-          visualizationStore.setClusterColOrder(result.colOrder);
+          visualizationStore.setClusterColOrder(result.colOrder, datasetKey);
         }
         
         return;
@@ -293,11 +294,11 @@ export function useClustering() {
       
       // Update store with results
       if (result.rowResult && clusterRows) {
-        visualizationStore.setClusterRowOrder(result.rowResult.order);
+        visualizationStore.setClusterRowOrder(result.rowResult.order, datasetKey);
       }
       
       if (result.colResult && clusterCols) {
-        visualizationStore.setClusterColOrder(result.colResult.order);
+        visualizationStore.setClusterColOrder(result.colResult.order, datasetKey);
       }
       
     } catch (e) {
@@ -306,8 +307,8 @@ export function useClustering() {
       error.value = errorMessage;
       
       // Clear cluster orders on error
-      visualizationStore.setClusterRowOrder(null);
-      visualizationStore.setClusterColOrder(null);
+      visualizationStore.setClusterRowOrder(null, datasetKey);
+      visualizationStore.setClusterColOrder(null, datasetKey);
     } finally {
       isComputing.value = false;
       visualizationStore.setClusteringComputing(false);
@@ -318,8 +319,6 @@ export function useClustering() {
    * Clear all clustering results
    */
   function clearClustering() {
-    visualizationStore.setClusterRowOrder(null);
-    visualizationStore.setClusterColOrder(null);
     visualizationStore.setClusterRows(false);
     visualizationStore.setClusterCols(false);
   }

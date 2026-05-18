@@ -17,6 +17,8 @@ export interface ClusteringState {
   isComputing: boolean;
   rowOrder: number[] | null;  // Computed cluster order for rows
   colOrder: number[] | null;  // Computed cluster order for columns
+  rowOrdersByDataset: Record<string, number[]>;
+  colOrdersByDataset: Record<string, number[]>;
 }
 
 export interface PhyloTreeState {
@@ -74,6 +76,16 @@ export interface VisualizationState {
   phyloTree: PhyloTreeState;
   // Compare view state
   compare: CompareState;
+}
+
+function cloneOrderMap(
+  value?: Record<string, number[]> | null,
+  fallback: Record<string, number[]> = {},
+): Record<string, number[]> {
+  const source = value && typeof value === 'object' ? value : fallback;
+  return Object.fromEntries(
+    Object.entries(source).filter(([, order]) => Array.isArray(order)).map(([key, order]) => [key, [...order]]),
+  );
 }
 
 function normalizePhyloTreeState(state?: Partial<PhyloTreeState> | null): PhyloTreeState {
@@ -153,6 +165,8 @@ function getDefaultState(): VisualizationState {
       isComputing: false,
       rowOrder: null,
       colOrder: null,
+      rowOrdersByDataset: {},
+      colOrdersByDataset: {},
     },
     // PhyloTree view state
     phyloTree: {
@@ -210,6 +224,9 @@ export const useVisualizationStore = defineStore("visualization", {
     },
     setRowOrderName(name: string) {
       this.rowOrder.name = name;
+      if (name) {
+        this.setClusterRows(false);
+      }
     },
     toggleRowOrder() {
       if (this.rowOrder.order === "asc") {
@@ -220,8 +237,14 @@ export const useVisualizationStore = defineStore("visualization", {
     },
     setColOrderName(name: string) {
       this.colOrder.name = name;
+      if (name) {
+        this.setClusterCols(false);
+      }
     },
     setCustomColOrderState(state: Partial<VisualizationState["customColOrder"]>) {
+      if (state.enabled) {
+        this.setClusterCols(false);
+      }
       this.customColOrder = {
         ...this.customColOrder,
         ...state,
@@ -267,14 +290,19 @@ export const useVisualizationStore = defineStore("visualization", {
     // Clustering actions
     setClusterRows(enabled: boolean) {
       this.clustering.clusterRows = enabled;
-      if (!enabled) {
-        this.clustering.rowOrder = null;
+      this.clustering.rowOrder = null;
+      this.clustering.rowOrdersByDataset = {};
+      if (enabled) {
+        this.rowOrder.name = "";
       }
     },
     setClusterCols(enabled: boolean) {
       this.clustering.clusterCols = enabled;
-      if (!enabled) {
-        this.clustering.colOrder = null;
+      this.clustering.colOrder = null;
+      this.clustering.colOrdersByDataset = {};
+      if (enabled) {
+        this.colOrder.name = "";
+        this.customColOrder.enabled = false;
       }
     },
     setClusterMethod(method: ClusterMethod) {
@@ -282,21 +310,55 @@ export const useVisualizationStore = defineStore("visualization", {
       // Reset computed orders when method changes
       this.clustering.rowOrder = null;
       this.clustering.colOrder = null;
+      this.clustering.rowOrdersByDataset = {};
+      this.clustering.colOrdersByDataset = {};
     },
     setClusterDistance(distance: ClusterDistance) {
       this.clustering.distance = distance;
       // Reset computed orders when distance metric changes
       this.clustering.rowOrder = null;
       this.clustering.colOrder = null;
+      this.clustering.rowOrdersByDataset = {};
+      this.clustering.colOrdersByDataset = {};
     },
     setClusteringComputing(isComputing: boolean) {
       this.clustering.isComputing = isComputing;
     },
-    setClusterRowOrder(order: number[] | null) {
+    setClusterRowOrder(order: number[] | null, datasetKey?: string) {
+      if (datasetKey) {
+        if (order) {
+          this.clustering.rowOrdersByDataset = {
+            ...this.clustering.rowOrdersByDataset,
+            [datasetKey]: [...order],
+          };
+        } else {
+          const remaining = { ...this.clustering.rowOrdersByDataset };
+          delete remaining[datasetKey];
+          this.clustering.rowOrdersByDataset = remaining;
+        }
+      }
       this.clustering.rowOrder = order;
     },
-    setClusterColOrder(order: number[] | null) {
+    setClusterColOrder(order: number[] | null, datasetKey?: string) {
+      if (datasetKey) {
+        if (order) {
+          this.clustering.colOrdersByDataset = {
+            ...this.clustering.colOrdersByDataset,
+            [datasetKey]: [...order],
+          };
+        } else {
+          const remaining = { ...this.clustering.colOrdersByDataset };
+          delete remaining[datasetKey];
+          this.clustering.colOrdersByDataset = remaining;
+        }
+      }
       this.clustering.colOrder = order;
+    },
+    getClusterRowOrder(datasetKey?: string) {
+      return datasetKey ? (this.clustering.rowOrdersByDataset[datasetKey] ?? null) : this.clustering.rowOrder;
+    },
+    getClusterColOrder(datasetKey?: string) {
+      return datasetKey ? (this.clustering.colOrdersByDataset[datasetKey] ?? null) : this.clustering.colOrder;
     },
     // PhyloTree actions
     toggleNodeCollapsed(nodeId: string) {
@@ -409,6 +471,8 @@ export const useVisualizationStore = defineStore("visualization", {
                 : clustering.colOrder === null
                   ? null
                   : this.clustering.colOrder,
+              rowOrdersByDataset: cloneOrderMap(clustering.rowOrdersByDataset, this.clustering.rowOrdersByDataset),
+              colOrdersByDataset: cloneOrderMap(clustering.colOrdersByDataset, this.clustering.colOrdersByDataset),
             };
           } else {
             this[key] = value;
@@ -448,6 +512,8 @@ export const useVisualizationStore = defineStore("visualization", {
           ...this.clustering,
           rowOrder: this.clustering.rowOrder ? [...this.clustering.rowOrder] : null,
           colOrder: this.clustering.colOrder ? [...this.clustering.colOrder] : null,
+          rowOrdersByDataset: cloneOrderMap(this.clustering.rowOrdersByDataset),
+          colOrdersByDataset: cloneOrderMap(this.clustering.colOrdersByDataset),
         },
         phyloTree: {
           collapsedNodes: [...this.phyloTree.collapsedNodes],

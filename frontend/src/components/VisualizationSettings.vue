@@ -437,15 +437,20 @@
             <div class="flex items-center mb-4">
               <DropdownMenu
                 :key="Object.keys(rowOrderOptions).length"
-                v-model="store.rowOrder.name"
+                :modelValue="rowOrderName"
+                @update:modelValue="selectRowOrder"
                 :options="rowOrderOptions"
+                placeholder="No metadata sorting"
                 class="mr-2"
               />
               <SortToggleButton
                 v-model="store.rowOrder.order"
-                :disabled="store.rowOrder.name === 'OLO'"
+                :disabled="store.clustering.clusterRows || store.rowOrder.name === 'OLO' || !store.rowOrder.name"
               />
             </div>
+            <p v-if="orderFeedback.axis === 'row'" class="-mt-2 mb-3 text-xs text-primary-700">
+              {{ orderFeedback.message }}
+            </p>
           </div>
 
           <div>
@@ -487,18 +492,23 @@
             </h3>
             <div class="flex items-center mb-4">
               <DropdownMenu
-                v-model="store.colOrder.name"
+                :modelValue="colOrderName"
+                @update:modelValue="selectColOrder"
                 :options="colOrderOptions"
+                placeholder="No metadata sorting"
                 class="mr-2"
               />
               <SortToggleButton
                 v-model="store.colOrder.order"
-                :disabled="store.colOrder.name === 'OLO'"
+                :disabled="store.clustering.clusterCols || store.colOrder.name === 'OLO' || !store.colOrder.name"
               />
             </div>
+            <p v-if="orderFeedback.axis === 'col'" class="-mt-2 mb-3 text-xs text-primary-700">
+              {{ orderFeedback.message }}
+            </p>
           </div>
 
-          <div class="mb-4">
+          <div class="mb-4" :class="store.clustering.clusterCols ? 'opacity-50' : ''">
             <h3
               class="text-md font-semibold mb-2 cursor-default text-primary-900"
             >
@@ -507,7 +517,7 @@
             <div class="border border-gray-200 rounded-md p-3 bg-gray-50 space-y-3">
               <div class="flex items-center justify-between">
                 <span class="text-sm font-medium text-gray-700">Enable custom order</span>
-                <ToggleSwitch v-model="customOrderEnabled" />
+                <ToggleSwitch v-model="customOrderEnabled" :disabled="store.clustering.clusterCols" />
               </div>
               <template v-if="store.customColOrder.enabled">
                 <div v-if="!axisOnlyCustomOrder" class="grid grid-cols-2 gap-2">
@@ -963,6 +973,44 @@ const emit = defineEmits<{
 }>();
 
 const store = useVisualizationStore();
+
+const rowOrderName = computed({
+  get: () => store.rowOrder.name,
+  set: (name: string) => store.setRowOrderName(name),
+});
+
+const colOrderName = computed({
+  get: () => store.colOrder.name,
+  set: (name: string) => store.setColOrderName(name),
+});
+
+const orderFeedback = ref<{ axis: "row" | "col" | null; message: string }>({ axis: null, message: "" });
+let orderFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
+
+function showOrderFeedback(axis: "row" | "col", message: string) {
+  if (orderFeedbackTimer) clearTimeout(orderFeedbackTimer);
+  orderFeedback.value = { axis, message };
+  orderFeedbackTimer = setTimeout(() => {
+    orderFeedback.value = { axis: null, message: "" };
+    orderFeedbackTimer = null;
+  }, 2800);
+}
+
+function selectRowOrder(name: string) {
+  const replacedClustering = store.clustering.clusterRows && Boolean(name);
+  store.setRowOrderName(name);
+  if (replacedClustering) {
+    showOrderFeedback("row", "Row clustering is off. Row order is active now.");
+  }
+}
+
+function selectColOrder(name: string) {
+  const replacedClustering = store.clustering.clusterCols && Boolean(name);
+  store.setColOrderName(name);
+  if (replacedClustering) {
+    showOrderFeedback("col", "Column clustering is off. Column order is active now.");
+  }
+}
 
 const generalIsOpen = ref(true);
 const clusteringIsOpen = ref(false);
