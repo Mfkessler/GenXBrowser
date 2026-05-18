@@ -1,9 +1,8 @@
 <template>
   <main class="relative flex flex-col flex-1 min-h-[34rem] w-full min-w-0 border border-gray-300 rounded-lg sm:rounded-2xl bg-white shadow-sm overflow-hidden">
 
-    <div v-if="loading" class="absolute inset-0 z-50">
+    <div v-if="loading && !props.externalLoadingOverlay" class="absolute inset-0 z-50">
       <LoadingOverlay
-        v-if="loading"
         :progress="loadingProgress"
         label="Loading tree"
         cancellable
@@ -249,7 +248,7 @@ const closeTooltipModal = () => {
   selectedCellValue.value = "";
 };
 
-const emit = defineEmits(['openSettingsOverlay', 'update:tableName', 'update:orthogroupOptions']);
+const emit = defineEmits(['openSettingsOverlay', 'update:tableName', 'update:orthogroupOptions', 'update:loadingState']);
 
 const rows = ref<RowType[]>([]);
 const columnNames = ref<string[]>([]);
@@ -261,6 +260,8 @@ const highlightedGeneIds = ref<Record<string, Set<string>>>({});
 const newickstr = ref<string | null>(null);
 const loading = ref(true);
 const loadingProgress = ref<number | null>(null);
+let loadingProgressStart = 0;
+let loadingProgressEnd = 100;
 const fullTreeAvailable = ref(false);
 const noNewickResolved = ref(false);
 const noNewickMessage = ref("");
@@ -279,7 +280,17 @@ let activeOgListAbortController: AbortController | null = null;
 let suppressSelectedOrthogroupWatcher = false;
 
 function setLoadingProgress(step: number, totalSteps: number) {
-  loadingProgress.value = totalSteps > 0 ? (step / totalSteps) * 100 : null;
+  if (totalSteps <= 0) {
+    loadingProgress.value = null;
+    return;
+  }
+  const localProgress = Math.min(1, Math.max(0, step / totalSteps));
+  loadingProgress.value = loadingProgressStart + (loadingProgressEnd - loadingProgressStart) * localProgress;
+}
+
+function setLoadingProgressScope(start: number, end: number) {
+  loadingProgressStart = Math.min(100, Math.max(0, start));
+  loadingProgressEnd = Math.min(100, Math.max(loadingProgressStart, end));
 }
 
 function isCanceledRequest(error: unknown) {
@@ -296,6 +307,12 @@ function cancelActiveLoad() {
   loading.value = false;
   loadingProgress.value = null;
 }
+
+watch(
+  [loading, loadingProgress],
+  () => emit('update:loadingState', { loading: loading.value, progress: loadingProgress.value }),
+  { immediate: true },
+);
 
 const selectedGroupingColumn = computed(() => {
   const configured = visualizationStore.phyloTree.groupingColumn;
@@ -338,6 +355,7 @@ const commonOGs_options = computed(() => {
 // Expose orthogroupOptions to parent
 defineExpose({
   orthogroupOptions: commonOGs_options,
+  cancelActiveLoad,
   collapseAll: () => collapseAllClades(),
   expandAll: () => visualizationStore.resetPhyloTreeState(),
   collapseToSpecies: () => collapseToSpecies(),
@@ -424,6 +442,7 @@ const props = defineProps<{
   allTables: Record<string, string>;
   speciesCodeMap?: Record<string, string>; // table_name -> species_code (e.g., "arabidopsis_thaliana" -> "AT")
   hashLoading?: boolean; // True while parent is loading hash data
+  externalLoadingOverlay?: boolean;
   initialOrthogroup?: string | null; // OG from hash load
 }>();
 
@@ -447,9 +466,9 @@ function waitForPaint(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
-async function showLoadingFrame() {
+async function showLoadingFrame(options: { preserveProgress?: boolean } = {}) {
   loading.value = true;
-  loadingProgress.value = null;
+  if (!options.preserveProgress) loadingProgress.value = null;
   noNewickResolved.value = false;
   noNewickMessage.value = "";
   await nextTick();
@@ -597,17 +616,23 @@ function getAllOGs(dataRef: Record<string, any>, newicksRef: Record<string, stri
 }
 
 
-async function fetchAllSelected(options: { keepLoading?: boolean } = {}) {
+async function fetchAllSelected(options: { keepLoading?: boolean } = {}): Promise<boolean> {
   // Uses its own abort controller / sequence (NOT the shared
   // `activeAbortController` used by `renderTreeForSelectedOG`).  If we
   // shared it, a subsequent `renderTreeForSelectedOG` call from the same
   // watcher chain (or a concurrent watcher) would abort this fetch
   // before `commonOGs_array` is assigned, leaving the dropdown empty.
+  // Returns `true` when this request completed successfully, `false` when
+  // it was superseded by a newer call.  Callers must check the return value
+  // and skip `renderTreeForSelectedOG` on `false` to avoid the double-
+  // loading-overlay symptom caused by two concurrent watcher triggers.
   const requestId = ++ogListRequestSeq;
   activeOgListAbortController?.abort();
   const controller = new AbortController();
   activeOgListAbortController = controller;
+  setLoadingProgressScope(0, options.keepLoading ? 45 : 100);
   await showLoadingFrame();
+  setLoadingProgress(0, 1);
   try {
     // Use catalog-selected datasets from existingTables prop
     const selectedDatasets = props.existingTables && props.existingTables.length > 0 
@@ -652,7 +677,7 @@ async function fetchAllSelected(options: { keepLoading?: boolean } = {}) {
       })
     );
 
-    if (requestId !== ogListRequestSeq || controller.signal.aborted) return;
+    if (requestId !== ogListRequestSeq || controller.signal.aborted) return false;
 
     for (const entry of entries) {
       if (entry) results[entry.tableName] = entry.data;
@@ -713,12 +738,14 @@ async function fetchAllSelected(options: { keepLoading?: boolean } = {}) {
       suppressSelectedOrthogroupWatcher = false;
     }
     setLoadingProgress(totalSteps, totalSteps);
+    return true;
   } catch (error) {
     if (!isCanceledRequest(error)) console.error("Error loading phylogenetic tree data:", error);
+    return false;
   } finally {
     if (requestId === ogListRequestSeq) {
       if (!options.keepLoading) loading.value = false
-      loadingProgress.value = null;
+      if (!options.keepLoading) loadingProgress.value = null;
       activeOgListAbortController = null;
     }
   }
@@ -949,13 +976,29 @@ const cladeColors = ref<Map<string, string>>(new Map());
 const highlightColorPalette = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#14b8a6', '#3b82f6', '#8b5cf6', '#ec4899'];
 let nextColorIndex = 0;
 
-async function initPhylotree(newick_str: string, metrics: any) {
-  loading.value = true
+async function initPhylotree(
+  newick_str: string | null | undefined,
+  metrics: any,
+  options: { requestId?: number; manageLoading?: boolean } = {},
+): Promise<boolean> {
+  const isStale = () => options.requestId !== undefined && options.requestId !== loadRequestSeq
+
+  if (isStale()) return false
+
+  if (options.manageLoading) loading.value = true
+
+  if (typeof newick_str !== 'string' || newick_str.trim() === '') {
+    if (options.manageLoading) loading.value = false
+    return false
+  }
 
   resetContainer()
 
   const container = phylotreeContainer.value
-  if (!container) { loading.value = false; return }
+  if (!container) {
+    if (options.manageLoading) loading.value = false
+    return false
+  }
 
   // === 1. Parse Newick + build hierarchy + apply persisted collapse state ===
   let rawTree
@@ -963,9 +1006,11 @@ async function initPhylotree(newick_str: string, metrics: any) {
     rawTree = parseNewick(newick_str)
   } catch (e) {
     console.error('[PhyloTree] Newick parse error:', e)
-    loading.value = false
-    return
+    if (options.manageLoading) loading.value = false
+    return false
   }
+
+  if (isStale()) return false
 
   const fullHier = buildHierarchy(rawTree)
   fullHierarchy.value = fullHier
@@ -1528,7 +1573,8 @@ async function initPhylotree(newick_str: string, metrics: any) {
     svgSel.call(zoomBehavior.transform, t)
   }
 
-  loading.value = false
+  if (options.manageLoading) loading.value = false
+  return true
 }
 
 function orderTissueCategories(tissues: string[]): string[] {
@@ -1579,11 +1625,11 @@ function showNodeContextMenu(event: MouseEvent, container: HTMLElement, speciesT
     { label: isHidden ? 'Show species' : 'Hide species', action: () => {
       if (isHidden) hiddenSpecies.value.delete(speciesTableName)
       else hiddenSpecies.value.add(speciesTableName)
-      initPhylotree(newickstr.value, metrics)
+      void rerenderCurrentTree(metrics)
     }},
     { label: 'Show all species', action: () => {
       hiddenSpecies.value.clear()
-      initPhylotree(newickstr.value, metrics)
+      void rerenderCurrentTree(metrics)
     }},
   ]
   menuItems.forEach(item => {
@@ -1641,12 +1687,12 @@ function showInternalNodeContextMenu(event: MouseEvent, container: HTMLElement, 
         nextColorIndex++
         cladeColors.value.set(nodeId, c)
       }
-      initPhylotree(newickstr.value, metrics)
+      void rerenderCurrentTree(metrics)
     }},
     { label: '🧹 Clear all highlights', action: () => {
       cladeColors.value.clear()
       nextColorIndex = 0
-      initPhylotree(newickstr.value, metrics)
+      void rerenderCurrentTree(metrics)
     }},
   ]
   menuItems.forEach(item => {
@@ -1705,6 +1751,16 @@ function collapseToSpecies() {
   visualizationStore.setPhyloCollapsedNodes(ids)
 }
 
+async function rerenderCurrentTree(metrics: any = lastMetrics.value): Promise<boolean> {
+  if (props.hashLoading) return false;
+  if (loading.value) return false;
+  if (typeof newickstr.value !== "string" || !newickstr.value.trim()) return false;
+  if (!metrics) return false;
+  const requestId = loadRequestSeq;
+  await nextTick();
+  return initPhylotree(newickstr.value, metrics, { requestId });
+}
+
 
 
 // Helper function to render tree for currently selected orthogroup
@@ -1713,7 +1769,10 @@ async function renderTreeForSelectedOG() {
   activeAbortController?.abort();
   const controller = new AbortController();
   activeAbortController = controller;
-  await showLoadingFrame();
+  const continuingLoad = loading.value && typeof loadingProgress.value === "number" && Number.isFinite(loadingProgress.value);
+  const renderStartProgress = continuingLoad ? Math.max(loadingProgress.value ?? 0, 45) : 0;
+  setLoadingProgressScope(renderStartProgress, 100);
+  await showLoadingFrame({ preserveProgress: continuingLoad });
   setLoadingProgress(0, 4);
   try {
     const ogKey = selectedOrthogroupKey();
@@ -1732,7 +1791,8 @@ async function renderTreeForSelectedOG() {
         lastMetrics.value = metrics;
         newickstr.value = fullNewick.value;
         await nextTick();
-        await initPhylotree(newickstr.value, metrics);
+        const rendered = await initPhylotree(newickstr.value, metrics, { requestId });
+        if (!rendered) return;
         setLoadingProgress(4, 4);
         return;
       }
@@ -1756,7 +1816,8 @@ async function renderTreeForSelectedOG() {
         lastMetrics.value = metrics;
         newickstr.value = availableFullNewick;
         await nextTick();
-        await initPhylotree(newickstr.value, metrics);
+        const rendered = await initPhylotree(newickstr.value, metrics, { requestId });
+        if (!rendered) return;
         setLoadingProgress(4, 4);
         return;
       }
@@ -1781,10 +1842,12 @@ async function renderTreeForSelectedOG() {
     
     const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
     lastMetrics.value = metrics;
-    newickstr.value = newicks.value[ogKey];
+    const nextNewick = newicks.value[ogKey];
+    newickstr.value = typeof nextNewick === "string" && nextNewick.trim() ? nextNewick : null;
     if (newickstr.value !== null) {
       await nextTick();
-      await initPhylotree(newickstr.value, metrics);
+      const rendered = await initPhylotree(newickstr.value, metrics, { requestId });
+      if (!rendered) return;
       setLoadingProgress(4, 4);
     }
   } catch (error) {
@@ -1793,6 +1856,7 @@ async function renderTreeForSelectedOG() {
     loading.value = false;
   } finally {
     if (requestId === loadRequestSeq) {
+      loading.value = false;
       loadingProgress.value = null;
       activeAbortController = null;
     }
@@ -1832,13 +1896,15 @@ async function loadFullNewickForOG() {
     const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
     lastMetrics.value = metrics;
     await nextTick();
-    initPhylotree(newickstr.value, metrics);
+    const rendered = await initPhylotree(newickstr.value, metrics, { requestId });
+    if (rendered && requestId === loadRequestSeq) loading.value = false;
   } catch (e) {
     if (isCanceledRequest(e)) return;
     console.error("Failed to load full gene tree:", e);
     loading.value = false;
   } finally {
     if (requestId === loadRequestSeq) {
+      loading.value = false;
       activeAbortController = null;
       loadingProgress.value = null;
     }
@@ -1878,7 +1944,8 @@ watch(
   async (isLoading) => {
     // When hash loading completes (false), trigger initial data fetch
     if (isLoading === false) {
-      await fetchAllSelected({ keepLoading: true });
+      const ok = await fetchAllSelected({ keepLoading: true });
+      if (!ok) return; // superseded by a concurrent watcher trigger
       await renderTreeForSelectedOG();
     }
   },
@@ -1904,7 +1971,8 @@ watch(
   async () => {
     // Don't fetch while hash is still loading
     if (props.hashLoading) return;
-    await fetchAllSelected({ keepLoading: true });
+    const ok = await fetchAllSelected({ keepLoading: true });
+    if (!ok) return; // superseded by a concurrent watcher trigger
     await renderTreeForSelectedOG();
   },
   {deep: true}
@@ -1936,9 +2004,8 @@ watch(
   () => visualizationStore.expressionDisplay,
   async () => {
     if (props.hashLoading) return;
-    console.log('[PhylogeneticTree] Expression display changed:', visualizationStore.expressionDisplay)
-    // Fetch new data with updated layer/transform parameters
-    await fetchAllSelected({ keepLoading: true });
+    const ok = await fetchAllSelected({ keepLoading: true });
+    if (!ok) return; // superseded by a concurrent watcher trigger
     await renderTreeForSelectedOG();
   },
   { deep: true }
@@ -1988,10 +2055,7 @@ watch(
     () => visualizationStore.customColOrder.sampleNames.join("\u0000"),
   ],
   async () => {
-    if (props.hashLoading) return;
-    if (!newickstr.value || !lastMetrics.value) return;
-    await nextTick();
-    initPhylotree(newickstr.value, lastMetrics.value);
+    await rerenderCurrentTree(lastMetrics.value);
   },
 );
 
@@ -2002,8 +2066,7 @@ watch(
     if (!newickstr.value) return;
     const metrics = computeMetrics(tableData, "mean", props.speciesCodeMap);
     lastMetrics.value = metrics;
-    await nextTick();
-    initPhylotree(newickstr.value, metrics);
+    await rerenderCurrentTree(metrics);
   },
 );
 
@@ -2037,10 +2100,7 @@ watch(
     () => visualizationStore.phyloTree.branchLengthMode,
   ],
   async () => {
-    if (props.hashLoading) return;
-    if (!newickstr.value || !lastMetrics.value) return;
-    await nextTick();
-    initPhylotree(newickstr.value, lastMetrics.value);
+    await rerenderCurrentTree(lastMetrics.value);
   },
   { deep: true }
 );

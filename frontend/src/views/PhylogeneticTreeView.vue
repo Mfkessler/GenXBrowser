@@ -1,7 +1,12 @@
 <template>
   <div class="min-h-[100vh] flex flex-col relative">
-    <div v-if="hashLoading" class="absolute inset-0 z-50">
-      <LoadingOverlay label="Loading tree" cancellable @cancel="cancelHashLoading" />
+    <div v-if="combinedLoading" class="absolute inset-0 z-50">
+      <LoadingOverlay
+        label="Loading tree"
+        :progress="combinedLoadingProgress"
+        cancellable
+        @cancel="cancelUnifiedLoading"
+      />
     </div>
 
     <!-- PhyloTree Controls Bar -->
@@ -74,10 +79,7 @@
     </div>
 
     <!-- Gallery container: flex wrap and gap for nice grid layout -->
-    <div
-      v-if="!hashLoading"
-      class="flex gap-4 flex-grow p-2 overflow-visible min-w-0"
-    >
+    <div class="flex gap-4 flex-grow p-2 overflow-visible min-w-0">
       <div
         v-for="tableName in tableNames"
         :key="phyloInstanceKey(tableName)"
@@ -90,8 +92,10 @@
           :all-tables="allTables"
           :species-code-map="speciesCodeMap"
           :hash-loading="hashLoading"
+          external-loading-overlay
           :initial-orthogroup="initialOrthogroup"
           @openSettingsOverlay="openSettingsOverlay"
+          @update:loading-state="onChildLoadingState"
           @update:tableName="onUpdateTableName(tableName, $event)"
         />
       </div>
@@ -131,14 +135,37 @@ const speciesCodeMap = ref<Record<string, string>>({});
 const showSettingsOverlay = ref(false);
 type PhylogeneticTreeExpose = InstanceType<typeof PhylogeneticTree> & {
   orthogroupOptions?: Record<string, string>;
+  cancelActiveLoad?: () => void;
   expandAll?: () => void;
   collapseAll?: () => void;
   collapseToSpecies?: () => void;
 };
 const phyloTreeRefs = ref<PhylogeneticTreeExpose[] | null>(null);
 const hashLoading = ref(true); // Prevent child from fetching until hash is loaded
+const childLoading = ref(true);
+const childLoadingProgress = ref<number | null>(null);
+const combinedLoadingProgress = ref<number | null>(5);
 const initialOrthogroup = ref<string | null>(null); // OG from hash load
 let activeHashAbortController: AbortController | null = null;
+
+const combinedLoading = computed(() => hashLoading.value || childLoading.value);
+
+watch(
+  [hashLoading, childLoading, childLoadingProgress],
+  () => {
+    if (!combinedLoading.value) {
+      combinedLoadingProgress.value = null;
+      return;
+    }
+
+    const current = combinedLoadingProgress.value ?? 0;
+    const next = typeof childLoadingProgress.value === "number" && Number.isFinite(childLoadingProgress.value)
+      ? childLoadingProgress.value
+      : 5;
+    combinedLoadingProgress.value = Math.min(100, Math.max(current, next));
+  },
+  { immediate: true },
+);
 
 // Get orthogroup options from the first PhyloTree instance
 const phyloTreeOrthogroupOptions = computed(() => {
@@ -168,10 +195,16 @@ function callOnAllTrees(method: 'expandAll' | 'collapseAll' | 'collapseToSpecies
   }
 }
 
-function cancelHashLoading() {
+function cancelUnifiedLoading() {
   activeHashAbortController?.abort();
   activeHashAbortController = null;
   hashLoading.value = false;
+  phyloTreeRefs.value?.forEach((tree) => tree.cancelActiveLoad?.());
+}
+
+function onChildLoadingState(state: { loading: boolean; progress: number | null }) {
+  childLoading.value = state.loading;
+  childLoadingProgress.value = state.progress;
 }
 
 const zoomLevel = computed(() => visualizationStore.phyloTree.zoomTransform.k);
