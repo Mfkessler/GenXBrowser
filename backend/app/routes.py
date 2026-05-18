@@ -1154,8 +1154,6 @@ def calculate_ora():
             source="meta"
         )
         
-        # Get topological filter setting (default True for GO terms)
-        topological_filter = data.get('topological_filter', True)
         max_subset_size = int(data.get('max_subset_size', 0))
         
         # Get GO hierarchy helper if available
@@ -1172,7 +1170,6 @@ def calculate_ora():
             top_n=top_n,
             min_count=min_count,
             column_type=column_type,
-            topological_filter=topological_filter,
             go_hierarchy=go_hierarchy,
             max_subset_size=max_subset_size,
             go_service=go_service

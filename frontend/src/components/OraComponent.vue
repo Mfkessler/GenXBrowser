@@ -175,13 +175,10 @@
               <strong>Results Shown:</strong> Top {{ visualizationStore.oraTopN }} by combined score
               (minimum {{ visualizationStore.oraMinCount }} {{ getEntityLabelPluralLower() }} per term)
             </div>
-            <!-- Topological filter info (GO terms only) -->
-            <div v-if="oraMetadata.topological_filter_applied && oraMetadata.filtered_parent_count > 0" class="text-green-700 bg-green-50 rounded px-2 py-1 mt-1">
-              <strong>🔬 Topological Filtering:</strong> 
-              {{ oraMetadata.filtered_parent_count }} redundant parent GO terms removed
-              <span v-if="oraMetadata.filtered_parents_sample?.length" class="block text-xs text-green-600 mt-0.5">
-                Examples: {{ oraMetadata.filtered_parents_sample.slice(0, 5).join(', ') }}{{ oraMetadata.filtered_parents_sample.length > 5 ? '...' : '' }}
-              </span>
+            <div v-if="goDepthFilterStatus" class="text-blue-700 bg-blue-100 rounded px-2 py-1 mt-1">
+              💡 <strong>GO Depth Filtering:</strong>
+              Displaying only terms with GO depth at least {{ goDepthFilterStatus.depth }}.
+              {{ goDepthFilterStatus.hiddenCount }} terms at shallower depths are hidden for visual clarity.
             </div>
             <div class="text-xs text-blue-600 mt-2">
               💡 <strong>Combined Score</strong> = -log₁₀(q-value) × gene_ratio
@@ -326,7 +323,7 @@ const oraInfoOpen = ref(false);
 const error = ref("");
 const rowCount = ref(0);
 const columnMeta = ref<MetaFormat>();
-const pValueEntries = ref<PValueEntry[]>([]);
+const rawPValueEntries = ref<PValueEntry[]>([]);
 const oraMetadata = ref<OraMetadata | null>(null);
 
 const dotplotContainer = ref<HTMLDivElement | null>(null);
@@ -415,6 +412,9 @@ interface OraResult {
   odds_ratio?: number;
   expected_count: number;
   fold_enrichment: number;
+  go_name?: string;
+  go_namespace?: string;
+  go_depth?: number;
 }
 
 interface OraMetadata {
@@ -423,9 +423,6 @@ interface OraMetadata {
   background_size?: number;
   unannotated_subset_count?: number;
   unannotated_background_count?: number;
-  topological_filter_applied?: boolean;
-  filtered_parent_count?: number;
-  filtered_parents_sample?: string[];
   message?: string;
   [key: string]: unknown;
 }
@@ -498,7 +495,7 @@ defineExpose({
 });
 
 // GO term info cache (includes name, namespace, and depth)
-const goTermInfoCache = ref<Record<string, { name: string; namespace: string; depth: number }>>({});
+const goTermInfoCache = ref<Record<string, { name: string; namespace: string; depth?: number }>>({});
 
 // Check if we're enriching GO terms (check various possible column names)
 const isGoTermEnrichment = computed(() => {
@@ -508,6 +505,39 @@ const isGoTermEnrichment = computed(() => {
          colName === 'gene_ontology' ||
          colName.startsWith('go_');
 });
+
+const activeGoDepthFilter = computed(() => {
+  const selectedDepth = visualizationStore.oraGoDepthFilter;
+  if (!isGoTermEnrichment.value || selectedDepth === "") return null;
+
+  const depth = Number(visualizationStore.oraGoDepthFilter);
+  return Number.isInteger(depth) && depth > 0 ? depth : null;
+});
+
+const pValueEntries = computed(() => {
+  const selectedDepth = activeGoDepthFilter.value;
+  if (selectedDepth === null) return rawPValueEntries.value;
+  return rawPValueEntries.value.filter((entry) => typeof entry.go_depth === 'number' && entry.go_depth >= selectedDepth);
+});
+
+const goDepthHiddenCount = computed(() => rawPValueEntries.value.length - pValueEntries.value.length);
+const goDepthFilterStatus = computed(() => {
+  const depth = activeGoDepthFilter.value;
+  if (depth === null || goDepthHiddenCount.value <= 0) return null;
+  return { depth, hiddenCount: goDepthHiddenCount.value };
+});
+
+function syncAvailableGoDepths() {
+  if (!isGoTermEnrichment.value) {
+    visualizationStore.setOraAvailableGoDepths([]);
+    return;
+  }
+  visualizationStore.setOraAvailableGoDepths(
+    rawPValueEntries.value
+      .map((entry) => entry.go_depth)
+      .filter((depth): depth is number => typeof depth === 'number' && Number.isInteger(depth) && depth > 0),
+  );
+}
 
 /**
  * Fetch GO term details in batch for GO term enrichment.
@@ -533,7 +563,7 @@ async function fetchGoTermDetails(goIds: string[]): Promise<void> {
         goTermInfoCache.value[goId] = {
           name: termData.name || '',
           namespace: termData.namespace || '',
-          depth: termData.depth ?? -1
+          depth: typeof termData.depth === 'number' && termData.depth >= 0 ? termData.depth : undefined
         };
       }
     }
@@ -569,7 +599,6 @@ async function fetchAndPrepareData() {
       significance: visualizationStore.significance,
       top_n: visualizationStore.oraTopN,
       min_count: visualizationStore.oraMinCount,
-      topological_filter: isGoTermEnrichment.value ? visualizationStore.oraTopologicalFilter : false,
       max_subset_size: 5000,
     };
     
@@ -592,7 +621,8 @@ async function fetchAndPrepareData() {
 
     // Check for count-exceeded or empty subset
     if (parsedResponse.metadata?.message || !parsedResponse.results?.length) {
-      pValueEntries.value = [];
+      rawPValueEntries.value = [];
+      syncAvailableGoDepths();
       oraMetadata.value = parsedResponse.metadata;
       await nextTick();
       await syncPlotHeightWithViewport();
@@ -609,7 +639,7 @@ async function fetchAndPrepareData() {
 
       // Store results - map backend response to frontend interface
       // Fold enrichment and expected count are now calculated on backend
-      pValueEntries.value = parsedResponse.results.map((r) => {
+      rawPValueEntries.value = parsedResponse.results.map((r) => {
         return {
           attr: r.attribute,  // Map 'attribute' to 'attr' for compatibility
           attribute: r.attribute,  // Keep original for modal
@@ -622,12 +652,15 @@ async function fetchAndPrepareData() {
           odds_ratio: r.odds_ratio,
           expected_count: r.expected_count,
           fold_enrichment: r.fold_enrichment,
+          go_name: r.go_name,
+          go_namespace: r.go_namespace,
+          go_depth: typeof r.go_depth === 'number' && r.go_depth >= 0 ? r.go_depth : undefined,
         };
       });
 
       oraMetadata.value = parsedResponse.metadata;
       // Fetch GO term details if this is GO term enrichment
-      if (isGoTermEnrichment.value && pValueEntries.value.length > 0) {
+      if (isGoTermEnrichment.value && rawPValueEntries.value.length > 0) {
         // Use inline GO terms from ORA response if available, otherwise fetch separately
         if (parsedResponse.go_terms) {
           for (const [goId, term] of Object.entries(parsedResponse.go_terms)) {
@@ -635,25 +668,26 @@ async function fetchAndPrepareData() {
             goTermInfoCache.value[goId] = {
               name: termData.name || '',
               namespace: termData.namespace || '',
-              depth: termData.depth ?? -1
+              depth: typeof termData.depth === 'number' && termData.depth >= 0 ? termData.depth : undefined
             };
           }
         } else {
-          const goIds = pValueEntries.value.map(e => e.attr);
+          const goIds = rawPValueEntries.value.map(e => e.attr);
           await fetchGoTermDetails(goIds);
         }
         
         // Enrich entries with GO term info including depth
-        pValueEntries.value = pValueEntries.value.map(entry => {
+        rawPValueEntries.value = rawPValueEntries.value.map(entry => {
           const goInfo = goTermInfoCache.value[entry.attr];
           return {
             ...entry,
-            go_name: goInfo?.name,
-            go_namespace: goInfo?.namespace,
-            go_depth: goInfo?.depth
+            go_name: entry.go_name ?? goInfo?.name,
+            go_namespace: entry.go_namespace ?? goInfo?.namespace,
+            go_depth: entry.go_depth ?? goInfo?.depth
           };
         });
       }
+      syncAvailableGoDepths();
 
       await nextTick();
       await syncPlotHeightWithViewport();
@@ -1567,6 +1601,8 @@ watch(
   [() => visualizationStore.oraColumnName],
   async () => {
     if (props.hashLoading) return;
+    visualizationStore.setOraAvailableGoDepths([]);
+    visualizationStore.oraGoDepthFilter = "";
     await fetchAndPrepareData();
   },
   { immediate: true },
@@ -1587,11 +1623,10 @@ watch(
     () => visualizationStore.significance,
     () => visualizationStore.oraTopN,
     () => visualizationStore.oraMinCount,
-    () => visualizationStore.oraTopologicalFilter,
   ],
   async () => {
     if (props.hashLoading) return;
-    // Re-fetch data when significance, topN, minCount, or topological filter change
+    // Re-fetch data when significance, topN, or minCount change
     // (these affect backend filtering)
     await fetchAndPrepareData();
   },
@@ -1605,6 +1640,7 @@ watch(
     () => visualizationStore.oraRowSideColor,
     () => visualizationStore.colorScale,
     () => visualizationStore.oraOrder,
+    () => visualizationStore.oraGoDepthFilter,
   ],
   async () => {
     if (props.hashLoading) return;

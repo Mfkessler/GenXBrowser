@@ -81,7 +81,6 @@ class GOHierarchyHelper:
     def __init__(self, go_service):
         self.go_service = go_service
         self._depth_cache: dict = {}
-        self._ancestor_ids_cache: dict = {}
         
     def get_depth(self, go_id: str) -> int:
         """
@@ -142,66 +141,10 @@ class GOHierarchyHelper:
         # If no path to root found (shouldn't happen), return -1
         return -1
     
-    def get_ancestor_ids(self, go_id: str) -> set:
-        """
-        Get all ancestor GO IDs (not including self).
-        Uses cache for performance.
-        
-        Args:
-            go_id: GO identifier
-            
-        Returns:
-            Set of ancestor GO IDs
-        """
-        go_id = go_id.upper().strip()
-        
-        if go_id in self._ancestor_ids_cache:
-            return self._ancestor_ids_cache[go_id]
-        
-        if not self.go_service or not self.go_service.is_available():
-            return set()
-        
-        ancestors = self.go_service.get_ancestors(go_id)
-        ancestor_ids = {a.get("id", "") for a in ancestors if a.get("id")}
-        
-        self._ancestor_ids_cache[go_id] = ancestor_ids
-        return ancestor_ids
-    
-    def filter_to_most_specific(self, go_ids: list) -> tuple:
-        """
-        Filter GO terms to keep only the most specific ones.
-        Removes any term that is an ancestor of another term in the list.
-        
-        This is the "topological filtering" - bottom-up approach.
-        
-        Args:
-            go_ids: List of GO IDs for a single gene
-            
-        Returns:
-            Tuple of (filtered_go_ids, removed_parent_ids)
-        """
-        if len(go_ids) <= 1:
-            return (list(go_ids), [])
-        
-        go_ids_set = set(go_ids)
-        removed_parents = set()
-        
-        # For each GO term, check if it's an ancestor of any other term
-        for go_id in go_ids:
-            ancestors = self.get_ancestor_ids(go_id)
-            # Remove any ancestors that are in our set
-            for ancestor in ancestors:
-                if ancestor in go_ids_set:
-                    removed_parents.add(ancestor)
-        
-        filtered = [g for g in go_ids if g not in removed_parents]
-        return (filtered, list(removed_parents))
-    
     def get_cache_stats(self) -> dict:
         """Get cache statistics."""
         return {
             "depth_cache_size": len(self._depth_cache),
-            "ancestor_cache_size": len(self._ancestor_ids_cache)
         }
 
 

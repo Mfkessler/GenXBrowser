@@ -110,7 +110,7 @@ const ALLOWED_PATCH_PATHS: Record<string, (value: unknown) => unknown> = {
   significance: enumValue(SIGNIFICANCE_THRESHOLDS, "significance"),
   oraTopN: integerRangeValue("oraTopN", 1, 500),
   oraMinCount: integerRangeValue("oraMinCount", 1, 50),
-  oraTopologicalFilter: booleanValue,
+  oraGoDepthFilter: stringValue("oraGoDepthFilter"),
   oraTooltipFields: stringArrayValue("oraTooltipFields"),
   "oraOrder.name": enumValue(new Set(["p_value", "q_value", "fold_enrichment", "subset_count", "combined_score"]), "oraOrder.name"),
   "oraOrder.order": enumValue(new Set(["asc", "desc"]), "oraOrder.order"),

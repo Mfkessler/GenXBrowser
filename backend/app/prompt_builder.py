@@ -201,7 +201,7 @@ Action blocks (fenced, one per action, at end of message):
   apply to the phylo heatmap panel.
 - ORA: `oraColumnName` (.var col), `significance` ("0.001"|"0.01"|"0.05"|"0.1"),
   `oraTopN` (1..500), `oraMinCount` (1..50),
-  `oraTopologicalFilter` (bool),
+  `oraGoDepthFilter` (string; empty string disables GO depth visual filtering),
   `oraTooltipFields` (string[]),
   `oraOrder.name` ("p_value"|"q_value"|"fold_enrichment"|"subset_count"|"combined_score"),
   `oraOrder.order` ("asc"|"desc").

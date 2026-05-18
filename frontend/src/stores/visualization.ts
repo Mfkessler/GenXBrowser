@@ -64,7 +64,8 @@ export interface VisualizationState {
   significance: string;
   oraTopN: number;
   oraMinCount: number;
-  oraTopologicalFilter: boolean;
+  oraGoDepthFilter: string;
+  oraAvailableGoDepths: number[];
   oraTooltipFields: string[];
   // Tooltip configuration
   tooltipFields: string[] | null;
@@ -151,7 +152,8 @@ function getDefaultState(): VisualizationState {
     significance: "0.01",
     oraTopN: 50,
     oraMinCount: 3,
-    oraTopologicalFilter: false,  // Default: false for GO term topological filtering
+    oraGoDepthFilter: "",
+    oraAvailableGoDepths: [],
     oraTooltipFields: ["attribute_name", "go_name", "subset_count", "expected_count", "background_count", "fold_enrichment"],  // Default: attribute + GO name + core enrichment metrics
     tooltipFields: null, // null = uninitialized (show all); [] = user deselected all (show none)
     showSequencesInTooltip: false,
@@ -280,6 +282,13 @@ export const useVisualizationStore = defineStore("visualization", {
     },
     setOraTooltipFields(fields: string[]) {
       this.oraTooltipFields = fields;
+    },
+    setOraAvailableGoDepths(depths: number[]) {
+      const uniqueDepths = Array.from(new Set(depths.filter((depth) => Number.isInteger(depth) && depth > 0))).sort((a, b) => a - b);
+      this.oraAvailableGoDepths = uniqueDepths;
+      if (this.oraGoDepthFilter && !uniqueDepths.includes(Number(this.oraGoDepthFilter))) {
+        this.oraGoDepthFilter = "";
+      }
     },
     toggleShowSequencesInTooltip() {
       this.showSequencesInTooltip = !this.showSequencesInTooltip;
@@ -503,7 +512,7 @@ export const useVisualizationStore = defineStore("visualization", {
         significance: this.significance,
         oraTopN: this.oraTopN,
         oraMinCount: this.oraMinCount,
-        oraTopologicalFilter: this.oraTopologicalFilter,
+        oraGoDepthFilter: this.oraGoDepthFilter,
         oraTooltipFields: [...this.oraTooltipFields],
         ...(this.tooltipFields !== null ? { tooltipFields: [...this.tooltipFields] } : {}),
         showSequencesInTooltip: this.showSequencesInTooltip,

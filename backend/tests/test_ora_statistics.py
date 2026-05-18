@@ -50,7 +50,6 @@ def test_calculate_ora_uses_annotated_universe() -> None:
         top_n=10,
         min_count=1,
         column_type="text",
-        topological_filter=False,
     )
 
     assert result["metadata"]["count"] == 2

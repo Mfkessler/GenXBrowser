@@ -1966,7 +1966,6 @@ class GenXBrowserService:
         top_n: int = 50,
         min_count: int = 3,
         column_type: str = 'array',
-        topological_filter: bool = True,
         go_hierarchy = None,
         max_subset_size: int = 0,
         go_service = None
@@ -1978,7 +1977,6 @@ class GenXBrowserService:
         1. Fetch subset genes (with filters applied)
         2. Fetch background genes (same species, no filters)
         3. For each attribute, count UNIQUE GENES (not occurrences) in both sets
-        3b. (Optional) Apply topological filtering for GO terms - keep only most specific
         4. Run Fisher's Exact Test for each attribute
         5. Apply Benjamini-Hochberg FDR correction
         6. Calculate combined score: -log10(q_value) * (subset_count / background_count)
@@ -1993,8 +1991,7 @@ class GenXBrowserService:
             top_n: Maximum results to return (default: 50)
             min_count: Minimum genes in subset with attribute (default: 3)
             column_type: 'array' or 'text' (affects parsing)
-            topological_filter: If True, filter GO terms to most specific (default: True)
-            go_hierarchy: GOHierarchyHelper instance for topological filtering
+            go_hierarchy: GOHierarchyHelper instance for GO depth metadata
         
         Returns:
             Dict with 'results' (list of enrichment entries) and 'metadata'
@@ -2019,13 +2016,6 @@ class GenXBrowserService:
                         'count': row_count
                     }
                 }
-        
-        # Check if this is GO term enrichment
-        is_go_enrichment = 'go' in column_name.lower() or column_name.lower() == 'go_term'
-        apply_topo_filter = topological_filter and is_go_enrichment and go_hierarchy is not None
-        
-        if apply_topo_filter:
-            logger.info("Topological filtering enabled for GO term enrichment")
         
         # Determine columns to fetch: target column + all filter columns
         columns_to_fetch = [column_name]
@@ -2076,15 +2066,14 @@ class GenXBrowserService:
             raise ValueError("Background dataset is empty")
         
         # 3. Build attribute -> gene index mappings
-        def build_gene_attribute_map(df: pd.DataFrame, col: str, apply_filter: bool = False) -> tuple:
+        def build_gene_attribute_map(df: pd.DataFrame, col: str) -> tuple:
             """
             Map each attribute to set of gene indices that contain it.
             
             Returns:
-                Tuple of (attr_to_genes dict, removed_parents dict if filtering, else empty dict, annotated_genes set)
+                Tuple of (attr_to_genes dict, annotated_genes set)
             """
             attr_to_genes = {}
-            removed_parents_per_gene = {}  # gene_idx -> list of removed parent GO IDs
             annotated_genes = set()
             
             for gene_idx, row in df.iterrows():
@@ -2114,13 +2103,6 @@ class GenXBrowserService:
                     text_value = str(value).strip()
                     attributes = [text_value] if text_value else []
                 
-                # Apply topological filtering if enabled (only for GO terms)
-                if apply_filter and go_hierarchy and attributes:
-                    filtered_attrs, removed = go_hierarchy.filter_to_most_specific(attributes)
-                    if removed:
-                        removed_parents_per_gene[gene_idx] = removed
-                    attributes = filtered_attrs
-
                 if not attributes:
                     continue
 
@@ -2132,14 +2114,10 @@ class GenXBrowserService:
                         attr_to_genes[attr] = set()
                     attr_to_genes[attr].add(gene_idx)
             
-            return attr_to_genes, removed_parents_per_gene, annotated_genes
+            return attr_to_genes, annotated_genes
         
-        subset_map, subset_removed, annotated_subset_genes = build_gene_attribute_map(
-            subset_df, column_name, apply_filter=apply_topo_filter
-        )
-        background_map, _, annotated_background_genes = build_gene_attribute_map(
-            background_df, column_name, apply_filter=apply_topo_filter
-        )
+        subset_map, annotated_subset_genes = build_gene_attribute_map(subset_df, column_name)
+        background_map, annotated_background_genes = build_gene_attribute_map(background_df, column_name)
 
         subset_size = len(annotated_subset_genes)
         background_size = len(annotated_background_genes)
@@ -2185,14 +2163,6 @@ class GenXBrowserService:
                     'count': raw_subset_size,
                 }
             }
-        
-        # Track which parent terms were filtered out (for display in frontend)
-        filtered_parent_counts = {}
-        if apply_topo_filter and subset_removed:
-            for removed_list in subset_removed.values():
-                for parent_id in removed_list:
-                    filtered_parent_counts[parent_id] = filtered_parent_counts.get(parent_id, 0) + 1
-            logger.info(f"Topological filtering removed {len(filtered_parent_counts)} unique parent GO terms")
         
         # 4. Calculate Fisher's Exact Test for each attribute
         all_attributes = set(subset_map.keys())
@@ -2319,16 +2289,8 @@ class GenXBrowserService:
             'significance_threshold': significance,
             'min_count_threshold': min_count,
             'top_n': top_n,
-            'topological_filter_applied': apply_topo_filter,
             'count': raw_subset_size,
         }
-        
-        # Add filtered parents info if topological filtering was applied
-        if apply_topo_filter and filtered_parent_counts:
-            metadata['filtered_parent_count'] = len(filtered_parent_counts)
-            # Include the top filtered parent terms (by frequency)
-            top_filtered = sorted(filtered_parent_counts.items(), key=lambda x: x[1], reverse=True)[:20]
-            metadata['filtered_parents_sample'] = [p[0] for p in top_filtered]
         
         # Inline GO term details if go_service is available
         go_terms = {}
@@ -2338,8 +2300,13 @@ class GenXBrowserService:
                 go_id = entry.get('attribute', '')
                 term = go_service.get_term(go_id)
                 if term:
+                    entry['go_name'] = term.get('name')
+                    entry['go_namespace'] = term.get('namespace')
                     if go_hierarchy:
-                        term['depth'] = go_hierarchy.get_depth(go_id)
+                        depth = go_hierarchy.get_depth(go_id)
+                        if isinstance(depth, int) and depth >= 0:
+                            term['depth'] = depth
+                            entry['go_depth'] = depth
                     go_terms[go_id] = term
         
         result = {

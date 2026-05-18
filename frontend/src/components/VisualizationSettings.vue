@@ -794,16 +794,21 @@
               <span class="text-sm font-semibold text-primary-900 min-w-[3rem] text-right">{{ localOraMinCount }}</span>
             </div>
           </div>
-          <!-- Topological Filter (GO term specific) -->
-          <div v-if="isGoTermColumn">
+          <div v-if="showGoDepthFilter">
             <div class="flex items-center gap-2 mb-2">
               <h3 class="text-md font-semibold cursor-default text-primary-900">
-                Filter Redundant Parents
+                GO Depth (for visual filtering)
               </h3>
-              <ToggleSwitch v-model="store.oraTopologicalFilter" />
               <InfoTooltip 
-                title="Topological Filtering (Bottom-Up)"
-                description="Removes redundant parent GO terms when a more specific child term is also enriched for the same genes. This reduces clutter and highlights the most specific biological processes. Example: If both 'metabolic process' and 'glucose metabolic process' are enriched, only 'glucose metabolic process' will be shown."
+                title="GO Depth Visual Filtering"
+                description="Filters the current plotted GO enrichment results by ontology depth without recalculating statistics. Selecting depth 3 shows terms with GO depth 3 or deeper and hides broader parent-level terms."
+              />
+            </div>
+            <div class="flex items-center mb-4">
+              <DropdownMenu
+                v-model="store.oraGoDepthFilter"
+                :options="goDepthOptions"
+                class="mr-2"
               />
             </div>
           </div>
@@ -1061,6 +1066,12 @@ const isGoTermColumn = computed(() => {
          colName === 'gene_ontology' ||
          colName.startsWith('go_');
 });
+
+const showGoDepthFilter = computed(() => isGoTermColumn.value && store.oraAvailableGoDepths.length > 0);
+const goDepthOptions = computed(() => ({
+  "": "All depths",
+  ...Object.fromEntries(store.oraAvailableGoDepths.map((depth) => [String(depth), depth])),
+}));
 
 // Tooltip configuration
 const availableTooltipFields = computed(() => {
