@@ -1,6 +1,6 @@
 <template>
   <div class="min-h-[100vh] flex flex-col relative">
-    <div v-if="combinedLoading" class="absolute inset-0 z-50">
+    <div v-if="visibleCombinedLoading" class="absolute inset-0 z-50">
       <LoadingOverlay
         label="Loading tree"
         :progress="combinedLoadingProgress"
@@ -145,16 +145,34 @@ const hashLoading = ref(true); // Prevent child from fetching until hash is load
 const childLoading = ref(true);
 const childLoadingProgress = ref<number | null>(null);
 const combinedLoadingProgress = ref<number | null>(5);
+const visibleCombinedLoading = ref(true);
 const initialOrthogroup = ref<string | null>(null); // OG from hash load
 let activeHashAbortController: AbortController | null = null;
+let hideCombinedLoadingTimer: ReturnType<typeof setTimeout> | null = null;
 
 const combinedLoading = computed(() => hashLoading.value || childLoading.value);
 
 watch(
   [hashLoading, childLoading, childLoadingProgress],
   () => {
+    if (combinedLoading.value) {
+      if (hideCombinedLoadingTimer !== null) {
+        clearTimeout(hideCombinedLoadingTimer);
+        hideCombinedLoadingTimer = null;
+      }
+      visibleCombinedLoading.value = true;
+    }
+
     if (!combinedLoading.value) {
-      combinedLoadingProgress.value = null;
+      if (hideCombinedLoadingTimer === null) {
+        hideCombinedLoadingTimer = setTimeout(() => {
+          hideCombinedLoadingTimer = null;
+          if (!combinedLoading.value) {
+            visibleCombinedLoading.value = false;
+            combinedLoadingProgress.value = null;
+          }
+        }, 180);
+      }
       return;
     }
 
@@ -362,6 +380,10 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  if (hideCombinedLoadingTimer !== null) {
+    clearTimeout(hideCombinedLoadingTimer);
+    hideCombinedLoadingTimer = null;
+  }
   activeHashAbortController?.abort();
 });
 </script>

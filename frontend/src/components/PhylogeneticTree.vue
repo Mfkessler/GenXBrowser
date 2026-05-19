@@ -278,6 +278,43 @@ let activeAbortController: AbortController | null = null;
 let ogListRequestSeq = 0;
 let activeOgListAbortController: AbortController | null = null;
 let suppressSelectedOrthogroupWatcher = false;
+let activeRenderSignature: string | null = null;
+let lastCompletedRenderSignature: string | null = null;
+
+type PhyloLoadTraceWindow = Window & {
+  __phyloLoadTrace?: Array<Record<string, unknown>>;
+};
+
+function tracePhyloLoad(event: string, details: Record<string, unknown> = {}) {
+  if (typeof window === "undefined") return;
+  const traceEnabled = import.meta.env.DEV || window.localStorage.getItem("phyloLoadTrace") === "1";
+  if (!traceEnabled) return;
+  const target = window as PhyloLoadTraceWindow;
+  const entry = {
+    at: new Date().toISOString(),
+    event,
+    og: selectedOrthogroup.value,
+    loading: loading.value,
+    progress: loadingProgress.value,
+    ...details,
+  };
+  target.__phyloLoadTrace = [...(target.__phyloLoadTrace ?? []).slice(-99), entry];
+  if (import.meta.env.DEV) console.debug("[PhyloLoad]", entry);
+}
+
+function currentRenderSignature(): string {
+  return JSON.stringify({
+    og: selectedOrthogroupKey(),
+    expression: visualizationStore.expressionDisplay,
+    colorScale: visualizationStore.colorScale,
+    legend: visualizationStore.legend,
+    clustering: visualizationStore.clustering,
+    groupingColumn: selectedGroupingColumn.value,
+    branchLengthMode: visualizationStore.phyloTree.branchLengthMode,
+    collapsedNodes: visualizationStore.phyloTree.collapsedNodes,
+    tableNames: props.existingTables?.length ? props.existingTables : [props.tableName],
+  });
+}
 
 function setLoadingProgress(step: number, totalSteps: number) {
   if (totalSteps <= 0) {
@@ -330,7 +367,10 @@ const groupingColumnLabel = computed(() => {
 // Selected orthogroup - computed property linked to store
 const selectedOrthogroup = computed({
   get: () => visualizationStore.phyloTree.selectedOrthogroup,
-  set: (v: string) => visualizationStore.setPhyloTreeState({ selectedOrthogroup: v })
+  set: (v: string) => {
+    if (v === visualizationStore.phyloTree.selectedOrthogroup) return;
+    visualizationStore.phyloTree.selectedOrthogroup = v;
+  }
 });
 
 // Alias for template compatibility
@@ -424,7 +464,13 @@ function updateUrlFromState() {
     delete newQuery.filters;
   }
 
-  router.replace({
+  const currentOrthogroup = typeof route.query.orthogroup === "string" ? route.query.orthogroup : undefined;
+  const nextOrthogroup = newQuery.orthogroup;
+  const currentFilters = typeof route.query.filters === "string" ? route.query.filters : undefined;
+  const nextFilters = newQuery.filters;
+  if (currentOrthogroup === nextOrthogroup && currentFilters === nextFilters) return;
+
+  void router.replace({
     name: route.name ?? undefined,
     query: newQuery,
   });
@@ -1764,8 +1810,20 @@ async function rerenderCurrentTree(metrics: any = lastMetrics.value): Promise<bo
 
 
 // Helper function to render tree for currently selected orthogroup
-async function renderTreeForSelectedOG() {
+async function renderTreeForSelectedOG(origin = "unknown") {
+  const renderSignature = currentRenderSignature();
+  if (activeRenderSignature === renderSignature) {
+    tracePhyloLoad("render-skip-active-duplicate", { origin });
+    return;
+  }
+  if (!loading.value && lastCompletedRenderSignature === renderSignature) {
+    tracePhyloLoad("render-skip-completed-duplicate", { origin });
+    return;
+  }
+
   const requestId = ++loadRequestSeq;
+  activeRenderSignature = renderSignature;
+  tracePhyloLoad("render-start", { origin, requestId });
   activeAbortController?.abort();
   const controller = new AbortController();
   activeAbortController = controller;
@@ -1859,6 +1917,9 @@ async function renderTreeForSelectedOG() {
       loading.value = false;
       loadingProgress.value = null;
       activeAbortController = null;
+      lastCompletedRenderSignature = renderSignature;
+      activeRenderSignature = null;
+      tracePhyloLoad("render-finish", { origin, requestId });
     }
   }
 }
@@ -1946,7 +2007,7 @@ watch(
     if (isLoading === false) {
       const ok = await fetchAllSelected({ keepLoading: true });
       if (!ok) return; // superseded by a concurrent watcher trigger
-      await renderTreeForSelectedOG();
+      await renderTreeForSelectedOG("hash-loading-complete");
     }
   },
   { immediate: true }
@@ -1960,7 +2021,7 @@ watch(
     if (newCount === 0 || newCount === oldCount) return;
     if (!selectedOrthogroup.value) return;
 
-    await renderTreeForSelectedOG();
+    await renderTreeForSelectedOG("all-tables-ready");
   }
 )
 
@@ -1971,9 +2032,15 @@ watch(
   async () => {
     // Don't fetch while hash is still loading
     if (props.hashLoading) return;
+    const currentSig = computeFilterSignature();
+    if (lastOgListFilterSig === currentSig) {
+      tracePhyloLoad("catalog-filters-skip-current");
+      await renderTreeForSelectedOG("catalog-filters-current");
+      return;
+    }
     const ok = await fetchAllSelected({ keepLoading: true });
     if (!ok) return; // superseded by a concurrent watcher trigger
-    await renderTreeForSelectedOG();
+    await renderTreeForSelectedOG("catalog-filters");
   },
   {deep: true}
 )
@@ -1995,7 +2062,7 @@ watch(
     // refreshed only when sidebar filters / datasets actually change (see the
     // [tableNameOptions, filters, datasetIdFilters, filterChainVersion]
     // watcher below).
-    await renderTreeForSelectedOG();
+    await renderTreeForSelectedOG("orthogroup-dropdown");
   }
 )
 
@@ -2006,7 +2073,7 @@ watch(
     if (props.hashLoading) return;
     const ok = await fetchAllSelected({ keepLoading: true });
     if (!ok) return; // superseded by a concurrent watcher trigger
-    await renderTreeForSelectedOG();
+    await renderTreeForSelectedOG("expression-display");
   },
   { deep: true }
 );
@@ -2016,7 +2083,7 @@ watch(
   () => visualizationStore.colorScale,
   async () => {
     console.log('[PhylogeneticTree] ColorScale changed:', visualizationStore.colorScale)
-    await renderTreeForSelectedOG();
+    await renderTreeForSelectedOG("color-scale");
   }
 );
 
@@ -2025,7 +2092,7 @@ watch(
   () => visualizationStore.legend,
   async () => {
     console.log('[PhylogeneticTree] Legend toggle changed:', visualizationStore.legend)
-    await renderTreeForSelectedOG();
+    await renderTreeForSelectedOG("legend");
   }
 );
 
@@ -2039,7 +2106,7 @@ watch(
   ],
   async () => {
     console.log('[PhylogeneticTree] Clustering settings changed:', visualizationStore.clustering)
-    await renderTreeForSelectedOG();
+    await renderTreeForSelectedOG("clustering");
   },
   { deep: true }
 );
@@ -2088,7 +2155,7 @@ watch(
         }
       }
       
-      await renderTreeForSelectedOG();
+      await renderTreeForSelectedOG("reset-counter");
     }
   }
 );
