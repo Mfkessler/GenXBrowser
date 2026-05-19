@@ -1,7 +1,7 @@
 <template>
   <div
     :class="[
-      'relative rounded-xl p-5 w-full mx-auto transition-all duration-200 flex flex-col cursor-pointer select-none h-full',
+      'relative rounded-xl p-5 w-full mx-auto transition-all duration-200 flex flex-col cursor-pointer select-none h-full [container-type:inline-size]',
       props.selected
         ? 'border-2 border-primary-500 shadow-md bg-primary-50/30'
         : 'border-1 border-gray-300 bg-white hover:border-gray-400 hover:shadow-sm',
@@ -38,23 +38,22 @@
 
     <div class="flex-1">
       <!-- Species Photo + Title (Circular Mode) -->
-      <div v-if="photoDisplayMode === 'circular'" class="flex flex-col items-center sm:relative mb-2">
-        <!-- Photo: centered on mobile, absolute left on desktop -->
+      <div v-if="photoDisplayMode === 'circular'" class="catalog-entry-header mb-2">
+        <!-- Photo stays in normal flow so it cannot cover the dataset text. -->
         <img 
           :src="displayPhotoUrl" 
           :alt="tableName"
-          class="w-30 h-30 mb-3 sm:mb-0 sm:absolute sm:left-0 sm:top-0 rounded-full object-contain bg-black border-2 border-primary-900 flex-shrink-0 cursor-pointer hover:border-primary-700 transition-colors"
+          class="catalog-entry-photo rounded-full object-contain bg-black border-2 border-primary-900 flex-shrink-0 cursor-pointer hover:border-primary-700 transition-colors"
           :class="{ 'opacity-50': photoLoading }"
           @click.stop="openPhotoModal"
         />
-        <!-- Text content: full width centered on mobile, full width on desktop -->
-        <div class="flex flex-col items-center w-full">
-          <h2 class="text-lg italic font-semibold text-gray-700 text-center mb-1">
+        <div class="catalog-entry-copy">
+          <h2 class="text-lg italic font-semibold text-gray-700 text-center mb-1 break-words min-w-0">
             {{ beautifyLabel(tableName) }}
           </h2>
-          <p :class="['text-gray-400 text-sm transition-colors duration-500 text-center', countFlash ? 'count-flash' : '']"><b>Count: </b>{{ displayCount }} {{ entityLabelPlural }}</p>
-          <div class="flex items-center justify-center">
-            <p :class="['text-gray-400 text-sm transition-colors duration-500', tissueFlash ? 'count-flash' : '']">
+          <p :class="['text-gray-400 text-sm transition-colors duration-500 text-center break-words', countFlash ? 'count-flash' : '']"><b>Count: </b>{{ displayCount }} {{ entityLabelPlural }}</p>
+          <div class="flex items-center justify-center min-w-0 max-w-full">
+            <p :class="['text-gray-400 text-sm transition-colors duration-500 break-words min-w-0', tissueFlash ? 'count-flash' : '']">
               <b>{{ defaultSampleColumnLabel }}: </b>{{ tissues }}
             </p>
             <!-- Help Icon -->
@@ -697,5 +696,37 @@ watch(
 }
 .tag-pulse {
   animation: tag-pulse-anim 0.6s ease-in-out;
+}
+
+.catalog-entry-header {
+  display: grid;
+  grid-template-columns: minmax(4.75rem, clamp(4.75rem, 28cqi, 7.5rem)) minmax(0, 1fr);
+  align-items: center;
+  gap: 0.875rem;
+  min-width: 0;
+}
+
+.catalog-entry-photo {
+  width: min(100%, clamp(4.75rem, 28cqi, 7.5rem));
+  aspect-ratio: 1 / 1;
+  justify-self: center;
+}
+
+.catalog-entry-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+@container (max-width: 22rem) {
+  .catalog-entry-header {
+    grid-template-columns: 1fr;
+    justify-items: center;
+  }
+
+  .catalog-entry-photo {
+    width: clamp(4.5rem, 34cqi, 6.25rem);
+  }
 }
 </style>

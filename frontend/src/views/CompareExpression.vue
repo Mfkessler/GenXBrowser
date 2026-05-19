@@ -16,12 +16,14 @@
           class="flex-grow min-w-0 min-h-[34rem] sm:min-h-[calc(100vh-5rem)] flex flex-col"
         >
           <Compare
+            ref="compareRefs"
             :table-name="tableName"
             :existing-tables="tableNamesFromRoute"
             :all-tables="allTables"
             :initial-species="hashLoadedSpecies"
             :initial-orthogroup="hashLoadedOrthogroup"
             @update:tableName="onUpdateTableName(tableName, $event)"
+            @load-cancel="cancelLoadingAndReturnToCatalog"
           />
         </div>
       </template>
@@ -34,7 +36,7 @@
 <script setup lang="ts">
 import axios from "axios";
 import { API_BASE_URL } from "@/shared/Config";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { type CatalogMeta } from "@/shared/CatalogMeta";
@@ -53,6 +55,10 @@ const allTables = ref<Record<string, string>>({});
 const hashLoadedSpecies = ref<string[] | null>(null);  // null = not a hash load
 const hashLoadedOrthogroup = ref<string | null>(null);  // For hash-based loads
 const isDataLoaded = ref(false);  // Wait for hash data to load before rendering Compare
+type CompareExpose = InstanceType<typeof Compare> & { cancelActiveLoad?: (emitCancel?: boolean) => void };
+const compareRefs = ref<CompareExpose[] | null>(null);
+let activeHashAbortController: AbortController | null = null;
+let activeTablesAbortController: AbortController | null = null;
 
 // Get table names from route params
 const tableNamesFromRoute = computed(() => {
@@ -114,10 +120,24 @@ function onUpdateTableName(oldTableName: string, newTableName: string) {
 // Re-load filter / visualization state whenever `?id=` changes. Triggers
 // on initial mount and on assistant-driven re-navigations to the same
 // /c/<tables> path with a fresh hash.
-async function loadStateFromIdParam(idParam: unknown) {
+function isCanceledRequest(error: unknown) {
+  return axios.isCancel(error) || (axios.isAxiosError(error) && error.code === "ERR_CANCELED");
+}
+
+function cancelLoadingAndReturnToCatalog() {
+  activeHashAbortController?.abort();
+  activeHashAbortController = null;
+  activeTablesAbortController?.abort();
+  activeTablesAbortController = null;
+  isDataLoaded.value = true;
+  compareRefs.value?.forEach((compare) => compare.cancelActiveLoad?.(false));
+  router.replace({ name: "catalog" });
+}
+
+async function loadStateFromIdParam(idParam: unknown, signal?: AbortSignal) {
   if (typeof idParam !== "string" || idParam.length !== 16) return;
   try {
-    const response = await axios.post(`${API_BASE_URL}/api/id`, { id: idParam });
+    const response = await axios.post(`${API_BASE_URL}/api/id`, { id: idParam }, { signal });
     const data = response.data;
     if (data.filters && data.visualizations) {
       visualizationStore.replaceState(data.visualizations);
@@ -132,6 +152,7 @@ async function loadStateFromIdParam(idParam: unknown) {
       console.warn("Invalid data received from backend for ID", idParam);
     }
   } catch (error) {
+    if (isCanceledRequest(error)) return;
     console.error("Error fetching filter data by ID", idParam, error);
   }
 }
@@ -140,9 +161,15 @@ watch(
   () => route.query.id,
   async (idParam) => {
     if (typeof idParam !== "string" || idParam.length !== 16) return;
+    activeHashAbortController?.abort();
+    const controller = new AbortController();
+    activeHashAbortController = controller;
     isDataLoaded.value = false;
-    await loadStateFromIdParam(idParam);
-    isDataLoaded.value = allTables.value && Object.keys(allTables.value).length > 0;
+    await loadStateFromIdParam(idParam, controller.signal);
+    if (!controller.signal.aborted) {
+      isDataLoaded.value = allTables.value && Object.keys(allTables.value).length > 0;
+    }
+    if (activeHashAbortController === controller) activeHashAbortController = null;
   },
 );
 
@@ -160,22 +187,40 @@ watch(
 );
 
 onMounted(async () => {
-  await loadStateFromIdParam(route.query.id);
+  activeHashAbortController?.abort();
+  const hashController = new AbortController();
+  activeHashAbortController = hashController;
+  await loadStateFromIdParam(route.query.id, hashController.signal);
+  if (activeHashAbortController === hashController) activeHashAbortController = null;
+  if (hashController.signal.aborted) return;
+
+  activeTablesAbortController?.abort();
+  const tablesController = new AbortController();
+  activeTablesAbortController = tablesController;
 
   // Fetch all possible table names for dropdown options:
   const tagsParam = [...filtersStore.tags].join(",");
-  const response = await axios.get<CatalogMeta[]>(
-    `${API_BASE_URL}/api/tables`,
-    {
-      params: {
-        tags: tagsParam,
+  try {
+    const response = await axios.get<CatalogMeta[]>(
+      `${API_BASE_URL}/api/tables`,
+      {
+        params: {
+          tags: tagsParam,
+        },
+        signal: tablesController.signal,
       },
-    },
-  );
+    );
 
-  response.data.forEach((t) => {
-    allTables.value[t.table_name] = beautifyLabel(t.table_name);
-  });
+    if (tablesController.signal.aborted) return;
+    response.data.forEach((t) => {
+      allTables.value[t.table_name] = beautifyLabel(t.table_name);
+    });
+  } catch (error) {
+    if (!isCanceledRequest(error)) throw error;
+    return;
+  } finally {
+    if (activeTablesAbortController === tablesController) activeTablesAbortController = null;
+  }
 
   // For non-hash navigation with multiple species from catalog,
   // pre-set selectedSpecies so the Compare component shows them all
@@ -185,5 +230,10 @@ onMounted(async () => {
   
   // Mark data as loaded AFTER allTables is populated - now Compare components can render
   isDataLoaded.value = true;
+});
+
+onUnmounted(() => {
+  activeHashAbortController?.abort();
+  activeTablesAbortController?.abort();
 });
 </script>

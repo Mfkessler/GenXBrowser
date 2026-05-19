@@ -8,7 +8,7 @@
  * `tissue = flower` should hide a dataset that has zero `flower` samples
  * instead of leaving it as an unfiltered, misleading panel.
  */
-import { computed, ref, watch, type Ref } from "vue";
+import { computed, onUnmounted, ref, watch, type Ref } from "vue";
 import axios from "axios";
 import { API_BASE_URL } from "@/shared/Config";
 import { useFilterSeparation } from "@/shared/useFilterSeparation";
@@ -32,6 +32,7 @@ export function useDatasetEmptinessFilter(
   const sampleCounts = ref<Record<string, number | null>>({});
   const varCounts = ref<Record<string, number | null>>({});
   const probing = ref(false);
+  let activeProbeController: AbortController | null = null;
 
   /** Tables that should remain rendered: have `sample_count > 0` (or no
    *  sample filter) AND, if `hideOnEmptyVar` is set, `count > 0` too. */
@@ -63,8 +64,18 @@ export function useDatasetEmptinessFilter(
   });
 
   let probeId = 0;
+  function cancelProbes() {
+    probeId += 1;
+    activeProbeController?.abort();
+    activeProbeController = null;
+    probing.value = false;
+  }
+
   async function refreshProbes() {
     const myId = ++probeId;
+    activeProbeController?.abort();
+    const controller = new AbortController();
+    activeProbeController = controller;
     probing.value = true;
     const tables = [...tableNames.value];
     const sampleFilterPayload = { ...sampleFilters.value };
@@ -82,9 +93,12 @@ export function useDatasetEmptinessFilter(
             filters: geneFilterPayload,
             filter_chain: getFilterChainPayload(geneFilterPayload),
             sample_filters: sampleFilterPayload,
-          });
+          }, { signal: controller.signal });
           return { tn, count: data.count ?? 0, sample_count: data.sample_count ?? 0 };
-        } catch {
+        } catch (error) {
+          if (axios.isCancel(error) || (axios.isAxiosError(error) && error.code === "ERR_CANCELED")) {
+            return { tn, count: null as number | null, sample_count: null as number | null };
+          }
           // On error we keep the dataset visible (treat probe as unknown).
           return { tn, count: null as number | null, sample_count: null as number | null };
         }
@@ -92,7 +106,7 @@ export function useDatasetEmptinessFilter(
     );
 
     // Drop stale results when filters / tables change mid-flight.
-    if (myId !== probeId) return;
+    if (myId !== probeId || controller.signal.aborted) return;
 
     const nextSamples: Record<string, number | null> = {};
     const nextVars: Record<string, number | null> = {};
@@ -103,6 +117,9 @@ export function useDatasetEmptinessFilter(
     sampleCounts.value = nextSamples;
     varCounts.value = nextVars;
     probing.value = false;
+    if (activeProbeController === controller) {
+      activeProbeController = null;
+    }
   }
 
   watch(
@@ -113,6 +130,8 @@ export function useDatasetEmptinessFilter(
     { deep: true, immediate: true },
   );
 
+  onUnmounted(cancelProbes);
+
   return {
     visibleTableNames,
     hiddenTableNames,
@@ -120,5 +139,6 @@ export function useDatasetEmptinessFilter(
     varCounts,
     probing,
     refreshProbes,
+    cancelProbes,
   };
 }

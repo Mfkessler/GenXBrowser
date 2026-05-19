@@ -308,7 +308,7 @@ const props = withDefaults(defineProps<{
   deferLoadingOverlay: false,
 });
 
-const emit = defineEmits(["openSettingsOverlay", "update:tableName", "loading-change"]);
+const emit = defineEmits(["openSettingsOverlay", "update:tableName", "loading-change", "load-cancel"]);
 
 const localTableName = ref(props.tableName);
 const tableNameOptions = computed(() => {
@@ -451,13 +451,14 @@ function isCanceledRequest(error: unknown) {
   return axios.isCancel(error) || (axios.isAxiosError(error) && error.code === "ERR_CANCELED");
 }
 
-function cancelActiveLoad() {
+function cancelActiveLoad(emitCancel = true) {
   loadRequestSeq += 1;
   activeAbortController?.abort();
   activeAbortController = null;
   clearScheduledRender();
   loading.value = false;
   loadingProgress.value = null;
+  if (emitCancel) emit("load-cancel");
 }
 
 function getCurrentZoomWindow(rowTotal: number, colTotal: number): HeatmapZoomWindow {

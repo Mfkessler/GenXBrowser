@@ -201,6 +201,8 @@ const props = defineProps<{
   initialOrthogroup?: string | null;  // For hash-based loads: pre-selected orthogroup
 }>();
 
+const emit = defineEmits(["load-cancel"]);
+
 // ============================================================================
 // Stores & Router
 // ============================================================================
@@ -255,14 +257,17 @@ function isCanceledRequest(error: unknown) {
   return axios.isCancel(error) || (axios.isAxiosError(error) && error.code === "ERR_CANCELED");
 }
 
-function cancelActiveLoad() {
+function cancelActiveLoad(emitCancel = true) {
   loadRequestSeq += 1;
   activeAbortController?.abort();
   activeAbortController = null;
   loading.value = false;
   loadingMount.value = false;
   loadingProgress.value = null;
+  if (emitCancel) emit("load-cancel");
 }
+
+defineExpose({ cancelActiveLoad });
 
 // ============================================================================
 // Store-backed Computed Properties (Single Source of Truth)

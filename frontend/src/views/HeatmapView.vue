@@ -49,7 +49,7 @@
         :progress="batchLoadingProgress"
         label="Loading heatmaps"
         cancellable
-        @cancel="cancelBatchLoading"
+        @cancel="cancelLoadingAndReturnToCatalog"
       />
       <template v-if="hashStateLoaded">
         <div
@@ -68,6 +68,7 @@
             @openSettingsOverlay="openSettingsOverlay"
             @update:tableName="onUpdateTableName(tableName, $event)"
             @loading-change="onHeatmapLoadingChange"
+            @load-cancel="cancelLoadingAndReturnToCatalog"
           />
         </div>
       </template>
@@ -116,7 +117,7 @@
 <script setup lang="ts">
 import axios from "axios";
 import { API_BASE_URL } from "@/shared/Config";
-import { computed, onMounted, provide, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, provide, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { type CatalogMeta } from "@/shared/CatalogMeta";
@@ -154,7 +155,7 @@ interface ExportPayload {
 
 interface ExportPayloadProvider {
   getExportPayload?: () => ExportPayload | null;
-  cancelActiveLoad?: () => void;
+  cancelActiveLoad?: (emitCancel?: boolean) => void;
 }
 
 interface HeatmapLoadingState {
@@ -167,6 +168,8 @@ const heatmapRefs = ref<ExportPayloadProvider[]>([]);
 const allTables = ref<Record<string, string>>({});
 const hashStateLoaded = ref(false);
 const heatmapLoadingStates = ref<Record<string, HeatmapLoadingState>>({});
+let activeHashAbortController: AbortController | null = null;
+let activeTablesAbortController: AbortController | null = null;
 
 // Shared color registry for consistent side-color mapping across multiple Heatmap plots
 const sharedColorRegistry = new SharedColorRegistry();
@@ -180,7 +183,7 @@ const tableNames = computed(() => {
 // Auto-hide datasets whose `.var` rows or `.obs` samples fall completely
 // through the active gene/sample filters — keeps panels meaningful instead
 // of showing unfiltered placeholders next to filtered ones.
-const { visibleTableNames, hiddenTableNames } = useDatasetEmptinessFilter(tableNames);
+const { visibleTableNames, hiddenTableNames, cancelProbes } = useDatasetEmptinessFilter(tableNames);
 
 const heatmapGridStyle = computed(() => ({
   gridTemplateColumns: getHeatmapGridTemplate(visibleTableNames.value.length),
@@ -277,23 +280,39 @@ function onHeatmapLoadingChange(state: HeatmapLoadingState) {
   };
 }
 
+function isCanceledRequest(error: unknown) {
+  return axios.isCancel(error) || (axios.isAxiosError(error) && error.code === "ERR_CANCELED");
+}
+
 function cancelBatchLoading() {
   for (const component of heatmapRefs.value || []) {
-    component?.cancelActiveLoad?.();
+    component?.cancelActiveLoad?.(false);
   }
+}
+
+function cancelLoadingAndReturnToCatalog() {
+  activeHashAbortController?.abort();
+  activeHashAbortController = null;
+  activeTablesAbortController?.abort();
+  activeTablesAbortController = null;
+  cancelProbes();
+  cancelBatchLoading();
+  heatmapLoadingStates.value = {};
+  hashStateLoaded.value = true;
+  router.replace({ name: "catalog" });
 }
 
 // Re-load filter / visualization state whenever `?id=` changes. This
 // allows assistant-driven re-navigations within the same heatmap path
 // (different filter/viz hash) to refresh the view automatically.
-async function loadStateFromIdParam(idParam: unknown) {
+async function loadStateFromIdParam(idParam: unknown, signal?: AbortSignal) {
   if (typeof idParam !== "string" || idParam.length !== 16) {
     hashStateLoaded.value = true;
     return;
   }
   hashStateLoaded.value = false;
   try {
-    const response = await axios.post(`${API_BASE_URL}/api/id`, { id: idParam });
+    const response = await axios.post(`${API_BASE_URL}/api/id`, { id: idParam }, { signal });
     const data = response.data;
     if (data.filters && data.visualizations) {
       visualizationStore.replaceState(data.visualizations);
@@ -302,32 +321,56 @@ async function loadStateFromIdParam(idParam: unknown) {
       console.warn("Invalid data received from backend for ID", idParam);
     }
   } catch (error) {
+    if (isCanceledRequest(error)) return;
     console.error("Error fetching filter data by ID", idParam, error);
   } finally {
-    hashStateLoaded.value = true;
+    if (!signal?.aborted) hashStateLoaded.value = true;
   }
 }
 
 watch(
   () => route.query.id,
-  (idParam) => { loadStateFromIdParam(idParam); },
+  (idParam) => {
+    activeHashAbortController?.abort();
+    const controller = new AbortController();
+    activeHashAbortController = controller;
+    loadStateFromIdParam(idParam, controller.signal).finally(() => {
+      if (activeHashAbortController === controller) activeHashAbortController = null;
+    });
+  },
   { immediate: true },
 );
 
 onMounted(async () => {
+  activeTablesAbortController?.abort();
+  const controller = new AbortController();
+  activeTablesAbortController = controller;
   // Fetch all possible table names for dropdown options:
   const tagsParam = [...filtersStore.tags].join(",");
-  const response = await axios.get<CatalogMeta[]>(
-    `${API_BASE_URL}/api/tables`,
-    {
-      params: {
-        tags: tagsParam,
+  try {
+    const response = await axios.get<CatalogMeta[]>(
+      `${API_BASE_URL}/api/tables`,
+      {
+        params: {
+          tags: tagsParam,
+        },
+        signal: controller.signal,
       },
-    },
-  );
+    );
 
-  response.data.forEach((t) => {
-    allTables.value[t.table_name] = beautifyLabel(t.table_name);
-  });
+    if (controller.signal.aborted) return;
+    response.data.forEach((t) => {
+      allTables.value[t.table_name] = beautifyLabel(t.table_name);
+    });
+  } catch (error) {
+    if (!isCanceledRequest(error)) throw error;
+  } finally {
+    if (activeTablesAbortController === controller) activeTablesAbortController = null;
+  }
+});
+
+onUnmounted(() => {
+  activeHashAbortController?.abort();
+  activeTablesAbortController?.abort();
 });
 </script>

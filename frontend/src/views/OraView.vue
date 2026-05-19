@@ -48,7 +48,7 @@
         v-if="showBatchLoadingOverlay"
         label="Loading ORA"
         cancellable
-        @cancel="cancelBatchLoading"
+        @cancel="cancelLoadingAndReturnToCatalog"
       />
       <div
         v-for="tableName in visibleTableNames"
@@ -66,6 +66,7 @@
           @openSettingsOverlay="openSettingsOverlay"
           @update:tableName="onUpdateTableName(tableName, $event)"
           @loading-change="onOraLoadingChange"
+          @load-cancel="cancelLoadingAndReturnToCatalog"
         />
       </div>
     </div>
@@ -110,7 +111,7 @@
 <script setup lang="ts">
 import axios from "axios";
 import { API_BASE_URL } from "@/shared/Config";
-import { computed, onMounted, provide, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, provide, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { type CatalogMeta } from "@/shared/CatalogMeta";
@@ -147,7 +148,7 @@ interface ExportPayload {
 
 interface ExportPayloadProvider {
   getExportPayload?: () => ExportPayload | null;
-  cancelActiveLoad?: () => void;
+  cancelActiveLoad?: (emitCancel?: boolean) => void;
 }
 
 interface OraLoadingState {
@@ -160,6 +161,8 @@ const oraRefs = ref<ExportPayloadProvider[]>([]);
 const allTables = ref<Record<string, string>>({});
 const hashLoading = ref(true);
 const oraLoadingStates = ref<Record<string, OraLoadingState>>({});
+let activeHashAbortController: AbortController | null = null;
+let activeTablesAbortController: AbortController | null = null;
 
 // Shared color registry for consistent side-color mapping across multiple ORA plots
 const sharedColorRegistry = new SharedColorRegistry();
@@ -173,7 +176,7 @@ const tableNames = computed(() => {
 // Hide datasets that have no transcripts / no samples after the current
 // filter set so the user never sees an unfiltered panel sitting next to
 // filtered ones.
-const { visibleTableNames, hiddenTableNames } = useDatasetEmptinessFilter(tableNames);
+const { visibleTableNames, hiddenTableNames, cancelProbes } = useDatasetEmptinessFilter(tableNames);
 
 const oraGridStyle = computed(() => ({
   gridTemplateColumns: visibleTableNames.value.length <= 1
@@ -223,8 +226,24 @@ function onOraLoadingChange(state: OraLoadingState) {
 
 function cancelBatchLoading() {
   for (const component of oraRefs.value || []) {
-    component?.cancelActiveLoad?.();
+    component?.cancelActiveLoad?.(false);
   }
+}
+
+function isCanceledRequest(error: unknown) {
+  return axios.isCancel(error) || (axios.isAxiosError(error) && error.code === "ERR_CANCELED");
+}
+
+function cancelLoadingAndReturnToCatalog() {
+  activeHashAbortController?.abort();
+  activeHashAbortController = null;
+  activeTablesAbortController?.abort();
+  activeTablesAbortController = null;
+  cancelProbes();
+  cancelBatchLoading();
+  oraLoadingStates.value = {};
+  hashLoading.value = false;
+  router.replace({ name: "catalog" });
 }
 
 const openSettingsOverlay = () => {
@@ -271,14 +290,14 @@ function onUpdateTableName(oldTableName: string, newTableName: string) {
 // the initial mount. This is what makes assistant-driven re-navigations
 // (e.g. ORA orthogroup -> GO terms on the same /o/CS path) actually take
 // effect; without it the component would be reused and stale state kept.
-async function loadStateFromIdParam(idParam: unknown) {
+async function loadStateFromIdParam(idParam: unknown, signal?: AbortSignal) {
   hashLoading.value = true;
   if (typeof idParam !== "string" || idParam.length !== 16) {
     hashLoading.value = false;
     return;
   }
   try {
-    const response = await axios.post(`${API_BASE_URL}/api/id`, { id: idParam });
+    const response = await axios.post(`${API_BASE_URL}/api/id`, { id: idParam }, { signal });
     const data = response.data;
     if (data.filters && data.visualizations) {
       // Visualization state first, then filters — watchers on filters
@@ -291,32 +310,56 @@ async function loadStateFromIdParam(idParam: unknown) {
       console.warn("Invalid data received from backend for ID", idParam);
     }
   } catch (error) {
+    if (isCanceledRequest(error)) return;
     console.error("Error fetching filter data by ID", idParam, error);
   } finally {
-    hashLoading.value = false;
+    if (!signal?.aborted) hashLoading.value = false;
   }
 }
 
 watch(
   () => route.query.id,
-  (idParam) => { loadStateFromIdParam(idParam); },
+  (idParam) => {
+    activeHashAbortController?.abort();
+    const controller = new AbortController();
+    activeHashAbortController = controller;
+    loadStateFromIdParam(idParam, controller.signal).finally(() => {
+      if (activeHashAbortController === controller) activeHashAbortController = null;
+    });
+  },
   { immediate: true },
 );
 
 onMounted(async () => {
+  activeTablesAbortController?.abort();
+  const controller = new AbortController();
+  activeTablesAbortController = controller;
   // Fetch all possible table names for dropdown options:
   const tagsParam = [...filtersStore.tags].join(",");
-  const response = await axios.get<CatalogMeta[]>(
-    `${API_BASE_URL}/api/tables`,
-    {
-      params: {
-        tags: tagsParam,
+  try {
+    const response = await axios.get<CatalogMeta[]>(
+      `${API_BASE_URL}/api/tables`,
+      {
+        params: {
+          tags: tagsParam,
+        },
+        signal: controller.signal,
       },
-    },
-  );
+    );
 
-  response.data.forEach((t) => {
-    allTables.value[t.table_name] = beautifyLabel(t.table_name);
-  });
+    if (controller.signal.aborted) return;
+    response.data.forEach((t) => {
+      allTables.value[t.table_name] = beautifyLabel(t.table_name);
+    });
+  } catch (error) {
+    if (!isCanceledRequest(error)) throw error;
+  } finally {
+    if (activeTablesAbortController === controller) activeTablesAbortController = null;
+  }
+});
+
+onUnmounted(() => {
+  activeHashAbortController?.abort();
+  activeTablesAbortController?.abort();
 });
 </script>

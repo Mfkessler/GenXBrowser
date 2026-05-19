@@ -248,7 +248,7 @@ const closeTooltipModal = () => {
   selectedCellValue.value = "";
 };
 
-const emit = defineEmits(['openSettingsOverlay', 'update:tableName', 'update:orthogroupOptions', 'update:loadingState']);
+const emit = defineEmits(['openSettingsOverlay', 'update:tableName', 'update:orthogroupOptions', 'update:loadingState', 'load-cancel']);
 
 const rows = ref<RowType[]>([]);
 const columnNames = ref<string[]>([]);
@@ -334,7 +334,7 @@ function isCanceledRequest(error: unknown) {
   return axios.isCancel(error) || (axios.isAxiosError(error) && error.code === "ERR_CANCELED");
 }
 
-function cancelActiveLoad() {
+function cancelActiveLoad(emitCancel = true) {
   loadRequestSeq += 1;
   activeAbortController?.abort();
   activeAbortController = null;
@@ -343,6 +343,7 @@ function cancelActiveLoad() {
   activeOgListAbortController = null;
   loading.value = false;
   loadingProgress.value = null;
+  if (emitCancel) emit('load-cancel');
 }
 
 watch(

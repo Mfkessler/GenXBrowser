@@ -385,13 +385,14 @@ function isCanceledRequest(error: unknown) {
   return axios.isCancel(error) || (axios.isAxiosError(error) && error.code === "ERR_CANCELED");
 }
 
-function cancelActiveLoad() {
+function cancelActiveLoad(emitCancel = true) {
   oraRequestSeq += 1;
   activeAbortController?.abort();
   activeAbortController = null;
   resetDotplot();
   loading.value = false;
   renderReady.value = true;
+  if (emitCancel) emit("load-cancel");
 }
 
 const finalPlotHeight = computed(() => {
@@ -1680,7 +1681,7 @@ function openSettingsOverlay() {
   emit("openSettingsOverlay");
 }
 
-const emit = defineEmits(["update:tableName", "openSettingsOverlay", "loading-change"]);
+const emit = defineEmits(["update:tableName", "openSettingsOverlay", "loading-change", "load-cancel"]);
 
 watch(
   () => loading.value,

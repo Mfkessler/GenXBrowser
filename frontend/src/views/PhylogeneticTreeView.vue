@@ -78,6 +78,7 @@
           @openSettingsOverlay="openSettingsOverlay"
           @update:loading-state="onChildLoadingState"
           @update:tableName="onUpdateTableName(tableName, $event)"
+          @load-cancel="cancelUnifiedLoading"
         />
       </div>
     </div>
@@ -116,7 +117,7 @@ const speciesCodeMap = ref<Record<string, string>>({});
 const showSettingsOverlay = ref(false);
 type PhylogeneticTreeExpose = InstanceType<typeof PhylogeneticTree> & {
   orthogroupOptions?: Record<string, string>;
-  cancelActiveLoad?: () => void;
+  cancelActiveLoad?: (emitCancel?: boolean) => void;
   expandAll?: () => void;
   collapseAll?: () => void;
   collapseToSpecies?: () => void;
@@ -198,7 +199,12 @@ function cancelUnifiedLoading() {
   activeHashAbortController?.abort();
   activeHashAbortController = null;
   hashLoading.value = false;
-  phyloTreeRefs.value?.forEach((tree) => tree.cancelActiveLoad?.());
+  childLoading.value = false;
+  childLoadingProgress.value = null;
+  combinedLoadingProgress.value = null;
+  visibleCombinedLoading.value = false;
+  phyloTreeRefs.value?.forEach((tree) => tree.cancelActiveLoad?.(false));
+  router.replace({ name: "catalog" });
 }
 
 function onChildLoadingState(state: { loading: boolean; progress: number | null }) {
