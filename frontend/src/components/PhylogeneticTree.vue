@@ -1176,20 +1176,23 @@ async function initPhylotree(
 
   // --- Branches (elbow style) ---
   const branchGroup = mainGroup.append('g').attr('class', 'branches')
+  const branchStroke = 3
+  const branchStrokeDefault = '#999'
+  const branchStrokeHover = '#a6c550'
   for (const link of layoutResult.links) {
     const path = `M${link.source.x},${rowY(link.source.y)} V${rowY(link.target.y)} H${link.target.x}`
     branchGroup.append('path')
       .attr('class', 'branch')
       .attr('d', path)
       .attr('fill', 'none')
-      .attr('stroke', '#999')
-      .attr('stroke-width', 1.5)
+      .attr('stroke', branchStrokeDefault)
+      .attr('stroke-width', branchStroke)
       .style('cursor', 'pointer')
       .on('mouseenter', function () {
-        d3.select(this).attr('stroke-width', 3).attr('stroke', '#3b82f6')
+        d3.select(this).attr('stroke', branchStrokeHover)
       })
       .on('mouseleave', function () {
-        d3.select(this).attr('stroke-width', 1.5).attr('stroke', '#999')
+        d3.select(this).attr('stroke', branchStrokeDefault)
       })
   }
 
@@ -1254,7 +1257,7 @@ async function initPhylotree(
         .text(`(${hiddenLeafCount})`)
     } else if (isInternal) {
       g.append('circle')
-        .attr('r', 3.2)
+        .attr('r', 6.4)
         .attr('fill', highlightColor || '#CCC')
         .attr('stroke', highlightColor || '#666')
         .attr('stroke-width', highlightColor ? 2 : 0.5)
@@ -1517,17 +1520,18 @@ async function initPhylotree(
   }
 
   // --- Legend ---
-  const heatmapWidth = columnsArr.length * (cellSize + cellPad)
+  const heatmapContentWidth = columnsArr.length > 0
+    ? (columnsArr.length - 1) * (cellSize + cellPad) + cellSize
+    : 0
   const hasHighlightedLeaves = Object.values(highlightedGeneIds.value).some((geneIds) => geneIds.size > 0)
   if (visualizationStore.legend) {
     const legendWidth = 18
     const legendHeight = 180
     const legendSteps = 40
-    const legendX = heatmapX + heatmapWidth + 40
+    const legendGap = cellSize
     const legendY = Math.max(0, rowY(firstLeafY) - 20)
     const legendGroup = mainGroup.append('g')
       .attr('class', 'heatmap-legend')
-      .attr('transform', `translate(${legendX}, ${legendY})`)
     const legendValueScale = d3.scaleLinear().domain([minVal, maxVal]).range([legendHeight, 0])
     const stepHeight = legendHeight / legendSteps
     const legendData = d3.range(legendSteps).map(i => {
@@ -1554,6 +1558,10 @@ async function initPhylotree(
       .attr('text-anchor', 'middle')
       .style('font-size', '11px')
       .text(getExpressionOption(visualizationStore.expressionDisplay.optionId)?.label || 'Expression values')
+    const legendBBox = legendGroup.node()?.getBBox()
+    const legendMinX = legendBBox ? legendBBox.x : 0
+    const legendX = heatmapX + heatmapContentWidth + legendGap - legendMinX
+    legendGroup.attr('transform', `translate(${legendX}, ${legendY})`)
     if (hasHighlightedLeaves) {
       const markerLegend = legendGroup.append('g')
         .attr('transform', `translate(-8, ${legendHeight + 28})`)

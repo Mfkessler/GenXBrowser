@@ -46,7 +46,7 @@ fill: #00f;
 .branch {
 fill: none;
 stroke: #999;
-stroke-width: 2px;
+stroke-width: 3px;
 }
 
 .clade {
@@ -79,18 +79,10 @@ stroke-dasharray: 5, 5, 1, 5;
 stroke-width: 3px;
 }
 
-.branch:hover {
-stroke-width: 10px;
-}
-
 .internal-node circle:hover, .internal-node ellipse:hover, .internal-node rect:hover {
 fill: black;
 stroke: #CCC;
 }
-
-.tree-widget {
-}
-
 
 .phylotree-wrapper {
   width: 100%;
