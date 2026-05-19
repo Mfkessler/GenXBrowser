@@ -371,6 +371,7 @@ let renderTimer: ReturnType<typeof setTimeout> | null = null;
 let isUnmounting = false;
 let loadRequestSeq = 0;
 let activeAbortController: AbortController | null = null;
+let suppressTouchCompatibilityMouseUntil = 0;
 
 const LEGEND_WIDTH = 30;
 const SIDE_COLOR_WIDTH = 18;
@@ -1266,8 +1267,6 @@ function clearScheduledRender() {
 function scheduleHeatmapRender(delay = 0, retries = MAX_RENDER_RETRIES) {
   if (isUnmounting) return;
 
-  clearScheduledRender();
-
   const runRender = async () => {
     renderFrame = null;
     const didRender = await renderHeatmap();
@@ -1277,6 +1276,7 @@ function scheduleHeatmapRender(delay = 0, retries = MAX_RENDER_RETRIES) {
   };
 
   if (delay > 0) {
+    clearScheduledRender();
     renderTimer = setTimeout(() => {
       renderTimer = null;
       renderFrame = requestAnimationFrame(() => {
@@ -1284,6 +1284,12 @@ function scheduleHeatmapRender(delay = 0, retries = MAX_RENDER_RETRIES) {
       });
     }, delay);
     return;
+  }
+
+  if (renderFrame !== null) return;
+  if (renderTimer !== null) {
+    clearTimeout(renderTimer);
+    renderTimer = null;
   }
 
   renderFrame = requestAnimationFrame(() => {
@@ -1381,7 +1387,8 @@ async function renderHeatmap(): Promise<boolean> {
       .attr("height", height)
       .attr("data-zoomed", zoomWindow.value !== null ? "true" : "false")
       .attr("data-pan-mode", panMode.value ? "true" : "false")
-      .attr("data-zoom-mode", zoomMode.value ? "true" : "false");
+      .attr("data-zoom-mode", zoomMode.value ? "true" : "false")
+      .style("touch-action", "none");
 
   svg
     .append("text")
@@ -1584,7 +1591,8 @@ async function renderHeatmap(): Promise<boolean> {
     .attr("width", svgW)
     .attr("height", svgH)
     .attr("fill", "transparent")
-    .attr("pointer-events", "all");
+    .attr("pointer-events", "all")
+    .style("touch-action", "none");
 
   const zoomSelectionRect = cellGroup
     .append("rect")
@@ -1607,6 +1615,8 @@ async function renderHeatmap(): Promise<boolean> {
   };
 
   const handlePlotMouseDown = (event: MouseEvent) => {
+    const isTouchBridgeEvent = (event as MouseEvent & {isTouchBridgeEvent?: boolean}).isTouchBridgeEvent === true;
+    if (!isTouchBridgeEvent && Date.now() < suppressTouchCompatibilityMouseUntil) return;
     if (event.button !== 0) return;
     if (event.altKey || event.ctrlKey || event.metaKey) return;
     if (!zoomMode.value && !panMode.value) return;
@@ -1730,7 +1740,89 @@ async function renderHeatmap(): Promise<boolean> {
     window.addEventListener("mouseup", handleUp, {once: true});
   };
 
+  const handlePlotTouchStart = (event: TouchEvent) => {
+    if (event.touches.length !== 1) return;
+    if (!zoomMode.value && !panMode.value) return;
+
+    const initialTouch = event.touches[0];
+    if (!initialTouch) return;
+    const startZoomed = zoomWindow.value !== null;
+    if (panMode.value && !startZoomed) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const dispatchMouseDragEvent = (type: "mousedown" | "mousemove" | "mouseup", touch: Touch) => {
+      const mouseEvent = new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+        buttons: type === "mouseup" ? 0 : 1,
+        clientX: touch.clientX,
+        clientY: touch.clientY,
+        screenX: touch.screenX,
+        screenY: touch.screenY,
+      });
+      Object.defineProperty(mouseEvent, "isTouchBridgeEvent", {value: true});
+
+      if (type === "mousedown") {
+        handlePlotMouseDown(mouseEvent);
+      } else {
+        window.dispatchEvent(mouseEvent);
+      }
+    };
+
+    const cleanup = () => {
+      window.removeEventListener("touchmove", handleMove);
+      window.removeEventListener("touchend", handleEnd);
+      window.removeEventListener("touchcancel", handleCancel);
+      suppressTouchCompatibilityMouseUntil = Date.now() + 700;
+    };
+
+    const handleMove = (moveEvent: TouchEvent) => {
+      if (moveEvent.touches.length !== 1) return;
+      const currentTouch = moveEvent.touches[0];
+      if (!currentTouch) return;
+      moveEvent.preventDefault();
+      dispatchMouseDragEvent("mousemove", currentTouch);
+    };
+
+    const handleEnd = (endEvent: TouchEvent) => {
+      const endTouch = endEvent.changedTouches[0];
+      if (endTouch) {
+        endEvent.preventDefault();
+        dispatchMouseDragEvent("mouseup", endTouch);
+      }
+      cleanup();
+    };
+
+    const handleCancel = () => {
+      const cancelMouseEvent = new MouseEvent("mouseup", {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+        buttons: 0,
+        clientX: initialTouch.clientX,
+        clientY: initialTouch.clientY,
+        screenX: initialTouch.screenX,
+        screenY: initialTouch.screenY,
+      });
+      Object.defineProperty(cancelMouseEvent, "isTouchBridgeEvent", {value: true});
+      window.dispatchEvent(cancelMouseEvent);
+      cleanup();
+    };
+
+    dispatchMouseDragEvent("mousedown", initialTouch);
+    suppressTouchCompatibilityMouseUntil = Date.now() + 700;
+    window.addEventListener("touchmove", handleMove, {passive: false});
+    window.addEventListener("touchend", handleEnd, {once: true});
+    window.addEventListener("touchcancel", handleCancel, {once: true});
+  };
+
   plotHitbox.on("mousedown.zoom-pan", handlePlotMouseDown);
+  plotHitbox.on("touchstart.zoom-pan", function (event) {
+    handlePlotTouchStart(event as TouchEvent);
+  });
   
   // Render cells - for large datasets, skip initial event binding
   const rects = cellGroup
@@ -1748,7 +1840,11 @@ async function renderHeatmap(): Promise<boolean> {
       return isNaN(n) ? "#eee" : colorScale(n);
     })
     .attr("stroke", "none")
-    .on("mousedown.zoom-pan", handlePlotMouseDown);
+    .style("touch-action", "none")
+    .on("mousedown.zoom-pan", handlePlotMouseDown)
+    .on("touchstart.zoom-pan", function (event) {
+      handlePlotTouchStart(event as TouchEvent);
+    });
   
   // Add event handlers (deferred for large datasets to improve initial render)
   const addCellEventHandlers = () => {
@@ -1891,6 +1987,7 @@ async function renderHeatmap(): Promise<boolean> {
     if (!rect) return;
     
     rect.addEventListener("touchstart", function (event: TouchEvent) {
+      if (zoomMode.value || panMode.value) return;
       const target = event.currentTarget as SVGRectElement;
       const d = d3.select(target).datum() as { rowIndex: number; col: string; value: string | number };
       
