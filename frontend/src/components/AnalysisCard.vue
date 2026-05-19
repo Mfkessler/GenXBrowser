@@ -1,7 +1,8 @@
 <template>
   <div
+    data-card-role="analysis"
     :class="[
-      'relative rounded-xl border-1 p-5 transition-all duration-200 flex flex-col items-center text-center h-full',
+      'relative rounded-xl border-1 p-5 transition-all duration-200 flex flex-col h-full min-w-0 overflow-hidden [container-type:inline-size]',
       enabled
         ? `${colorClasses.border} ${colorClasses.bg} cursor-pointer hover:shadow-lg hover:scale-[1.02] active:scale-[0.98]`
         : 'border-gray-200 bg-gray-50 cursor-not-allowed',
@@ -14,116 +15,118 @@
     @keydown.space.prevent="handleClick"
     v-tooltip="tooltipText"
   >
-    <!-- Icon -->
-    <div
-      :class="[
-        'w-12 h-12 rounded-full flex items-center justify-center mb-3 transition-colors',
-        enabled
-          ? `${colorClasses.iconBg} ${colorClasses.iconText}`
-          : 'bg-gray-200 text-gray-400',
-      ]"
-    >
-      <!-- Heatmap Icon -->
-      <svg
-        v-if="type === 'heatmap'"
-        class="w-6 h-6"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
+    <div class="analysis-card-header w-full">
+      <!-- Icon -->
+      <div
+        :class="[
+          'analysis-card-icon-shell rounded-full flex items-center justify-center transition-colors',
+          enabled
+            ? `${colorClasses.iconBg} ${colorClasses.iconText}`
+            : 'bg-gray-200 text-gray-400',
+        ]"
       >
-        <rect x="3" y="3" width="5" height="5" opacity="0.3" fill="currentColor"/>
-        <rect x="10" y="3" width="5" height="5" opacity="0.8" fill="currentColor"/>
-        <rect x="17" y="3" width="5" height="5" opacity="0.1" fill="currentColor"/>
-        <rect x="3" y="10" width="5" height="5" opacity="0.6" fill="currentColor"/>
-        <rect x="10" y="10" width="5" height="5" opacity="0.4" fill="currentColor"/>
-        <rect x="17" y="10" width="5" height="5" opacity="0.9" fill="currentColor"/>
-        <rect x="3" y="17" width="5" height="5" opacity="0.1" fill="currentColor"/>
-        <rect x="10" y="17" width="5" height="5" opacity="0.7" fill="currentColor"/>
-        <rect x="17" y="17" width="5" height="5" opacity="0.5" fill="currentColor"/>
-      </svg>
+        <!-- Heatmap Icon -->
+        <svg
+          v-if="type === 'heatmap'"
+          class="analysis-card-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <rect x="3" y="3" width="5" height="5" opacity="0.3" fill="currentColor"/>
+          <rect x="10" y="3" width="5" height="5" opacity="0.8" fill="currentColor"/>
+          <rect x="17" y="3" width="5" height="5" opacity="0.1" fill="currentColor"/>
+          <rect x="3" y="10" width="5" height="5" opacity="0.6" fill="currentColor"/>
+          <rect x="10" y="10" width="5" height="5" opacity="0.4" fill="currentColor"/>
+          <rect x="17" y="10" width="5" height="5" opacity="0.9" fill="currentColor"/>
+          <rect x="3" y="17" width="5" height="5" opacity="0.1" fill="currentColor"/>
+          <rect x="10" y="17" width="5" height="5" opacity="0.7" fill="currentColor"/>
+          <rect x="17" y="17" width="5" height="5" opacity="0.5" fill="currentColor"/>
+        </svg>
 
-      <!-- Compare Expression Icon -->
-      <svg
-        v-else-if="type === 'compare'"
-        class="w-6 h-6"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2.5"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      >
-        <path d="M3 17c4-1 6-12 10-12s6 8 8 10" opacity="0.4" />
-        <path d="M3 12c3 0 7 10 11 10s5-15 7-15" />
-      </svg>
+        <!-- Compare Expression Icon -->
+        <svg
+          v-else-if="type === 'compare'"
+          class="analysis-card-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M3 17c4-1 6-12 10-12s6 8 8 10" opacity="0.4" />
+          <path d="M3 12c3 0 7 10 11 10s5-15 7-15" />
+        </svg>
 
-      <!-- Phylogenetic Tree Icon -->
-      <svg
-        v-else-if="type === 'phylo'"
-        class="w-6 h-6"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.5"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        viewBox="0 0 24 24"
-      >
-        <line x1="6" y1="4" x2="6" y2="20" />
-        <line x1="6" y1="9" x2="12" y2="9" />
-        <line x1="12" y1="6" x2="12" y2="12" />
-        <line x1="12" y1="6" x2="20" y2="6" />
-        <line x1="12" y1="12" x2="20" y2="12" />
-        <line x1="6" y1="16" x2="14" y2="16" />
-        <line x1="14" y1="14" x2="14" y2="18" />
-        <line x1="14" y1="18" x2="20" y2="18" />
-        <circle cx="20" cy="6" r="1" />
-        <circle cx="20" cy="12" r="1" />
-        <circle cx="20" cy="18" r="1" />
-      </svg>
+        <!-- Phylogenetic Tree Icon -->
+        <svg
+          v-else-if="type === 'phylo'"
+          class="analysis-card-icon"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          viewBox="0 0 24 24"
+        >
+          <line x1="6" y1="4" x2="6" y2="20" />
+          <line x1="6" y1="9" x2="12" y2="9" />
+          <line x1="12" y1="6" x2="12" y2="12" />
+          <line x1="12" y1="6" x2="20" y2="6" />
+          <line x1="12" y1="12" x2="20" y2="12" />
+          <line x1="6" y1="16" x2="14" y2="16" />
+          <line x1="14" y1="14" x2="14" y2="18" />
+          <line x1="14" y1="18" x2="20" y2="18" />
+          <circle cx="20" cy="6" r="1" />
+          <circle cx="20" cy="12" r="1" />
+          <circle cx="20" cy="18" r="1" />
+        </svg>
 
-      <!-- ORA Icon -->
-      <svg
-        v-else-if="type === 'ora'"
-        class="w-6 h-6"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.5"
-        viewBox="0 0 24 24"
-      >
-        <circle cx="6" cy="20" r="1" />
-        <circle cx="12" cy="14" r="2" />
-        <circle cx="18" cy="4" r="1.5" />
-      </svg>
+        <!-- ORA Icon -->
+        <svg
+          v-else-if="type === 'ora'"
+          class="analysis-card-icon"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          viewBox="0 0 24 24"
+        >
+          <circle cx="6" cy="20" r="1" />
+          <circle cx="12" cy="14" r="2" />
+          <circle cx="18" cy="4" r="1.5" />
+        </svg>
+      </div>
+
+      <div class="analysis-card-copy">
+        <h3
+          :class="[
+            'analysis-card-title text-lg font-semibold mb-1 max-w-full',
+            enabled ? colorClasses.title : 'text-gray-400',
+          ]"
+        >
+          {{ title }}
+        </h3>
+
+        <p
+          :class="[
+            'analysis-card-description text-sm leading-relaxed max-w-full',
+            enabled ? 'text-gray-500' : 'text-gray-300',
+          ]"
+        >
+          {{ description }}
+        </p>
+      </div>
     </div>
-
-    <!-- Title -->
-    <h3
-      :class="[
-        'text-sm font-semibold mb-1',
-        enabled ? colorClasses.title : 'text-gray-400',
-      ]"
-    >
-      {{ title }}
-    </h3>
-
-    <!-- Description -->
-    <p
-      :class="[
-        'text-xs leading-relaxed',
-        enabled ? 'text-gray-500' : 'text-gray-300',
-      ]"
-    >
-      {{ description }}
-    </p>
 
     <!-- Selection badge -->
     <div
       v-if="enabled && selectedCount > 0"
       :class="[
-        'mt-auto pt-3 text-xs font-medium px-2 py-0.5 rounded-full',
+        'mt-auto self-center inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full',
         colorClasses.badge,
       ]"
     >
@@ -247,3 +250,53 @@ function handleClick() {
   router.push(route);
 }
 </script>
+
+<style scoped>
+.analysis-card-header {
+  display: grid;
+  grid-template-columns: minmax(4.75rem, clamp(4.75rem, 28cqi, 7.5rem)) minmax(0, 1fr);
+  align-items: center;
+  gap: 0.875rem;
+  min-width: 0;
+}
+
+.analysis-card-icon-shell {
+  width: min(100%, clamp(4.75rem, 28cqi, 7.5rem));
+  aspect-ratio: 1 / 1;
+  justify-self: center;
+}
+
+.analysis-card-icon {
+  width: clamp(2.5rem, 14cqi, 4.5rem);
+  height: clamp(2.5rem, 14cqi, 4.5rem);
+}
+
+.analysis-card-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.analysis-card-description {
+  display: -webkit-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-clamp: 4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+@container (max-width: 22rem) {
+  .analysis-card-header {
+    grid-template-columns: 1fr;
+    justify-items: center;
+  }
+
+  .analysis-card-icon-shell {
+    width: clamp(4.5rem, 34cqi, 6.25rem);
+  }
+}
+</style>

@@ -1,5 +1,6 @@
 <template>
   <div
+    data-card-role="dataset"
     :class="[
       'relative rounded-xl p-5 w-full mx-auto transition-all duration-200 flex flex-col cursor-pointer select-none h-full [container-type:inline-size]',
       props.selected
@@ -181,65 +182,6 @@
           </svg>
         </button>
         </span>
-        <!-- Download Data Button -->
-        <span v-tooltip="config.access.download ? 'Download Data' : 'Download not available'">
-        <button
-          class="rounded-full border-1 border-yellow-600 bg-yellow-100 text-yellow-600 p-2 min-w-10 min-h-10 flex items-center justify-center"
-          :class="{
-            'cursor-pointer hover:bg-yellow-600 hover:text-yellow-100':
-              config.access.download,
-            'cursor-not-allowed opacity-50': !config.access.download,
-          }"
-          aria-label="Download Data"
-          @click.stop="$emit('download-data')"
-        >
-          <svg
-            class="w-4.5 h-4.5"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              d="M12 4v12m0 0l-4-4m4 4l4-4"
-            />
-            <rect
-              x="4"
-              y="18"
-              width="16"
-              height="2"
-              rx="1"
-              stroke="currentColor"
-            />
-          </svg>
-        </button>
-        </span>
-      </div>
-      
-      <div v-if="tagItems.length > 0" class="flex flex-wrap gap-1.5 mt-2 overflow-hidden max-h-7 items-center justify-center">
-        <template v-for="tag in visibleTags" :key="tag">
-          <div
-            :class="[
-              'flex items-center border-1 text-xs font-medium px-2 py-0.5 rounded-full whitespace-nowrap shrink-0 cursor-pointer transition-all duration-300',
-              props.highlightedTag === tag
-                ? 'border-primary-500 bg-primary-500 text-white shadow-lg scale-110 tag-pulse'
-                : 'border-primary-900 bg-primary-100 text-primary-900 hover:bg-primary-200'
-            ]"
-            @click.stop="highlightTag(tag)"
-          >
-            {{ tag }}
-          </div>
-        </template>
-        <div
-          v-if="hiddenTags.length > 0"
-          class="flex items-center border-1 border-gray-400 bg-gray-100 text-gray-500 text-xs font-medium px-2 py-0.5 rounded-full whitespace-nowrap shrink-0 cursor-default"
-          v-tooltip="hiddenTags.join(', ')"
-          @click.stop
-        >
-          +{{ hiddenTags.length }} more
-        </div>
       </div>
 
       <!-- Per-dataset ID filter chips -->
@@ -357,7 +299,7 @@ const props = defineProps<{
   highlightedTag?: string | null;
 }>();
 
-const emit = defineEmits(["inspect-metadata", "inspect-data", "download-data", "toggle-select", "update:filtered-count", "highlight-tag"]);
+const emit = defineEmits(["inspect-metadata", "inspect-data", "toggle-select", "update:filtered-count"]);
 
 const filteredCount = ref<number | null>(null);
 const loadingCount = ref(false);
@@ -385,14 +327,6 @@ let initialLoadDone = false;
 // whether a filter actually changed versus a re-evaluation from navigation.
 let lastFilterSnapshot = '';
 
-const tagItems = computed(
-  () => props.tags?.map((t) => t.trim()).filter(Boolean) ?? [],
-);
-
-const MAX_VISIBLE_TAGS = 4;
-
-const visibleTags = computed(() => tagItems.value.slice(0, MAX_VISIBLE_TAGS));
-const hiddenTags = computed(() => tagItems.value.slice(MAX_VISIBLE_TAGS));
 const entityLabelPlural = getEntityLabelPlural();
 
 const displayCount = computed(() => {
@@ -460,10 +394,6 @@ watch(() => props.photo, async (newPhoto) => {
     photoLoading.value = false;
   }
 }, { immediate: true });
-
-function highlightTag(tag: string) {
-  emit("highlight-tag", tag);
-}
 
 // Per-dataset ID filter: computed list of pills from the store
 const datasetIdPills = computed(() => {
@@ -682,20 +612,6 @@ watch(
 }
 .count-flash {
   animation: count-flash-anim 0.6s ease-in-out;
-}
-
-@keyframes tag-pulse-anim {
-  0%, 100% {
-    transform: scale(1.1);
-    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7);
-  }
-  50% {
-    transform: scale(1.15);
-    box-shadow: 0 0 0 8px rgba(59, 130, 246, 0);
-  }
-}
-.tag-pulse {
-  animation: tag-pulse-anim 0.6s ease-in-out;
 }
 
 .catalog-entry-header {

@@ -35,7 +35,7 @@
     </div>
 
     <!-- Dataset Grid -->
-    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-5xl mx-auto">
+    <div ref="datasetGridRef" class="dashboard-card-grid">
       <CatalogEntry
         v-for="entry in catalog"
         :key="entry.table_name"
@@ -46,13 +46,10 @@
         :photo="entry.photo"
         :tissue-count="entry._tissue_count"
         :selected="catalogStore.isSelected(entry.table_name)"
-        :highlighted-tag="highlightedTag"
         @toggle-select="catalogStore.toggleSelection($event)"
         @update:filtered-count="onFilteredCountUpdate"
         @inspect-metadata="openOverlay('metadata', entry)"
         @inspect-data="openOverlay('data', entry)"
-        @download-data="downloadCatalogEntry(entry)"
-        @highlight-tag="handleTagHighlight"
       />
     </div>
 
@@ -62,8 +59,9 @@
         Analysis
       </h2>
 
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-5xl mx-auto">
+      <div class="dashboard-card-grid">
         <AnalysisCard
+          :style="analysisCardStyle"
           type="heatmap"
           :enabled="heatmapState.enabled"
           :disabled-reason="heatmapState.reason"
@@ -71,6 +69,7 @@
           :selected-table-names="heatmapState.eligibleTableNames"
         />
         <AnalysisCard
+          :style="analysisCardStyle"
           type="ora"
           :enabled="oraState.enabled"
           :disabled-reason="oraState.reason"
@@ -78,6 +77,7 @@
           :selected-table-names="oraState.eligibleTableNames"
         />
         <AnalysisCard
+          :style="analysisCardStyle"
           type="compare"
           :enabled="compareState.enabled"
           :disabled-reason="compareState.reason"
@@ -85,6 +85,7 @@
           :selected-table-names="compareState.eligibleTableNames"
         />
         <AnalysisCard
+          :style="analysisCardStyle"
           type="phylo"
           :enabled="phyloState.enabled"
           :disabled-reason="phyloState.reason"
@@ -133,7 +134,7 @@
 </template>
 <script setup lang="ts">
 import axios from "axios";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { RouterLink } from "vue-router";
 
 import AnalysisCard from "@/components/AnalysisCard.vue";
@@ -147,6 +148,7 @@ import { type OverlayConfig } from "@/shared/OverlayConfig";
 import OverlayTable from "@/components/OverlayTable.vue";
 import { jsonToTsv, beautifyLabel } from "@/shared/utils";
 import { fetchAnalysisLimits } from "@/shared/landingApi";
+import { getMirroredCardStyle, readCardBoxSize, type CardBoxSize } from "@/shared/dashboardCardSizing";
 
 type AnalysisLimitView = "heatmap" | "phylo" | "ora" | "compare";
 
@@ -171,8 +173,9 @@ const catalogStore = useCatalogStore();
 
 const catalog = ref<Array<CatalogMeta>>([]);
 const isLoading = ref(false);
-const highlightedTag = ref<string | null>(null);
 const analysisLimits = ref<Record<string, { max_rows: number | null }>>({});
+const datasetGridRef = ref<HTMLDivElement | null>(null);
+const datasetCardSize = ref<CardBoxSize | null>(null);
 
 const showOverlay = ref(false);
 const overlayTitle = ref("");
@@ -180,6 +183,39 @@ const overlayEndpoint = ref("");
 const overlayFilters = ref<Record<string, string | string[]>>({});
 const overlayType = ref<"data" | "metadata">("data");
 const currentTableName = ref("");
+let datasetCardResizeObserver: ResizeObserver | null = null;
+
+const analysisCardStyle = computed(() => getMirroredCardStyle(datasetCardSize.value));
+
+function disconnectDatasetCardObserver() {
+  datasetCardResizeObserver?.disconnect();
+  datasetCardResizeObserver = null;
+}
+
+function updateDatasetCardSize() {
+  const datasetCard = datasetGridRef.value?.querySelector<HTMLElement>('[data-card-role="dataset"]');
+  if (!datasetCard) {
+    datasetCardSize.value = null;
+    return;
+  }
+
+  datasetCardSize.value = readCardBoxSize(datasetCard.getBoundingClientRect());
+}
+
+function observeDatasetCard() {
+  disconnectDatasetCardObserver();
+  updateDatasetCardSize();
+
+  const datasetCard = datasetGridRef.value?.querySelector<HTMLElement>('[data-card-role="dataset"]');
+  if (!datasetCard || typeof ResizeObserver === "undefined") {
+    return;
+  }
+
+  datasetCardResizeObserver = new ResizeObserver(() => {
+    updateDatasetCardSize();
+  });
+  datasetCardResizeObserver.observe(datasetCard);
+}
 
 // ── Select All / Deselect All ─────────────────────────────────────
 const allSelected = computed(
@@ -199,14 +235,6 @@ function toggleSelectAll() {
 // ── Filtered-count callback from CatalogEntry ─────────────────────
 function onFilteredCountUpdate(tableName: string, count: number | null) {
   catalogStore.setFilteredCount(tableName, count);
-}
-
-// ── Tag highlight handler ──────────────────────────────────────────
-function handleTagHighlight(tag: string) {
-  highlightedTag.value = tag;
-  setTimeout(() => {
-    highlightedTag.value = null;
-  }, 800); // Highlight for 800ms
 }
 
 // ── Analysis enable/disable logic (independent limits) ────────────
@@ -359,6 +387,15 @@ watch(
   { deep: true },
 );
 
+watch(
+  () => catalog.value.map((entry) => entry.table_name).join("|"),
+  async () => {
+    await nextTick();
+    observeDatasetCard();
+  },
+  { flush: "post" },
+);
+
 onMounted(() => {
   fetchAnalysisLimits()
     .then((limits) => {
@@ -368,10 +405,33 @@ onMounted(() => {
       analysisLimits.value = {};
     });
   fetchTables();
+  nextTick(() => {
+    observeDatasetCard();
+  });
+});
+
+onBeforeUnmount(() => {
+  disconnectDatasetCardObserver();
 });
 </script>
 
 <style scoped>
+.dashboard-card-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  max-width: 64rem;
+  margin-left: auto;
+  margin-right: auto;
+  align-items: stretch;
+}
+
+@media (min-width: 640px) {
+  .dashboard-card-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .fade-enter-active,
 .fade-leave-active {
   transition: opacity 0.2s ease;
