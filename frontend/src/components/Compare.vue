@@ -156,6 +156,7 @@ import { useColumnsStore } from "@/stores/columns";
 import { useVisualizationStore } from "@/stores/visualization";
 import { useFilterSeparation } from "@/shared/useFilterSeparation";
 import { beautifyLabel } from "@/shared/utils";
+import { hierarchicalCluster } from "@/shared/clustering";
 import type { RowType } from "@/shared/RowType";
 import type { MetaFormat } from "@/shared/MetaFormat";
 
@@ -908,7 +909,7 @@ function processDataForPlotting(og: string): ProcessedData | null {
 
   return {
     transcripts,
-    groups: orderGroupCategories([...groupSet]),
+    groups: orderGroupCategories([...groupSet], transcripts),
     species: [...speciesSet].sort(),
   };
 }
@@ -926,7 +927,7 @@ function buildSampleGroupMap(sampleMetadata: RowType[]): Record<string, string> 
   return groupMap;
 }
 
-function orderGroupCategories(groups: string[]): string[] {
+function orderGroupCategories(groups: string[], transcripts: TranscriptData[]): string[] {
   const customOrder = visualizationStore.customColOrder;
   if (customOrder.enabled && customOrder.metadataValues.length > 0) {
     const groupRank = getGroupRankFromAxis(customOrder.metadataValues);
@@ -940,7 +941,25 @@ function orderGroupCategories(groups: string[]): string[] {
   if (visualizationStore.colOrder.name && visualizationStore.colOrder.name !== "OLO") {
     return orderAxisCategories(groups, visualizationStore.colOrder.order);
   }
-  return orderAxisCategories(groups, "asc");
+  const sortedGroups = orderAxisCategories(groups, "asc");
+  if (visualizationStore.clustering.clusterCols && sortedGroups.length > 2) {
+    try {
+      const groupProfiles = sortedGroups.map((group) => transcripts.map((transcript) => {
+        const values = transcript.values[group] ?? [];
+        if (values.length === 0) return 0;
+        return values.reduce((sum, item) => sum + item.value, 0) / values.length;
+      }));
+      const clusterResult = hierarchicalCluster(
+        groupProfiles,
+        visualizationStore.clustering.method,
+        visualizationStore.clustering.distance,
+      );
+      return clusterResult.order.map((index) => sortedGroups[index]);
+    } catch (error) {
+      console.warn('Compare column clustering failed, using alphabetical order:', error);
+    }
+  }
+  return sortedGroups;
 }
 
 function getGroupRankFromAxis(orderedValues: string[]): Map<string, number> {
@@ -1471,6 +1490,9 @@ watch(
 
 watch(
   [
+    () => visualizationStore.clustering.clusterCols,
+    () => visualizationStore.clustering.method,
+    () => visualizationStore.clustering.distance,
     () => visualizationStore.colOrder.name,
     () => visualizationStore.colOrder.order,
     () => visualizationStore.customColOrder.enabled,

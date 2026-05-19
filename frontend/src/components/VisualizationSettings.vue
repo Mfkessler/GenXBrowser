@@ -39,52 +39,6 @@
           title="General"
           class="mb-2"
         >
-          <!-- Compare: Orthogroup Selection -->
-          <div
-            v-if="context === 'compare'"
-            class="mb-4"
-          >
-            <div class="flex items-center gap-2 mb-2">
-              <h3 class="text-md font-semibold cursor-default text-primary-900">
-                Orthogroup
-              </h3>
-              <InfoTooltip
-                title="Orthogroup Selection"
-                description="Select the orthogroup to compare expression patterns across species."
-              />
-            </div>
-            <DropdownMenu
-              :modelValue="store.compare.selectedOrthogroup"
-              @update:modelValue="(v: string) => store.setCompareState({ selectedOrthogroup: v })"
-              :options="orthogroupOptions || {}"
-              placeholder="Select orthogroup"
-              class="w-full"
-            />
-          </div>
-
-          <!-- PhyloTree: Orthogroup Selection -->
-          <div
-            v-if="context === 'phylogeneticTree'"
-            class="mb-4"
-          >
-            <div class="flex items-center gap-2 mb-2">
-              <h3 class="text-md font-semibold cursor-default text-primary-900">
-                Orthogroup
-              </h3>
-              <InfoTooltip
-                title="Orthogroup Selection"
-                description="Select the orthogroup to display the phylogenetic tree for."
-              />
-            </div>
-            <DropdownMenu
-              :modelValue="store.phyloTree.selectedOrthogroup"
-              @update:modelValue="(v: string) => store.setPhyloTreeState({ selectedOrthogroup: v })"
-              :options="phyloTreeOrthogroupOptions || {}"
-              placeholder="Select orthogroup"
-              class="w-full"
-            />
-          </div>
-
           <!-- PhyloTree: Tree-X-Axis (cladogram / phylogram) -->
           <div
             v-if="context === 'phylogeneticTree'"
@@ -431,7 +385,32 @@
             </h3>
             <ToggleSwitch v-model="store.colLabel" />
           </div>
-          <div>
+          <div v-if="axisOnlyCustomOrder" class="mb-4">
+            <div class="flex items-center justify-between gap-3">
+              <div class="min-w-0">
+                <h3 class="text-md font-semibold cursor-default text-primary-900">
+                  Column Order
+                </h3>
+                <div class="text-sm text-gray-500 truncate">
+                  {{ selectedGroupingColumnLabel }}
+                </div>
+              </div>
+              <div class="flex items-center gap-2 flex-shrink-0">
+                <SortToggleButton
+                  v-model="store.colOrder.order"
+                  :disabled="!axisOnlyColumnOrderEnabled"
+                />
+                <ToggleSwitch
+                  :modelValue="axisOnlyColumnOrderEnabled"
+                  @update:modelValue="setAxisOnlyColumnOrder"
+                />
+              </div>
+            </div>
+            <p v-if="orderFeedback.axis === 'col'" class="mt-2 text-xs text-primary-700">
+              {{ orderFeedback.message }}
+            </p>
+          </div>
+          <div v-else>
             <h3
               class="text-md font-semibold mb-2 cursor-default text-primary-900"
             >
@@ -463,9 +442,7 @@
                 </h3>
                 <InfoTooltip
                   title="Sample Clustering"
-                  :description="context === 'phylogeneticTree'
-                    ? 'Group similar sample metadata values together based on their expression profiles across species.'
-                    : 'Group similar samples together based on their expression profiles.'"
+                  :description="sampleClusteringTooltip"
                 />
               </div>
               <ToggleSwitch
@@ -969,6 +946,8 @@ const clusterDistanceOptions = {
   euclidean: "Euclidean",
 };
 
+const sampleClusteringTooltip = "Group similar sample metadata values together based on their expression profiles.";
+
 const identityKey = (value: string) => value;
 const axisOnlyCustomOrder = computed(() => props.context === "compare" || props.context === "phylogeneticTree");
 
@@ -1217,11 +1196,21 @@ const selectedGroupingColumn = computed(() => {
     : defaultGroupingColumn();
 });
 
+const selectedGroupingColumnLabel = computed(() => groupingColumnOptions.value[selectedGroupingColumn.value] || selectedGroupingColumn.value);
+const axisOrderColumn = computed(() => selectedGroupingColumn.value || defaultGroupingColumn() || "tissue_types");
+const axisOnlyColumnOrderEnabled = computed(() => axisOnlyCustomOrder.value && Boolean(store.colOrder.name));
+
 function setGroupingColumn(columnName: string) {
   if (props.context === 'compare') {
     store.setCompareState({ groupingColumn: columnName });
   } else if (props.context === 'phylogeneticTree') {
     store.setPhyloTreeState({ groupingColumn: columnName });
+  }
+  if (!axisOnlyCustomOrder.value) return;
+  if (store.colOrder.name) store.setColOrderName(columnName);
+  if (store.customColOrder.enabled) {
+    store.setCustomColOrderState({ metadataColumn: columnName, metadataValues: getMetadataValues(columnName) });
+    ensureCustomOrderLists();
   }
 }
 
@@ -1283,7 +1272,7 @@ const rowSideColorDisplayNames = computed<Record<string, string>>(() => {
 // Col order options derived from attribute keys, mapped to beautified labels
 const colOrderOptions = computed<Record<string, string>>(() => {
   if (axisOnlyCustomOrder.value) {
-    return { tissue_types: metadataDisplayName({ column_name: "tissue_types" }) };
+    return { [axisOrderColumn.value]: selectedGroupingColumnLabel.value };
   }
   // Use orderableColColumns for Column Order dropdown (includes tissue_types)
   return toOptionsRecord(columnsStore.orderableColColumns);
@@ -1311,7 +1300,7 @@ const customOrderEnabled = computed({
     const replacedClustering = enabled && store.clustering.clusterCols;
     const replacedColumnOrder = enabled && Boolean(store.colOrder.name);
     store.setCustomColOrderState(axisOnlyCustomOrder.value
-      ? { enabled, mode: "metadata", metadataColumn: "tissue_types" }
+      ? { enabled, mode: "metadata", metadataColumn: axisOrderColumn.value, metadataValues: getAxisValues() }
       : { enabled });
     ensureCustomOrderLists();
     if (replacedClustering) {
@@ -1377,7 +1366,7 @@ function getMetadataValues(columnName: string): string[] {
 }
 
 function getAxisValues(): string[] {
-  return getMetadataValues("tissue_types");
+  return getMetadataValues(axisOrderColumn.value);
 }
 
 async function loadSampleMetadataForVisibleTables() {
@@ -1414,7 +1403,7 @@ async function loadSampleMetadataForVisibleTables() {
 }
 
 function ensureCustomOrderLists() {
-  const metadataColumn = axisOnlyCustomOrder.value ? "tissue_types" : store.customColOrder.metadataColumn || "tissue_types";
+  const metadataColumn = axisOnlyCustomOrder.value ? axisOrderColumn.value : store.customColOrder.metadataColumn || "tissue_types";
   const metadataValues = withMissingValues(
     store.customColOrder.metadataValues,
     axisOnlyCustomOrder.value ? getAxisValues() : getMetadataValues(metadataColumn),
@@ -1430,7 +1419,18 @@ function ensureCustomOrderLists() {
 
 function ensureAxisOnlyColumnOrder() {
   if (!axisOnlyCustomOrder.value) return;
-  if (store.colOrder.name !== "tissue_types") store.setColOrderName("tissue_types");
+  if (store.colOrder.name && store.colOrder.name !== axisOrderColumn.value) store.setColOrderName(axisOrderColumn.value);
+}
+
+function setAxisOnlyColumnOrder(enabled: boolean) {
+  const replacedClustering = enabled && store.clustering.clusterCols;
+  const replacedCustomOrder = enabled && store.customColOrder.enabled;
+  store.setColOrderName(enabled ? axisOrderColumn.value : "");
+  if (replacedClustering) {
+    showOrderFeedback("col", "Column clustering is off. Column order is active now.");
+  } else if (replacedCustomOrder) {
+    showOrderFeedback("col", "Custom order is off. Column order is active now.");
+  }
 }
 
 function setCustomOrderMode(mode: "metadata" | "samples") {
@@ -1443,7 +1443,7 @@ function resetCustomOrder() {
   store.setCustomColOrderState({
     enabled: false,
     mode: "metadata",
-    metadataColumn: "tissue_types",
+    metadataColumn: axisOnlyCustomOrder.value ? axisOrderColumn.value : "tissue_types",
     metadataValues: axisOnlyCustomOrder.value ? getAxisValues() : getMetadataValues("tissue_types"),
     sampleNames: sampleNames.value,
   });
@@ -1470,7 +1470,7 @@ watch(
 watch(axisOnlyCustomOrder, () => {
   ensureAxisOnlyColumnOrder();
   if (axisOnlyCustomOrder.value && store.customColOrder.enabled) {
-    store.setCustomColOrderState({ mode: "metadata", metadataColumn: "tissue_types" });
+    store.setCustomColOrderState({ mode: "metadata", metadataColumn: axisOrderColumn.value });
     ensureCustomOrderLists();
   }
 });
