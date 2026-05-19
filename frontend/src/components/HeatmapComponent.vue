@@ -371,7 +371,6 @@ let renderTimer: ReturnType<typeof setTimeout> | null = null;
 let isUnmounting = false;
 let loadRequestSeq = 0;
 let activeAbortController: AbortController | null = null;
-let suppressTouchCompatibilityMouseUntil = 0;
 
 const LEGEND_WIDTH = 30;
 const SIDE_COLOR_WIDTH = 18;
@@ -1604,30 +1603,33 @@ async function renderHeatmap(): Promise<boolean> {
     .style("filter", "drop-shadow(0 0 2px rgba(98, 128, 16, 0.45))")
     .style("display", "none");
 
-  const clampPointer = (event: MouseEvent): [number, number] => {
+  const clampPointer = (clientX: number, clientY: number): [number, number] => {
     const containerRect = container.getBoundingClientRect();
-    const rawX = event.clientX - containerRect.left - margin.left;
-    const rawY = event.clientY - containerRect.top - margin.top;
+    const rawX = clientX - containerRect.left - margin.left;
+    const rawY = clientY - containerRect.top - margin.top;
     return [
       Math.max(0, Math.min(svgW, rawX)),
       Math.max(0, Math.min(svgH, rawY)),
     ];
   };
 
-  const handlePlotMouseDown = (event: MouseEvent) => {
-    const isTouchBridgeEvent = (event as MouseEvent & {isTouchBridgeEvent?: boolean}).isTouchBridgeEvent === true;
-    if (!isTouchBridgeEvent && Date.now() < suppressTouchCompatibilityMouseUntil) return;
-    if (event.button !== 0) return;
-    if (event.altKey || event.ctrlKey || event.metaKey) return;
-    if (!zoomMode.value && !panMode.value) return;
+  // Shared drag controller. Returned by beginPlotDrag and driven by either
+  // mouse or touch listeners — there is no event synthesis between the two.
+  type DragController = {
+    onMove: (clientX: number, clientY: number) => void;
+    onEnd: (clientX: number, clientY: number) => void;
+    cancel: () => void;
+  };
 
-    const start = clampPointer(event);
-    const startWindow = {...activeWindow};
+  const beginPlotDrag = (startClientX: number, startClientY: number): DragController | null => {
+    if (!zoomMode.value && !panMode.value) return null;
     const startZoomed = zoomWindow.value !== null;
-    if (panMode.value && !startZoomed) return;
-    event.preventDefault();
-    event.stopPropagation();
+    if (panMode.value && !startZoomed) return null;
+
+    const start = clampPointer(startClientX, startClientY);
+    const startWindow = {...activeWindow};
     tooltip.style("visibility", "hidden");
+
     let pendingPanWindow: HeatmapZoomWindow | null = null;
     let panWindow = {...startWindow};
     let lastPanPoint = start;
@@ -1635,6 +1637,7 @@ async function renderHeatmap(): Promise<boolean> {
     let accumulatedPanDy = 0;
     let livePanFrame: number | null = null;
     let didMove = false;
+    let finished = false;
 
     const zoomWindowsEqual = (left: HeatmapZoomWindow, right: HeatmapZoomWindow) => (
       left.xStart === right.xStart &&
@@ -1653,9 +1656,7 @@ async function renderHeatmap(): Promise<boolean> {
       });
     };
 
-    const cleanup = () => {
-      window.removeEventListener("mousemove", handleMove);
-      window.removeEventListener("mouseup", handleUp);
+    const teardown = () => {
       if (livePanFrame !== null) {
         cancelAnimationFrame(livePanFrame);
         livePanFrame = null;
@@ -1664,8 +1665,9 @@ async function renderHeatmap(): Promise<boolean> {
       zoomSelectionRect.style("display", "none");
     };
 
-    const handleMove = (moveEvent: MouseEvent) => {
-      const current = clampPointer(moveEvent);
+    const onMove = (clientX: number, clientY: number) => {
+      if (finished) return;
+      const current = clampPointer(clientX, clientY);
       const dx = current[0] - start[0];
       const dy = current[1] - start[1];
       didMove = didMove || Math.abs(dx) > 3 || Math.abs(dy) > 3;
@@ -1712,15 +1714,17 @@ async function renderHeatmap(): Promise<boolean> {
         .attr("height", y1 - y0);
     };
 
-    const handleUp = (upEvent: MouseEvent) => {
-      cleanup();
+    const onEnd = (clientX: number, clientY: number) => {
+      if (finished) return;
+      finished = true;
+      teardown();
       if (panMode.value && startZoomed) {
         if (didMove && pendingPanWindow) setZoomWindow(pendingPanWindow);
         return;
       }
       if (!didMove) return;
 
-      const end = clampPointer(upEvent);
+      const end = clampPointer(clientX, clientY);
       const x0 = Math.min(start[0], end[0]);
       const y0 = Math.min(start[1], end[1]);
       const x1 = Math.max(start[0], end[0]);
@@ -1736,92 +1740,98 @@ async function renderHeatmap(): Promise<boolean> {
       setZoomWindow(nextWindow);
     };
 
-    window.addEventListener("mousemove", handleMove);
-    window.addEventListener("mouseup", handleUp, {once: true});
+    const cancel = () => {
+      if (finished) return;
+      finished = true;
+      teardown();
+    };
+
+    return {onMove, onEnd, cancel};
   };
 
-  const handlePlotTouchStart = (event: TouchEvent) => {
-    if (event.touches.length !== 1) return;
-    if (!zoomMode.value && !panMode.value) return;
+  const handlePlotPointerDown = (event: PointerEvent) => {
+    // For mouse: only react to the primary (left) button. Touch and pen
+    // pointers always report button 0, so they fall through.
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
 
-    const initialTouch = event.touches[0];
-    if (!initialTouch) return;
-    const startZoomed = zoomWindow.value !== null;
-    if (panMode.value && !startZoomed) return;
+    const controller = beginPlotDrag(event.clientX, event.clientY);
+    if (!controller) return;
 
     event.preventDefault();
     event.stopPropagation();
 
-    const dispatchMouseDragEvent = (type: "mousedown" | "mousemove" | "mouseup", touch: Touch) => {
-      const mouseEvent = new MouseEvent(type, {
-        bubbles: true,
-        cancelable: true,
-        button: 0,
-        buttons: type === "mouseup" ? 0 : 1,
-        clientX: touch.clientX,
-        clientY: touch.clientY,
-        screenX: touch.screenX,
-        screenY: touch.screenY,
-      });
-      Object.defineProperty(mouseEvent, "isTouchBridgeEvent", {value: true});
+    const pointerId = event.pointerId;
 
-      if (type === "mousedown") {
-        handlePlotMouseDown(mouseEvent);
-      } else {
-        window.dispatchEvent(mouseEvent);
-      }
-    };
+    // CRITICAL: capture the pointer on the persistent container <div>.
+    // The SVG (and the touched cell) gets rebuilt by setZoomWindow during a
+    // pan, which would otherwise cause the browser to fire `touchcancel` and
+    // kill the gesture after a single increment. Capturing on a node that
+    // survives re-renders keeps pointermove/pointerup flowing to us.
+    try {
+      container.setPointerCapture(pointerId);
+    } catch {
+      // setPointerCapture can throw if the pointer is already released or
+      // the element isn't connected; we degrade gracefully by relying on
+      // bubbling.
+    }
 
+    let cleanedUp = false;
     const cleanup = () => {
-      window.removeEventListener("touchmove", handleMove);
-      window.removeEventListener("touchend", handleEnd);
-      window.removeEventListener("touchcancel", handleCancel);
-      suppressTouchCompatibilityMouseUntil = Date.now() + 700;
-    };
-
-    const handleMove = (moveEvent: TouchEvent) => {
-      if (moveEvent.touches.length !== 1) return;
-      const currentTouch = moveEvent.touches[0];
-      if (!currentTouch) return;
-      moveEvent.preventDefault();
-      dispatchMouseDragEvent("mousemove", currentTouch);
-    };
-
-    const handleEnd = (endEvent: TouchEvent) => {
-      const endTouch = endEvent.changedTouches[0];
-      if (endTouch) {
-        endEvent.preventDefault();
-        dispatchMouseDragEvent("mouseup", endTouch);
+      if (cleanedUp) return;
+      cleanedUp = true;
+      container.removeEventListener("pointermove", onPointerMove);
+      container.removeEventListener("pointerup", onPointerUp);
+      container.removeEventListener("pointercancel", onPointerCancel);
+      container.removeEventListener("lostpointercapture", onLostCapture);
+      try {
+        if (container.hasPointerCapture?.(pointerId)) {
+          container.releasePointerCapture(pointerId);
+        }
+      } catch {
+        // ignore
       }
-      cleanup();
     };
 
-    const handleCancel = () => {
-      const cancelMouseEvent = new MouseEvent("mouseup", {
-        bubbles: true,
-        cancelable: true,
-        button: 0,
-        buttons: 0,
-        clientX: initialTouch.clientX,
-        clientY: initialTouch.clientY,
-        screenX: initialTouch.screenX,
-        screenY: initialTouch.screenY,
-      });
-      Object.defineProperty(cancelMouseEvent, "isTouchBridgeEvent", {value: true});
-      window.dispatchEvent(cancelMouseEvent);
-      cleanup();
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) return;
+      // preventDefault on the captured pointermove is what keeps the browser
+      // from interpreting the gesture as a native scroll on touch devices.
+      moveEvent.preventDefault();
+      controller.onMove(moveEvent.clientX, moveEvent.clientY);
     };
 
-    dispatchMouseDragEvent("mousedown", initialTouch);
-    suppressTouchCompatibilityMouseUntil = Date.now() + 700;
-    window.addEventListener("touchmove", handleMove, {passive: false});
-    window.addEventListener("touchend", handleEnd, {once: true});
-    window.addEventListener("touchcancel", handleCancel, {once: true});
+    const onPointerUp = (upEvent: PointerEvent) => {
+      if (upEvent.pointerId !== pointerId) return;
+      cleanup();
+      controller.onEnd(upEvent.clientX, upEvent.clientY);
+    };
+
+    const onPointerCancel = (cancelEvent: PointerEvent) => {
+      if (cancelEvent.pointerId !== pointerId) return;
+      cleanup();
+      controller.cancel();
+    };
+
+    // If capture is lost for any reason (e.g. the OS taking over the touch),
+    // tear down cleanly so the next gesture starts with a fresh slate.
+    const onLostCapture = (lostEvent: PointerEvent) => {
+      if (lostEvent.pointerId !== pointerId) return;
+      cleanup();
+      controller.cancel();
+    };
+
+    container.addEventListener("pointermove", onPointerMove);
+    container.addEventListener("pointerup", onPointerUp);
+    container.addEventListener("pointercancel", onPointerCancel);
+    container.addEventListener("lostpointercapture", onLostCapture);
   };
 
-  plotHitbox.on("mousedown.zoom-pan", handlePlotMouseDown);
-  plotHitbox.on("touchstart.zoom-pan", function (event) {
-    handlePlotTouchStart(event as TouchEvent);
+  // Bind to cellGroup so pointerdown bubbles up from either the hitbox or any
+  // cell rect. One listener is enough — we no longer attach separate mouse and
+  // touch listeners (Pointer Events unify them).
+  cellGroup.on("pointerdown.zoom-pan", function (event) {
+    handlePlotPointerDown(event as PointerEvent);
   });
   
   // Render cells - for large datasets, skip initial event binding
@@ -1840,11 +1850,7 @@ async function renderHeatmap(): Promise<boolean> {
       return isNaN(n) ? "#eee" : colorScale(n);
     })
     .attr("stroke", "none")
-    .style("touch-action", "none")
-    .on("mousedown.zoom-pan", handlePlotMouseDown)
-    .on("touchstart.zoom-pan", function (event) {
-      handlePlotTouchStart(event as TouchEvent);
-    });
+    .style("touch-action", "none");
   
   // Add event handlers (deferred for large datasets to improve initial render)
   const addCellEventHandlers = () => {
