@@ -2,8 +2,8 @@
   <div class="min-h-[100vh] flex flex-col relative">
     <div v-if="visibleCombinedLoading" class="absolute inset-0 z-50">
       <LoadingOverlay
-        label="Loading tree"
-        :progress="combinedLoadingProgress"
+        primaryStatus="Generating phylogenetic tree..."
+        :currentPhaseHint="combinedLoadingPhaseHint"
         cancellable
         @cancel="cancelUnifiedLoading"
       />
@@ -126,7 +126,12 @@ const phyloTreeRefs = ref<PhylogeneticTreeExpose[] | null>(null);
 const hashLoading = ref(true); // Prevent child from fetching until hash is loaded
 const childLoading = ref(true);
 const childLoadingProgress = ref<number | null>(null);
+const childLoadingPhaseHint = ref("Preparing tree request...");
 const combinedLoadingProgress = ref<number | null>(5);
+const combinedLoadingPhaseHint = computed(() => {
+  if (hashLoading.value) return "Restoring saved tree state...";
+  return childLoadingPhaseHint.value || "Preparing tree request...";
+});
 const visibleCombinedLoading = ref(true);
 const initialOrthogroup = ref<string | null>(null); // OG from hash load
 let activeHashAbortController: AbortController | null = null;
@@ -201,15 +206,17 @@ function cancelUnifiedLoading() {
   hashLoading.value = false;
   childLoading.value = false;
   childLoadingProgress.value = null;
+  childLoadingPhaseHint.value = "Load canceled";
   combinedLoadingProgress.value = null;
   visibleCombinedLoading.value = false;
   phyloTreeRefs.value?.forEach((tree) => tree.cancelActiveLoad?.(false));
   router.replace({ name: "catalog" });
 }
 
-function onChildLoadingState(state: { loading: boolean; progress: number | null }) {
+function onChildLoadingState(state: { loading: boolean; progress: number | null; phaseHint?: string }) {
   childLoading.value = state.loading;
   childLoadingProgress.value = state.progress;
+  childLoadingPhaseHint.value = state.phaseHint || childLoadingPhaseHint.value;
 }
 
 const zoomLevel = computed(() => visualizationStore.phyloTree.zoomTransform.k);

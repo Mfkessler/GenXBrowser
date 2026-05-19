@@ -12,7 +12,7 @@ describe('heatmap layout helpers', () => {
   });
 
   it('keeps heatmap cards within viewport-aware size constraints', () => {
-    expect(getHeatmapCardMinHeight(2)).toBe('clamp(30rem, 68vh, 46rem)');
-    expect(getHeatmapCardMinHeight(3)).toBe('34rem');
+    expect(getHeatmapCardMinHeight(2)).toBe('clamp(22rem, 56vh, 42rem)');
+    expect(getHeatmapCardMinHeight(3)).toBe('clamp(20rem, 48vh, 34rem)');
   });
 });

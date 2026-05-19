@@ -4,8 +4,8 @@
       <!-- Loading States -->
       <div v-if="loading || loadingMount" class="flex-grow relative h-[90vh] w-full">
         <LoadingOverlay
-          :progress="loadingProgress"
-          label="Loading comparison"
+          primaryStatus="Comparing expression profiles..."
+          :currentPhaseHint="loadingPhaseHint"
           cancellable
           @cancel="cancelActiveLoad"
         />
@@ -219,6 +219,7 @@ const { filters, sampleFilters, filterChainVersion, getMergedGeneFilters, getFil
 const loading = ref(false);
 const loadingMount = ref(true);
 const loadingProgress = ref<number | null>(null);
+const loadingPhaseHint = ref("Preparing comparison request...");
 const initialUrlParsing = ref(true); // Guard against watchers during URL parsing
 const showShareOverlay = ref(false);
 const showExportModal = ref(false);
@@ -253,6 +254,10 @@ function setLoadingProgress(step: number, totalSteps: number) {
   loadingProgress.value = totalSteps > 0 ? (step / totalSteps) * 100 : null;
 }
 
+function setLoadingPhaseHint(phaseHint: string) {
+  loadingPhaseHint.value = phaseHint;
+}
+
 function isCanceledRequest(error: unknown) {
   return axios.isCancel(error) || (axios.isAxiosError(error) && error.code === "ERR_CANCELED");
 }
@@ -264,6 +269,7 @@ function cancelActiveLoad(emitCancel = true) {
   loading.value = false;
   loadingMount.value = false;
   loadingProgress.value = null;
+  setLoadingPhaseHint("Load canceled");
   if (emitCancel) emit("load-cancel");
 }
 
@@ -457,7 +463,9 @@ async function fetchData(tableName: string, signal?: AbortSignal) {
     // 2. The orthogroup filtering happens client-side after fetching
     // 3. Even with many genes, only the selected orthogroup's data is rendered
     const params = getExpressionParams(expressionDisplayOption.value);
+    const tableLabel = beautifyLabel(tableName);
 
+    setLoadingPhaseHint(`Fetching ${tableLabel} expression values...`);
     const { data: responseData } = await axios.post(`${API_BASE_URL}/api/data`, {
       table_name: tableName,
       filters: getMergedGeneFilters(tableName).value,
@@ -475,6 +483,7 @@ async function fetchData(tableName: string, signal?: AbortSignal) {
     }
 
     // Get data columns
+    setLoadingPhaseHint(`Loading ${tableLabel} sample columns...`);
     const columnRes = await axios.get<MetaFormat[]>(`${API_BASE_URL}/api/columns`, {
       params: { table_name: tableName, meta: false },
       signal,
@@ -482,6 +491,7 @@ async function fetchData(tableName: string, signal?: AbortSignal) {
     const dataColumnNames = columnRes.data.map((c) => c.column_name);
 
     // Get metadata
+    setLoadingPhaseHint(`Loading ${tableLabel} sample metadata...`);
     const { data: metaResponseData } = await axios.post(`${API_BASE_URL}/api/data`, {
       table_name: tableName + "_meta",
       filters: {},
@@ -493,6 +503,7 @@ async function fetchData(tableName: string, signal?: AbortSignal) {
     );
     columnsStore.setSampleMetadata(columns as Record<string, unknown>[], tableName);
 
+    setLoadingPhaseHint(`Preparing ${tableLabel} orthogroup data...`);
     const enrichedData = Object.keys(data).map((key) => ({ ...data[key] }));
 
     return { items: enrichedData, sampleMetadata: columns, tableName };
@@ -510,6 +521,7 @@ async function fetchAllSelected() {
   activeAbortController = controller;
   loading.value = true;
   loadingProgress.value = 0;
+  setLoadingPhaseHint("Loading selected datasets...");
 
   console.log('[Compare] fetchAllSelected - selectedTables:', selectedTables.value);
 
@@ -533,6 +545,7 @@ async function fetchAllSelected() {
     console.log('[Compare] Results with data:', Object.entries(results).filter((entry) => entry[1] !== null).map(([k]) => k));
     
     tableData.value = results;
+    setLoadingPhaseHint("Finding shared orthogroups...");
     const allOGs = getAllOGs(results);
     commonOGs_array.value = [...allOGs].sort();
 
@@ -547,6 +560,7 @@ async function fetchAllSelected() {
       console.log('[FetchAllSelected] Fetching unfiltered data for selected OG:', selectedOrthogroup.value);
       const unfilteredResults: Record<string, any> = {};
       for (const tableName of selectedTables.value) {
+        setLoadingPhaseHint(`Fetching unfiltered ${beautifyLabel(tableName)} transcripts...`);
         const result = await fetchUnfilteredData(tableName, [selectedOrthogroup.value], controller.signal);
         if (requestId !== loadRequestSeq || controller.signal.aborted) return;
         unfilteredResults[tableName] = result;
@@ -581,6 +595,7 @@ async function fetchAllSelected() {
       selectedOrthogroup.value = '';
     }
     setLoadingProgress(totalSteps - 1, totalSteps);
+    setLoadingPhaseHint("Rendering comparison plot...");
     await nextTick();
     await renderPlot();
     setLoadingProgress(totalSteps, totalSteps);

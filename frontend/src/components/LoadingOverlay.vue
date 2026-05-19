@@ -6,22 +6,36 @@
     aria-live="polite"
   >
     <div :class="containerClasses">
-      <div v-if="hasProgress" class="w-full space-y-2">
-        <div class="flex items-center justify-between gap-4 text-xs font-medium text-gray-600">
-          <span>{{ label }}</span>
-          <span>{{ normalizedProgress }}%</span>
+      <div class="flex flex-col items-center gap-3">
+        <svg
+          class="h-10 w-10 animate-spin text-primary-500"
+          viewBox="0 0 48 48"
+          aria-hidden="true"
+        >
+          <circle
+            class="text-gray-200"
+            cx="24"
+            cy="24"
+            r="18"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="4"
+          />
+          <circle
+            cx="24"
+            cy="24"
+            r="18"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="4"
+            stroke-linecap="round"
+            stroke-dasharray="76 38"
+          />
+        </svg>
+        <div class="space-y-1">
+          <div class="text-sm font-semibold text-gray-800">{{ statusTitle }}</div>
+          <div v-if="statusHint" class="text-xs font-medium text-gray-500">{{ statusHint }}</div>
         </div>
-        <div class="h-2 w-full overflow-hidden rounded-full bg-gray-200" aria-hidden="true">
-          <div
-            class="h-full rounded-full bg-primary-500 transition-[width] duration-200 ease-out"
-            :style="{ width: `${normalizedProgress}%` }"
-          ></div>
-        </div>
-      </div>
-
-      <div v-else class="flex flex-col items-center gap-3">
-        <div class="h-9 w-9 rounded-full border-2 border-gray-200 border-t-primary-500 animate-spin"></div>
-        <div class="text-xs font-medium text-gray-600">{{ label }}</div>
       </div>
 
       <button
@@ -42,14 +56,16 @@ import { computed, inject, onMounted, onUnmounted, ref, type Ref } from "vue";
 const props = withDefaults(
   defineProps<{
     size?: 'sm' | 'md' | 'lg';
-    progress?: number | null;
     label?: string;
+    primaryStatus?: string;
+    currentPhaseHint?: string;
     cancellable?: boolean;
   }>(),
   {
     size: 'lg',
-    progress: null,
     label: 'Loading',
+    primaryStatus: undefined,
+    currentPhaseHint: undefined,
     cancellable: false,
   }
 );
@@ -80,12 +96,8 @@ const overlayStyle = computed(() => {
   return { left: `${sidebarWidth}px` };
 });
 
-const hasProgress = computed(() => typeof props.progress === 'number' && Number.isFinite(props.progress));
-
-const normalizedProgress = computed(() => {
-  if (!hasProgress.value) return 0;
-  return Math.min(100, Math.max(0, Math.round(props.progress ?? 0)));
-});
+const statusTitle = computed(() => props.primaryStatus || props.label);
+const statusHint = computed(() => props.currentPhaseHint?.trim() || 'Working on the analysis');
 
 const containerClasses = computed(() => {
   const base = 'flex w-[min(22rem,calc(100%-2rem))] flex-col items-center justify-center gap-4 rounded-md border border-gray-200 bg-white/95 px-5 py-4 text-center shadow-lg';

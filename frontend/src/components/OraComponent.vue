@@ -123,7 +123,8 @@
     >
       <LoadingOverlay
         v-if="(loading || !renderReady) && !props.deferLoadingOverlay"
-        label="Loading ORA"
+        primaryStatus="Analyzing transcriptomic data..."
+        :currentPhaseHint="loadingPhaseHint"
         cancellable
         @cancel="cancelActiveLoad"
       />
@@ -322,6 +323,8 @@ const tableNameOptions = computed(() => {
 });
 
 const loading = ref(true);
+const loadingProgress = ref<number | null>(null);
+const loadingPhaseHint = ref("Preparing ORA request...");
 const renderReady = ref(false);
 const showShareOverlay = ref(false);
 const showExportModal = ref(false);
@@ -343,6 +346,8 @@ const plotShell = ref<HTMLDivElement | null>(null);
 const visualizationRoot = ref<HTMLDivElement | null>(null);
 let oraRequestSeq = 0;
 let activeAbortController: AbortController | null = null;
+let softProgressTimer: ReturnType<typeof setInterval> | null = null;
+let phaseHintTimer: ReturnType<typeof setInterval> | null = null;
 const availablePlotHeight = ref(600);
 const maxBubbleRadius = 15;
 const minimumBubbleGap = 4;
@@ -373,10 +378,64 @@ function waitForPaint(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
-async function showLoadingFrame() {
+function setLoadingProgress(value: number | null) {
+  if (value === null) {
+    loadingProgress.value = null;
+    return;
+  }
+  loadingProgress.value = Math.min(100, Math.max(0, value));
+}
+
+function setLoadingPhaseHint(phaseHint: string) {
+  loadingPhaseHint.value = phaseHint;
+}
+
+function stopSoftProgress() {
+  if (softProgressTimer !== null) {
+    clearInterval(softProgressTimer);
+    softProgressTimer = null;
+  }
+}
+
+function stopPhaseHintCycle() {
+  if (phaseHintTimer !== null) {
+    clearInterval(phaseHintTimer);
+    phaseHintTimer = null;
+  }
+}
+
+function stopLoadingTimers() {
+  stopSoftProgress();
+  stopPhaseHintCycle();
+}
+
+function startSoftProgress(ceiling = 82) {
+  stopSoftProgress();
+  softProgressTimer = setInterval(() => {
+    const current = loadingProgress.value ?? 0;
+    if (current >= ceiling) return;
+    const increment = Math.max(0.35, (ceiling - current) * 0.08);
+    setLoadingProgress(Math.min(ceiling, current + increment));
+  }, 450);
+}
+
+function startPhaseHintCycle(phaseHints: string[], intervalMs = 1800) {
+  stopPhaseHintCycle();
+  if (!phaseHints.length) return;
+  let phaseIndex = 0;
+  setLoadingPhaseHint(phaseHints[phaseIndex]);
+  phaseHintTimer = setInterval(() => {
+    phaseIndex = (phaseIndex + 1) % phaseHints.length;
+    setLoadingPhaseHint(phaseHints[phaseIndex]);
+  }, intervalMs);
+}
+
+async function showLoadingFrame(initialProgress = 5) {
   loading.value = true;
   renderReady.value = false;
   error.value = "";
+  setLoadingPhaseHint("Preparing ORA request...");
+  setLoadingProgress(initialProgress);
   await nextTick();
   await waitForPaint();
 }
@@ -389,9 +448,12 @@ function cancelActiveLoad(emitCancel = true) {
   oraRequestSeq += 1;
   activeAbortController?.abort();
   activeAbortController = null;
+  stopLoadingTimers();
   resetDotplot();
   loading.value = false;
   renderReady.value = true;
+  setLoadingProgress(null);
+  setLoadingPhaseHint("Load canceled");
   if (emitCancel) emit("load-cancel");
 }
 
@@ -667,6 +729,8 @@ async function fetchAndPrepareData() {
   if (requestId !== oraRequestSeq) return;
   try {
     resetDotplot();
+    setLoadingProgress(10);
+    setLoadingPhaseHint("Building enrichment request...");
     // Prepare ORA request — max_subset_size replaces the separate /api/count call
     const oraRequest = {
       table_name: props.tableName,
@@ -681,12 +745,22 @@ async function fetchAndPrepareData() {
     };
     
     // Call backend ORA endpoint (includes count check)
+    startPhaseHintCycle([
+      "Counting filtered transcripts...",
+      "Building the background universe...",
+      "Running enrichment tests...",
+      "Adjusting FDR q-values...",
+    ]);
+    startSoftProgress(82);
     const { data: oraResponse } = await axios.post(
       `${API_BASE_URL}/api/ora`,
       oraRequest,
       { signal: controller.signal },
     );
+    stopLoadingTimers();
     if (requestId !== oraRequestSeq || controller.signal.aborted) return;
+    setLoadingProgress(85);
+    setLoadingPhaseHint("Processing enrichment results...");
     
     // Parse response if it's a string (shouldn't happen with proper Content-Type)
     let parsedResponse = oraResponse as OraResponse;
@@ -694,6 +768,7 @@ async function fetchAndPrepareData() {
       console.warn('ORA response is string, parsing JSON manually');
       parsedResponse = JSON.parse(oraResponse) as OraResponse;
     }
+    setLoadingProgress(88);
 
     // Extract count from metadata (replaces separate /api/count call)
     rowCount.value = parsedResponse.metadata?.count ?? parsedResponse.metadata?.subset_size ?? 0;
@@ -703,10 +778,15 @@ async function fetchAndPrepareData() {
       rawPValueEntries.value = [];
       oraMetadata.value = parsedResponse.metadata;
       syncAvailableGoDepths();
+      setLoadingProgress(92);
+      setLoadingPhaseHint("Preparing empty result view...");
       await nextTick();
       await syncPlotHeightWithViewport();
+      setLoadingProgress(96);
+      setLoadingPhaseHint("Rendering ORA dot plot...");
       await drawDotPlot();
       publishAnalysisContext();
+      setLoadingProgress(100);
       renderReady.value = true;
       return;
     }
@@ -737,11 +817,13 @@ async function fetchAndPrepareData() {
         };
       });
 
-      oraMetadata.value = parsedResponse.metadata;
+        oraMetadata.value = parsedResponse.metadata;
+        setLoadingProgress(90);
       // Fetch GO term details if this is GO term enrichment
       if (isGoTermEnrichment.value && rawPValueEntries.value.length > 0) {
         // Use inline GO terms from ORA response if available, otherwise fetch separately
         if (parsedResponse.go_terms) {
+          setLoadingPhaseHint("Applying GO term metadata...");
           for (const [goId, term] of Object.entries(parsedResponse.go_terms)) {
             const termData = term as { name?: string; namespace?: string; depth?: number };
             goTermInfoCache.value[goId] = {
@@ -752,9 +834,17 @@ async function fetchAndPrepareData() {
           }
         } else {
           const goIds = rawPValueEntries.value.map(e => e.attr);
+          startPhaseHintCycle([
+            "Fetching GO term details...",
+            "Resolving GO names and namespaces...",
+            "Applying GO depth metadata...",
+          ], 1600);
+          startSoftProgress(94);
           await fetchGoTermDetails(goIds, controller.signal);
+          stopLoadingTimers();
         }
         if (requestId !== oraRequestSeq || controller.signal.aborted) return;
+        setLoadingProgress(94);
         
         // Enrich entries with GO term info including depth
         rawPValueEntries.value = rawPValueEntries.value.map(entry => {
@@ -768,13 +858,18 @@ async function fetchAndPrepareData() {
         });
       }
       syncAvailableGoDepths();
+      setLoadingProgress(96);
 
       await nextTick();
       await syncPlotHeightWithViewport();
+      setLoadingProgress(98);
+      setLoadingPhaseHint("Rendering ORA dot plot...");
       await drawDotPlot();
       publishAnalysisContext();
+      setLoadingProgress(100);
       renderReady.value = true;
   } catch (e) {
+    stopLoadingTimers();
     if (isCanceledRequest(e)) return;
     if (requestId !== oraRequestSeq) return;
     console.error("Error fetching ORA data:", e);
@@ -782,8 +877,10 @@ async function fetchAndPrepareData() {
     renderReady.value = true;
   } finally {
     if (requestId === oraRequestSeq) {
+      stopLoadingTimers();
       activeAbortController = null;
       loading.value = false;
+      loadingProgress.value = null;
     }
   }
 }
@@ -1684,12 +1781,13 @@ function openSettingsOverlay() {
 const emit = defineEmits(["update:tableName", "openSettingsOverlay", "loading-change", "load-cancel"]);
 
 watch(
-  () => loading.value,
+  [loading, loadingProgress],
   () => {
     emit("loading-change", {
       tableName: props.tableName,
       loading: loading.value,
-      progress: null,
+      progress: loadingProgress.value,
+      phaseHint: loadingPhaseHint.value,
     });
   },
   { immediate: true },
@@ -1728,10 +1826,14 @@ watch(
     if (loading.value || !renderReady.value) return;
     await showLoadingFrame();
     await syncPlotHeightWithViewport();
+    setLoadingProgress(65);
+    setLoadingPhaseHint("Applying ORA filters...");
     await drawDotPlot();
     publishAnalysisContext();
+    setLoadingProgress(100);
     renderReady.value = true;
     loading.value = false;
+    loadingProgress.value = null;
   },
   { deep: true },
 );
@@ -1749,9 +1851,13 @@ watch(
     if (loading.value || !renderReady.value) return;
     await showLoadingFrame();
     await syncPlotHeightWithViewport();
+    setLoadingProgress(65);
+    setLoadingPhaseHint("Redrawing ORA visualization...");
     await drawDotPlot();
+    setLoadingProgress(100);
     renderReady.value = true;
     loading.value = false;
+    loadingProgress.value = null;
   },
   { deep: true },
 );
@@ -1774,9 +1880,13 @@ watch(
     await showLoadingFrame();
     window.setTimeout(async () => {
       await syncPlotHeightWithViewport();
+      setLoadingProgress(65);
+      setLoadingPhaseHint("Resizing ORA visualization...");
       await drawDotPlot();
+      setLoadingProgress(100);
       renderReady.value = true;
       loading.value = false;
+      loadingProgress.value = null;
     }, 300);
   },
   { deep: true },
@@ -1844,6 +1954,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   activeAbortController?.abort();
+  stopSoftProgress();
   window.removeEventListener("resize", handleWindowResize);
   if (resizeObserver) {
     resizeObserver.disconnect();

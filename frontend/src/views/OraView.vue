@@ -46,7 +46,8 @@
     >
       <LoadingOverlay
         v-if="showBatchLoadingOverlay"
-        label="Loading ORA"
+        primaryStatus="Analyzing transcriptomic data..."
+        :currentPhaseHint="batchLoadingPhaseHint"
         cancellable
         @cancel="cancelLoadingAndReturnToCatalog"
       />
@@ -155,6 +156,7 @@ interface OraLoadingState {
   tableName: string;
   loading: boolean;
   progress: number | null;
+  phaseHint?: string;
 }
 
 const oraRefs = ref<ExportPayloadProvider[]>([]);
@@ -191,6 +193,11 @@ const activeOraLoadingStates = computed(() =>
 const showBatchLoadingOverlay = computed(() =>
   visibleTableNames.value.length > 1 && activeOraLoadingStates.value.length > 0,
 );
+
+const batchLoadingPhaseHint = computed(() => {
+  const state = activeOraLoadingStates.value.find((state) => state.phaseHint);
+  return state?.phaseHint || "Running ORA across selected datasets...";
+});
 
 const globalExportPayload = computed(() => {
   const payloads = (oraRefs.value || [])

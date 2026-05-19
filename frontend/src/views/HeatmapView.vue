@@ -46,8 +46,8 @@
     >
       <LoadingOverlay
         v-if="showBatchLoadingOverlay"
-        :progress="batchLoadingProgress"
-        label="Loading heatmaps"
+        primaryStatus="Generating expression heatmaps..."
+        :currentPhaseHint="batchLoadingPhaseHint"
         cancellable
         @cancel="cancelLoadingAndReturnToCatalog"
       />
@@ -162,6 +162,7 @@ interface HeatmapLoadingState {
   tableName: string;
   loading: boolean;
   progress: number | null;
+  phaseHint?: string;
 }
 
 const heatmapRefs = ref<ExportPayloadProvider[]>([]);
@@ -202,10 +203,9 @@ const showBatchLoadingOverlay = computed(() =>
   visibleTableNames.value.length > 1 && activeHeatmapLoadingStates.value.length > 0,
 );
 
-const batchLoadingProgress = computed(() => {
-  const states = activeHeatmapLoadingStates.value;
-  if (!states.length || states.some((state) => typeof state.progress !== "number")) return null;
-  return states.reduce((sum, state) => sum + (state.progress ?? 0), 0) / states.length;
+const batchLoadingPhaseHint = computed(() => {
+  const state = activeHeatmapLoadingStates.value.find((state) => state.phaseHint);
+  return state?.phaseHint || "Preparing heatmaps across selected datasets...";
 });
 
 const globalExportPayload = computed(() => {

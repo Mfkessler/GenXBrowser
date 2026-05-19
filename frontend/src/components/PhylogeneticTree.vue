@@ -3,8 +3,8 @@
 
     <div v-if="loading && !props.externalLoadingOverlay" class="absolute inset-0 z-50">
       <LoadingOverlay
-        :progress="loadingProgress"
-        label="Loading tree"
+        primaryStatus="Generating phylogenetic tree..."
+        :currentPhaseHint="loadingPhaseHint"
         cancellable
         @cancel="cancelActiveLoad"
       />
@@ -260,6 +260,7 @@ const highlightedGeneIds = ref<Record<string, Set<string>>>({});
 const newickstr = ref<string | null>(null);
 const loading = ref(true);
 const loadingProgress = ref<number | null>(null);
+const loadingPhaseHint = ref("Preparing tree request...");
 let loadingProgressStart = 0;
 let loadingProgressEnd = 100;
 const fullTreeAvailable = ref(false);
@@ -330,6 +331,10 @@ function setLoadingProgressScope(start: number, end: number) {
   loadingProgressEnd = Math.min(100, Math.max(loadingProgressStart, end));
 }
 
+function setLoadingPhaseHint(phaseHint: string) {
+  loadingPhaseHint.value = phaseHint;
+}
+
 function isCanceledRequest(error: unknown) {
   return axios.isCancel(error) || (axios.isAxiosError(error) && error.code === "ERR_CANCELED");
 }
@@ -343,12 +348,13 @@ function cancelActiveLoad(emitCancel = true) {
   activeOgListAbortController = null;
   loading.value = false;
   loadingProgress.value = null;
+  setLoadingPhaseHint("Load canceled");
   if (emitCancel) emit('load-cancel');
 }
 
 watch(
-  [loading, loadingProgress],
-  () => emit('update:loadingState', { loading: loading.value, progress: loadingProgress.value }),
+  [loading, loadingProgress, loadingPhaseHint],
+  () => emit('update:loadingState', { loading: loading.value, progress: loadingProgress.value, phaseHint: loadingPhaseHint.value }),
   { immediate: true },
 );
 
@@ -678,6 +684,7 @@ async function fetchAllSelected(options: { keepLoading?: boolean } = {}): Promis
   const controller = new AbortController();
   activeOgListAbortController = controller;
   setLoadingProgressScope(0, options.keepLoading ? 45 : 100);
+  setLoadingPhaseHint("Building orthogroup catalog...");
   await showLoadingFrame();
   setLoadingProgress(0, 1);
   try {
@@ -696,6 +703,7 @@ async function fetchAllSelected(options: { keepLoading?: boolean } = {}): Promis
     // Parallelize multi-species fetch instead of sequential for-loop
     const entries = await Promise.all(
       selectedDatasets.map(async (tableName) => {
+        setLoadingPhaseHint("Fetching orthogroup candidates...");
         const optionFilters = omitFilterKey(filtersStore.getMergedFilters(tableName));
         const { data: count } = await axios.post(
           `${API_BASE_URL}/api/count`,
@@ -1839,6 +1847,7 @@ async function renderTreeForSelectedOG(origin = "unknown") {
   const continuingLoad = loading.value && typeof loadingProgress.value === "number" && Number.isFinite(loadingProgress.value);
   const renderStartProgress = continuingLoad ? Math.max(loadingProgress.value ?? 0, 45) : 0;
   setLoadingProgressScope(renderStartProgress, 100);
+  setLoadingPhaseHint("Preparing tree data...");
   await showLoadingFrame({ preserveProgress: continuingLoad });
   setLoadingProgress(0, 4);
   try {
@@ -1848,6 +1857,7 @@ async function renderTreeForSelectedOG(origin = "unknown") {
       if (fullNewick.value) {
         fullTreeAvailable.value = false;
         noNewickMessage.value = "";
+        setLoadingPhaseHint("Fetching orthogroup expression values...");
         await Promise.all([
           fetchOrthogroupDataForAllSpecies(controller.signal),
           fetchHighlightedGenesForAllSpecies(controller.signal),
@@ -1858,6 +1868,7 @@ async function renderTreeForSelectedOG(origin = "unknown") {
         lastMetrics.value = metrics;
         newickstr.value = fullNewick.value;
         await nextTick();
+        setLoadingPhaseHint("Rendering phylogenetic tree...");
         const rendered = await initPhylotree(newickstr.value, metrics, { requestId });
         if (!rendered) return;
         setLoadingProgress(4, 4);
@@ -1872,6 +1883,7 @@ async function renderTreeForSelectedOG(origin = "unknown") {
         fullTreeAvailable.value = false;
         noNewickMessage.value = "";
 
+          setLoadingPhaseHint("Fetching orthogroup expression values...");
         await Promise.all([
           fetchOrthogroupDataForAllSpecies(controller.signal),
           fetchHighlightedGenesForAllSpecies(controller.signal),
@@ -1883,6 +1895,7 @@ async function renderTreeForSelectedOG(origin = "unknown") {
         lastMetrics.value = metrics;
         newickstr.value = availableFullNewick;
         await nextTick();
+        setLoadingPhaseHint("Rendering phylogenetic tree...");
         const rendered = await initPhylotree(newickstr.value, metrics, { requestId });
         if (!rendered) return;
         setLoadingProgress(4, 4);
@@ -1900,6 +1913,7 @@ async function renderTreeForSelectedOG(origin = "unknown") {
     fullTreeAvailable.value = false;
     noNewickMessage.value = "";
 
+    setLoadingPhaseHint("Fetching orthogroup expression values...");
     await Promise.all([
       fetchOrthogroupDataForAllSpecies(controller.signal),
       fetchHighlightedGenesForAllSpecies(controller.signal),
@@ -1913,6 +1927,7 @@ async function renderTreeForSelectedOG(origin = "unknown") {
     newickstr.value = typeof nextNewick === "string" && nextNewick.trim() ? nextNewick : null;
     if (newickstr.value !== null) {
       await nextTick();
+      setLoadingPhaseHint("Rendering phylogenetic tree...");
       const rendered = await initPhylotree(newickstr.value, metrics, { requestId });
       if (!rendered) return;
       setLoadingProgress(4, 4);

@@ -8,6 +8,6 @@ export function getHeatmapGridTemplate(columnCount: number): string {
 
 export function getHeatmapCardMinHeight(columnCount: number): string {
   if (columnCount <= 1) return 'clamp(30rem, 74vh, 52rem)';
-  if (columnCount === 2) return 'clamp(30rem, 68vh, 46rem)';
-  return '34rem';
+  if (columnCount === 2) return 'clamp(22rem, 56vh, 42rem)';
+  return 'clamp(20rem, 48vh, 34rem)';
 }

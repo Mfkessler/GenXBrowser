@@ -183,8 +183,8 @@
       <div class="flex-grow relative w-full min-h-0 overflow-hidden">
         <LoadingOverlay
           v-if="loading && !deferLoadingOverlay"
-          :progress="loadingProgress"
-          label="Loading heatmap"
+          primaryStatus="Generating expression heatmap..."
+          :currentPhaseHint="loadingPhaseHint"
           cancellable
           @cancel="cancelActiveLoad"
         />
@@ -197,14 +197,14 @@
       <LoadingOverlay
         v-if="!deferLoadingOverlay"
         size="md"
-        :progress="loadingProgress"
-        label="Loading heatmap"
+        primaryStatus="Generating expression heatmap..."
+        :currentPhaseHint="loadingPhaseHint"
         cancellable
         @cancel="cancelActiveLoad"
       />
     </div>
 
-    <div v-else>
+    <div v-else class="flex-grow min-h-0">
       <NoDataComponent :rowCount="rowCount"/>
     </div>
 
@@ -321,6 +321,7 @@ const tableNameOptions = computed(() => {
 
 const loading = ref(false);
 const loadingProgress = ref<number | null>(null);
+const loadingPhaseHint = ref("Preparing heatmap request...");
 const showShareOverlay = ref(false);
 const showExportModal = ref(false);
 const showTooltipModal = ref(false);
@@ -438,6 +439,7 @@ watch(
       tableName: props.tableName,
       loading: loading.value,
       progress: loadingProgress.value,
+      phaseHint: loadingPhaseHint.value,
     });
   },
   { immediate: true },
@@ -445,6 +447,10 @@ watch(
 
 function setLoadingProgress(step: number, totalSteps: number) {
   loadingProgress.value = totalSteps > 0 ? (step / totalSteps) * 100 : null;
+}
+
+function setLoadingPhaseHint(phaseHint: string) {
+  loadingPhaseHint.value = phaseHint;
 }
 
 function isCanceledRequest(error: unknown) {
@@ -458,6 +464,7 @@ function cancelActiveLoad(emitCancel = true) {
   clearScheduledRender();
   loading.value = false;
   loadingProgress.value = null;
+  setLoadingPhaseHint("Load canceled");
   if (emitCancel) emit("load-cancel");
 }
 
@@ -544,6 +551,7 @@ async function fetchAndPrepareData() {
   activeAbortController = controller;
   loading.value = true;
   loadingProgress.value = 0;
+  setLoadingPhaseHint("Counting filtered transcripts...");
   error.value = "";
   const totalSteps = 7;
   try {
@@ -559,6 +567,7 @@ async function fetchAndPrepareData() {
     );
     if (requestId !== loadRequestSeq || controller.signal.aborted) return;
     setLoadingProgress(1, totalSteps);
+    setLoadingPhaseHint("Fetching expression values...");
 
     rowCount.value = count.count;
 
@@ -585,6 +594,7 @@ async function fetchAndPrepareData() {
       );
       if (requestId !== loadRequestSeq || controller.signal.aborted) return;
       setLoadingProgress(2, totalSteps);
+      setLoadingPhaseHint("Loading sample columns...");
 
       // Extract data and layer metadata from response
       const data = responseData.data || responseData;
@@ -610,6 +620,7 @@ async function fetchAndPrepareData() {
       );
       if (requestId !== loadRequestSeq || controller.signal.aborted) return;
       setLoadingProgress(3, totalSteps);
+      setLoadingPhaseHint("Loading sample metadata...");
       dataColumnNames.value = columnRes.data.map((c) => c.column_name);
 
       //METADATA
@@ -623,6 +634,7 @@ async function fetchAndPrepareData() {
       );
       if (requestId !== loadRequestSeq || controller.signal.aborted) return;
       setLoadingProgress(4, totalSteps);
+      setLoadingPhaseHint("Preparing normalized matrix...");
 
       const colData = metaResponseData.data || metaResponseData;
       columns.value = (Array.isArray(colData) ? colData : []).filter((meta: RowType) =>
@@ -656,10 +668,12 @@ async function fetchAndPrepareData() {
       visualizationStore.initializeDefaultSideColors(rowColumnNames, colColumnNames);
 
       recalculateData(); // recalc after new data
+      setLoadingPhaseHint("Applying heatmap ordering...");
       
       // Trigger re-clustering if clustering is enabled (when data changes)
       const { clusterRows, clusterCols } = visualizationStore.clustering;
       if ((clusterRows || clusterCols) && processedRows.value.length > 0) {
+        setLoadingPhaseHint("Applying configured hierarchical clustering...");
         await performClustering(
           processedRows.value, 
           dataColumnNames.value,
@@ -670,6 +684,7 @@ async function fetchAndPrepareData() {
         recalculateData(); // recalc with new cluster order
       }
       setLoadingProgress(6, totalSteps);
+      setLoadingPhaseHint("Rendering heatmap tiles...");
 
       await nextTick();
       await renderHeatmap();
