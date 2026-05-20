@@ -102,6 +102,8 @@ def discover_species_from_file(file_path: str) -> Optional[Dict[str, Any]]:
             "n_samples": adata.n_obs,
             "var_columns": list(adata.var.columns),
             "obs_columns": list(adata.obs.columns),
+            "default_sample_metadata_column": adata.uns.get("default_sample_metadata_column")
+            if adata.uns.get("default_sample_metadata_column") in adata.obs.columns else None,
         }
         
     except Exception as e:

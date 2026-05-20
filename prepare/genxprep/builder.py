@@ -94,13 +94,18 @@ def build_species(
     obs = pd.DataFrame(index=X.index)
     obs.index.name = None
 
-    # Sample mapping → tissue column
+    default_sample_metadata_col: str | None = None
+
+    # Sample mapping → sample metadata columns
     if sp.sample_mapping and sp.sample_mapping.exists():
         sm_vr = reporter.new(f"Sample mapping → {sp.code}")
         sm_df = sm_val.validate_sample_mapping(sp.sample_mapping, sample_ids, sm_vr)
         if sm_df is not None:
+            sample_metadata_cols = [c for c in sm_df.columns if c != "Sample"]
+            if sample_metadata_cols:
+                default_sample_metadata_col = sample_metadata_cols[0]
             sm_df = sm_df.set_index("Sample")
-            obs = obs.join(sm_df[["tissue"]], how="left")
+            obs = obs.join(sm_df[sample_metadata_cols], how="left")
 
     # Metrics → assigned, pct unmapped, etc.
     if sp.metrics and sp.metrics.exists():
@@ -181,15 +186,19 @@ def build_species(
     # ------------------------------------------------------------------
     # 5. Assemble AnnData
     # ------------------------------------------------------------------
+    uns = {
+        "name": sp.code,
+        "species": sp.name,
+    }
+    if default_sample_metadata_col:
+        uns["default_sample_metadata_column"] = default_sample_metadata_col
+
     adata = ad.AnnData(
         X=X.values.astype(np.float32),
         obs=obs,
         var=var,
         layers={k: v.astype(np.float32) for k, v in layers.items()},
-        uns={
-            "name": sp.code,
-            "species": sp.name,
-        },
+        uns=uns,
     )
 
     # Set proper string index

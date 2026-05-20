@@ -431,6 +431,15 @@ class ConfigManager:
                     is_meta=False,
                     is_sample_metadata=True,
                 )
+
+        default_sample_metadata_column = None
+        for data in species_data.values():
+            candidate = data.get("default_sample_metadata_column")
+            if candidate in obs_cols:
+                default_sample_metadata_column = candidate
+                break
+        if default_sample_metadata_column is None and "tissue" in obs_cols:
+            default_sample_metadata_column = "tissue"
         
         # Add virtual gene columns (served dynamically, not stored in .var)
         VIRTUAL_GENE_COLUMNS = [
@@ -472,7 +481,7 @@ class ConfigManager:
                 "default_columns": ["gene_id", "description", "ortho_id"],
                 "hidden_columns": [],
             },
-            "tissue_column": "tissue" if "tissue" in obs_cols else None,
+            "tissue_column": default_sample_metadata_column,
             "data_paths": {
                 "h5ad_dir": str(self._h5ad_dir),
             },

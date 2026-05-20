@@ -95,7 +95,7 @@ genxprep app config.yml --system
 | File | Description |
 |------|-------------|
 | TPM / TMM / geTMM matrix | Additional normalised expression matrices (same format as count matrix) |
-| Sample mapping (TSV) | Columns: `Sample`, `tissue` — assigns tissue labels to samples |
+| Sample mapping (TSV) | Column `Sample` plus any number of sample metadata columns, e.g. `tissue`, `group`, `condition`; the first metadata column is used as the default sample column |
 | RNA-seq metrics (TSV) | Columns: `sample`, `assigned`, `pct unmapped`, `pct no_feature`, `pct trimmed` |
 | Orthogroups (TSV) | `Orthogroup` column + one column per species with comma-separated gene IDs |
 | Gene trees (TXT) | One line per tree: `OG_ID:newick_string` |

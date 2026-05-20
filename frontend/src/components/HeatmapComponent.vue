@@ -1126,7 +1126,7 @@ async function renderSideColors({
       .on("mouseover", function (this: SVGRectElement, event, d) {
         d3.select(this).attr("stroke", "white").style("stroke-width", 2);
 
-        let tooltipText = "";
+        let tooltipValue = "";
 
         if (
           (colType === "double precision" || colType === "bigint") &&
@@ -1136,12 +1136,12 @@ async function renderSideColors({
         ) {
           // For numeric columns with buckets, show the actual value (not the bucket range)
           const formattedValue = Number.isInteger(d) ? d.toLocaleString() : d.toFixed(2);
-          tooltipText = `<strong>${beautifyLabel(column_name)}:</strong> ${formattedValue}`;
+          tooltipValue = String(formattedValue);
         } else {
-          tooltipText = `<strong>${beautifyLabel(column_name)}:</strong><br>${getSideColorDisplayValue(d, colType)}`;
+          tooltipValue = getSideColorDisplayValue(d, colType);
         }
 
-        tooltip.html(tooltipText);
+        tooltip.html(tooltipValue);
         tooltip.style("visibility", "visible");
       })
       .on("mousemove", function (event) {

@@ -1,10 +1,9 @@
-"""Sample mapping validator – validates sample → tissue mapping files.
+"""Sample mapping validator – validates sample metadata mapping files.
 
-Expected format: TSV with a ``sample`` column (case-insensitive) and at least
-one additional column for grouping (e.g. ``tissue``, ``condition``,
-``cell_type``, ``group``).  The grouping column is always normalised to
-``tissue`` in the returned DataFrame so that downstream H5AD files use a
-consistent obs column name.
+Expected format: TSV with a ``sample`` column (case-insensitive) and any
+number of additional sample metadata columns (e.g. ``tissue``, ``condition``,
+``cell_type``, ``group``). The first metadata column is treated as the default
+sample metadata column by the builder; all metadata columns are preserved.
 """
 
 from __future__ import annotations
@@ -18,13 +17,6 @@ from genxprep.reporter import ValidationResult
 # Common names for the sample-ID column
 _SAMPLE_COLUMN_ALIASES = {"sample", "sample_id", "sampleid", "sample id", "id"}
 
-# Preferred names for the grouping column (checked in order)
-_TISSUE_COLUMN_ALIASES = [
-    "tissue", "condition", "group", "cell_type", "celltype",
-    "cell type", "treatment", "genotype", "stage",
-]
-
-
 def validate_sample_mapping(
     path: Path,
     sample_ids: set[str],
@@ -32,10 +24,9 @@ def validate_sample_mapping(
 ) -> pd.DataFrame | None:
     """Read and validate a sample mapping TSV.
 
-    Requires a column that identifies samples (e.g. ``sample``) and any
-    additional column for grouping (e.g. ``tissue``, ``condition``).
-    The grouping column is renamed to ``tissue`` and the sample column to
-    ``Sample`` in the returned DataFrame.
+    Requires a column that identifies samples (e.g. ``sample``). Any additional
+    columns are interpreted as sample metadata and preserved with their original
+    names. The sample column is renamed to ``Sample`` in the returned DataFrame.
 
     *sample_ids* are the sample IDs from the expression matrix for
     cross-validation.  Returns the parsed DataFrame or *None* on fatal error.
@@ -52,6 +43,14 @@ def validate_sample_mapping(
 
     if df.empty:
         vr.error("Sample mapping file is empty.")
+        return None
+
+    if df.columns.duplicated().any():
+        duplicated = list(df.columns[df.columns.duplicated()])
+        vr.error(
+            f"Sample mapping has duplicate column name(s): {', '.join(map(str, duplicated))}.",
+            suggestion="Rename duplicate columns so each sample metadata field has a unique name.",
+        )
         return None
 
     col_lower = {c.lower().strip(): c for c in df.columns}
@@ -71,42 +70,14 @@ def validate_sample_mapping(
         )
         return None
 
-    # -- locate grouping column -------------------------------------------
-    grouping_col = None
-    grouping_alias_used = None
-    for alias in _TISSUE_COLUMN_ALIASES:
-        if alias in col_lower:
-            grouping_col = col_lower[alias]
-            grouping_alias_used = alias
-            break
+    metadata_cols = [c for c in df.columns if c != sample_col]
+    if not metadata_cols:
+        vr.warn(
+            "Sample mapping has only one column; no sample metadata available.",
+            suggestion="Add one or more columns (e.g. 'tissue', 'group', 'condition') for sample metadata.",
+        )
 
-    if grouping_col is None:
-        # Fall back to the first column that is not the sample column
-        other_cols = [c for c in df.columns if c != sample_col]
-        if other_cols:
-            grouping_col = other_cols[0]
-            grouping_alias_used = grouping_col
-            vr.info(
-                f"No recognised grouping column found. "
-                f"Using '{grouping_col}' as the sample-grouping column (stored as 'tissue' in H5AD).",
-            )
-        else:
-            vr.warn(
-                "Sample mapping has only one column; no grouping information available.",
-                suggestion="Add a second column (e.g. 'condition' or 'tissue') for sample grouping.",
-            )
-
-    # Normalise column names
-    rename = {sample_col: "Sample"}
-    if grouping_col and grouping_col != sample_col:
-        if grouping_alias_used != "tissue":
-            vr.info(
-                f"Column '{grouping_col}' will be used as tissue/condition grouping "
-                f"(stored as 'tissue' in the H5AD obs)."
-            )
-        rename[grouping_col] = "tissue"
-
-    df = df.rename(columns=rename)
+    df = df.rename(columns={sample_col: "Sample"})
 
     # -- cross-validate with matrix ----------------------------------------
     mapping_samples = set(df["Sample"].astype(str))
@@ -134,23 +105,25 @@ def validate_sample_mapping(
 
     if only_in_matrix:
         vr.warn(
-            f"{len(only_in_matrix)} sample(s) in the matrix have no tissue assignment: "
+            f"{len(only_in_matrix)} sample(s) in the matrix have no sample metadata row: "
             f"{', '.join(sorted(only_in_matrix)[:5])}{'…' if len(only_in_matrix) > 5 else ''}",
-            suggestion="These samples will appear without a tissue label.",
+            suggestion="These samples will appear without sample metadata values.",
         )
 
-    # -- tissue values -----------------------------------------------------
-    if "tissue" in df.columns:
-        n_unique = df["tissue"].nunique()
+    # -- metadata values ---------------------------------------------------
+    metadata_cols = [c for c in df.columns if c != "Sample"]
+    if metadata_cols:
+        default_col = metadata_cols[0]
+        n_unique = df[default_col].nunique()
         if n_unique < 2:
             vr.warn(
-                f"Only {n_unique} unique tissue value(s) found.",
-                suggestion="The heatmap column side-colors work best with ≥2 tissue categories.",
+                f"Only {n_unique} unique value(s) found in default sample metadata column '{default_col}'.",
+                suggestion="The heatmap column side-colors work best with at least two categories.",
             )
 
         vr.success(
             f"Sample mapping: {len(in_matrix)} sample(s) matched, "
-            f"{n_unique} tissue(s)."
+            f"{len(metadata_cols)} sample metadata column(s); default: '{default_col}'."
         )
     else:
         vr.success(f"Sample mapping: {len(in_matrix)} sample(s) matched.")

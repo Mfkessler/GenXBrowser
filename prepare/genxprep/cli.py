@@ -141,13 +141,15 @@ species:
 
     # ── Sample mapping (optional) ──────────────────────────────────
     # Format: TSV with header
-    # Required columns: "Sample", "tissue"
+    # Required column: "Sample"
     #   - "Sample" must match the column headers in your matrix
+    #   - All remaining columns are stored as sample metadata in H5AD
+    #   - The first metadata column becomes the default sample column
     #
     # Example:
-    #   Sample    tissue
-    #   AC_J_1    Petal early stage
-    #   AC_Q_2    Young leaf
+    #   Sample    tissue              group    condition
+    #   AC_J_1    Petal early stage   A        control
+    #   AC_Q_2    Young leaf          B        treated
     #
     sample_mapping: Sample_Mapping/AC_mapping.tsv
 
