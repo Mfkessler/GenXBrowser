@@ -525,7 +525,6 @@ const colorSchemes: Record<string, string[]> = {
   observable10: [...d3.schemeObservable10]
 };
 
-
 const selectedCount = ref(0);
 selectedCount.value = Object.keys(props.tableName[0]).length;
 

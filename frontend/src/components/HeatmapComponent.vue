@@ -271,6 +271,7 @@ import {beautifyLabel, compareValues} from "@/shared/utils";
 import ShareOverlay from "./ShareOverlay.vue";
 import ExportModal from "./ExportModal.vue";
 import {useVisualizationStore} from "@/stores/visualization";
+import { getExpressionOption } from "@/shared/ExpressionDisplay";
 import TooltipModal from "./TooltipModal.vue";
 import { getDisplayName, sequenceFields, verboseFields } from "@/shared/metadataDisplayNames";
 import { getEntityCountLabel } from "@/shared/dataTypeLabels";
@@ -373,7 +374,12 @@ let isUnmounting = false;
 let loadRequestSeq = 0;
 let activeAbortController: AbortController | null = null;
 
-const LEGEND_WIDTH = 30;
+const LEGEND_WIDTH = 18;
+const LEGEND_GAP = 5;
+const LEGEND_RIGHT_PADDING = 12;
+const LEGEND_AXIS_SPACE = 34;
+const LEGEND_LABEL_FONT = "11px sans-serif";
+const LEGEND_LABEL_LINE_HEIGHT = 12;
 const SIDE_COLOR_WIDTH = 18;
 const SIDE_COLOR_GAP = 2;
 const MAX_RENDER_RETRIES = 18;
@@ -860,6 +866,37 @@ function calculateSortedColumns(metaData: RowType[]): RowType[] {
 }
 
 //Heatmap
+function getHeatmapLegendLabel(): string {
+  return getExpressionOption(visualizationStore.expressionDisplay.optionId)?.label || "Expression values";
+}
+
+function getLegendLabelLines(label: string): string[] {
+  const match = label.match(/^(.+?)\s*(\(.+\))$/);
+  return match ? [match[1].trim(), match[2].trim()] : [label];
+}
+
+function measureLegendLabelWidth(labelLines: string[]): number {
+  if (typeof document === "undefined") return Math.max(...labelLines.map((line) => line.length * 6.5));
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+  if (!context) return Math.max(...labelLines.map((line) => line.length * 6.5));
+  context.font = LEGEND_LABEL_FONT;
+  return Math.max(...labelLines.map((line) => context.measureText(line).width));
+}
+
+function getColorLegendReservedWidth(): number {
+  const labelWidth = measureLegendLabelWidth(getLegendLabelLines(getHeatmapLegendLabel()));
+  const legendContentWidth = Math.max(LEGEND_WIDTH + LEGEND_AXIS_SPACE, labelWidth);
+  return Math.ceil(LEGEND_GAP + legendContentWidth + LEGEND_RIGHT_PADDING);
+}
+
+function getLegendTickValues(minValue: number, maxValue: number): number[] {
+  if (!Number.isFinite(minValue) || !Number.isFinite(maxValue)) return [];
+  if (minValue === maxValue) return [minValue];
+  const step = (maxValue - minValue) / 4;
+  return [minValue, minValue + step, minValue + step * 2, minValue + step * 3, maxValue];
+}
+
 function renderColorLegend(
   svg: d3.Selection<SVGSVGElement, unknown, null, undefined>,
   margin: { top: number; right: number; bottom: number; left: number },
@@ -870,7 +907,9 @@ function renderColorLegend(
   const svgWidth = +svg.attr("width");
   const svgHeight = +svg.attr("height");
 
-  const legendHeight = svgHeight - margin.top - margin.bottom;
+  const plotHeight = svgHeight - margin.top - margin.bottom;
+  const legendHeight = plotHeight / 2;
+  const legendTop = margin.top + (plotHeight - legendHeight) / 2;
 
   // Create gradient definition
   const defs = svg.append("defs");
@@ -897,10 +936,7 @@ function renderColorLegend(
   // Create legend group positioned at right side
   const legend = svg
     .append("g")
-    .attr(
-      "transform",
-      `translate(${svgWidth - margin.right + 5}, ${margin.top})`,
-    );
+    .attr("transform", `translate(0, ${margin.top})`);
 
   // Add gradient rectangle
   legend
@@ -915,7 +951,10 @@ function renderColorLegend(
     .domain([domain[0], domain[1]])
     .range([legendHeight, 0]);
 
-  const legendAxis = d3.axisRight(legendScale).ticks(20).tickSize(6);
+  const legendAxis = d3
+    .axisRight(legendScale)
+    .tickValues(getLegendTickValues(domain[0], domain[1]))
+    .tickSize(4);
 
   // Add axis group
   legend
@@ -923,6 +962,31 @@ function renderColorLegend(
     .attr("transform", `translate(${legendWidth}, 0)`)
     .call(legendAxis)
     .call((g) => g.select(".domain").remove());
+
+  const legendLabelLines = getLegendLabelLines(getHeatmapLegendLabel());
+  const legendLabel = legend
+    .append("text")
+    .attr("x", legendWidth / 2)
+    .attr("y", legendLabelLines.length > 1 ? -24 : -10)
+    .attr("text-anchor", "middle")
+    .style("font", LEGEND_LABEL_FONT);
+
+  legendLabel
+    .selectAll("tspan")
+    .data(legendLabelLines)
+    .enter()
+    .append("tspan")
+    .attr("x", legendWidth / 2)
+    .attr("dy", (_line, index) => (index === 0 ? 0 : LEGEND_LABEL_LINE_HEIGHT))
+    .text((line) => line);
+
+  const legendBBox = legend.node()?.getBBox();
+  const legendMinX = legendBBox ? legendBBox.x : 0;
+  const plotRight = svgWidth - margin.right;
+  legend.attr(
+    "transform",
+    `translate(${plotRight + LEGEND_GAP - legendMinX}, ${legendTop})`,
+  );
 }
 
 function getSideColorAttributeValues(dataSource: Record<string, unknown>[], colName: string, colType: string): SideColorValue[] {
@@ -1337,7 +1401,7 @@ function getHeatmapLayout(width: number, height: number) {
   }
 
   if (visualizationStore.legend) {
-    margin.right = LEGEND_WIDTH + 50;
+    margin.right = getColorLegendReservedWidth();
   }
 
   const svgW = width - margin.left - margin.right;
@@ -1485,7 +1549,7 @@ async function renderHeatmap(): Promise<boolean> {
         "transform",
         `translate(${margin.left - totalRowSideColorWidth},${margin.top})`,
       )
-      .call(d3.axisLeft(y));
+      .call(d3.axisLeft(y).tickSize(0));
     
     const yAxisTexts = yAxisGroup.selectAll("text")
       .style("font-size", "10px")
