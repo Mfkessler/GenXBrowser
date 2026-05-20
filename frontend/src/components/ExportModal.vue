@@ -4,7 +4,7 @@
     <div class="absolute inset-0 bg-black opacity-50" @click="$emit('close')"></div>
 
     <!-- Modal content -->
-    <div class="relative bg-white rounded-lg border border-gray-300 w-full max-w-md p-6 z-10">
+    <div class="relative bg-white rounded-lg border border-gray-300 w-full max-w-md p-6 z-10 overflow-hidden">
       <!-- Header -->
       <div class="flex items-center justify-between mb-6">
         <h3 class="text-lg font-bold text-gray-700">Export Data</h3>
@@ -19,7 +19,7 @@
 
       <!-- Export Info -->
       <div class="mb-6 p-3 bg-gray-50 rounded-md text-sm text-gray-600">
-        <p><strong>{{ rowCount.toLocaleString() }}</strong> {{ entityLabelPlural.toLowerCase() }}</p>
+        <p><strong>{{ rowCount.toLocaleString() }}</strong> {{ rowLabel }}</p>
         <p><strong>{{ columnCount.toLocaleString() }}</strong> columns ({{ metaColumnCount }} metadata + {{ sampleColumnCount }} {{ dataColumnLabel }})</p>
         <p v-if="hasFilters" class="text-primary-600 mt-1">
           <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -65,14 +65,6 @@
           />
           <span class="text-sm text-gray-700">Include column headers</span>
         </label>
-        <label v-if="selectedFormat === 'csv' || selectedFormat === 'tsv'" class="flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            v-model="quoteStrings"
-            class="rounded text-primary-600"
-          />
-          <span class="text-sm text-gray-700">Quote text values</span>
-        </label>
       </div>
 
       <!-- Action Buttons -->
@@ -88,19 +80,48 @@
           :disabled="exporting"
           class="cursor-pointer flex-1 px-4 py-2 bg-accent1-500 text-white rounded-md hover:bg-accent1-700 disabled:opacity-50 flex items-center justify-center gap-2"
         >
-          <svg v-if="exporting" class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
-            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
-          </svg>
-          {{ exporting ? 'Exporting...' : 'Export' }}
+          Export
         </button>
+      </div>
+
+      <div
+        v-if="exporting"
+        class="absolute inset-0 z-20 flex items-center justify-center bg-white/90 backdrop-blur-[1px]"
+        role="status"
+        aria-live="polite"
+      >
+        <div class="w-[min(22rem,calc(100%-2rem))] rounded-md border border-gray-200 bg-white px-5 py-4 text-center shadow-lg">
+          <div class="flex flex-col items-center gap-3">
+            <svg class="h-9 w-9 animate-spin text-primary-500" viewBox="0 0 48 48" aria-hidden="true">
+              <circle class="text-gray-200" cx="24" cy="24" r="18" fill="none" stroke="currentColor" stroke-width="4" />
+              <circle cx="24" cy="24" r="18" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-dasharray="76 38" />
+            </svg>
+            <div class="w-full space-y-2">
+              <div class="text-sm font-semibold text-gray-800">Preparing export...</div>
+              <div class="h-2 w-full overflow-hidden rounded-full bg-gray-100">
+                <div
+                  class="h-full rounded-full bg-primary-500 transition-[width] duration-150"
+                  :style="{ width: `${exportProgress}%` }"
+                ></div>
+              </div>
+              <div class="text-xs font-medium text-gray-500">{{ exportProgress }}%</div>
+            </div>
+            <button
+              type="button"
+              class="cursor-pointer rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50"
+              @click="cancelExport"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from "vue";
+import { nextTick, ref } from "vue";
 import { getEntityLabelPlural } from "@/shared/dataTypeLabels";
 import type { RowType } from "@/shared/RowType";
 
@@ -114,6 +135,7 @@ const props = defineProps<{
   hasFilters: boolean;
   totalCount?: number;
   dataColumnLabel?: string;
+  rowLabel?: string;
 }>();
 
 const emit = defineEmits(["close", "export"]);
@@ -126,6 +148,7 @@ const columnCount = props.columns.length;
 const metaColumnCount = props.metaColumns.length;
 const sampleColumnCount = props.sampleColumns.length;
 const dataColumnLabel = props.dataColumnLabel ?? 'samples';
+const rowLabel = props.rowLabel ?? entityLabelPlural.toLowerCase();
 
 // Format options
 const exportFormats = [
@@ -137,41 +160,52 @@ const exportFormats = [
 
 const selectedFormat = ref('tsv');
 const includeHeaders = ref(true);
-const quoteStrings = ref(false);
 const exporting = ref(false);
+const exportProgress = ref(0);
+let cancelRequested = false;
 
-function escapeValue(value: unknown, quote: boolean): string {
+function escapeValue(value: unknown): string {
   if (value === null || value === undefined) return '';
   
-  let str: string;
   if (Array.isArray(value)) {
-    str = value.join(', ');
-  } else {
-    str = String(value);
+    return value.join(', ');
   }
   
-  if (quote && typeof value === 'string') {
-    // Escape quotes and wrap in quotes
-    return `"${str.replace(/"/g, '""')}"`;
-  }
-  
-  return str;
+  return String(value);
 }
 
-function toDelimited(data: RowType[], columns: string[], delimiter: string, quote: boolean, headers: boolean): string {
+function getExportColumnName(column: string): string {
+  return props.columnDisplayNames?.[column] || column;
+}
+
+function assertNotCanceled() {
+  if (cancelRequested) {
+    throw new DOMException('Export canceled', 'AbortError');
+  }
+}
+
+function updateProgress(percent: number) {
+  exportProgress.value = Math.max(0, Math.min(100, Math.round(percent)));
+}
+
+async function yieldToUi() {
+  await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+}
+
+async function toDelimited(data: RowType[], columns: string[], delimiter: string, headers: boolean): Promise<string> {
   const lines: string[] = [];
   
   if (headers) {
     // Use display names if available, otherwise use column names
-    const headerNames = columns.map(col => 
-      props.columnDisplayNames?.[col] || col
-    );
+    const headerNames = columns.map(getExportColumnName);
     lines.push(headerNames.join(delimiter));
   }
   
-  for (const row of data) {
+  const totalRows = Math.max(data.length, 1);
+  for (let rowIndex = 0; rowIndex < data.length; rowIndex++) {
+    const row = data[rowIndex];
     const values = columns.map(col => {
-      const val = escapeValue(row[col], quote);
+      const val = escapeValue(row[col]);
       // For CSV/TSV, escape the delimiter if present
       if (val.includes(delimiter) && !val.startsWith('"')) {
         return `"${val.replace(/"/g, '""')}"`;
@@ -179,19 +213,35 @@ function toDelimited(data: RowType[], columns: string[], delimiter: string, quot
       return val;
     });
     lines.push(values.join(delimiter));
+    if (rowIndex % 250 === 0) {
+      assertNotCanceled();
+      updateProgress((rowIndex + 1) / totalRows * 95);
+      await yieldToUi();
+    }
   }
   
   return lines.join('\n');
 }
 
-function toJson(data: RowType[], columns: string[]): string {
-  const filtered = data.map(row => {
+async function toJson(data: RowType[], columns: string[]): Promise<string> {
+  const filtered: Record<string, unknown>[] = [];
+  const totalRows = Math.max(data.length, 1);
+  for (let rowIndex = 0; rowIndex < data.length; rowIndex++) {
+    const row = data[rowIndex];
     const obj: Record<string, unknown> = {};
     for (const col of columns) {
-      obj[col] = row[col];
+      obj[getExportColumnName(col)] = row[col];
     }
-    return obj;
-  });
+    filtered.push(obj);
+    if (rowIndex % 250 === 0) {
+      assertNotCanceled();
+      updateProgress((rowIndex + 1) / totalRows * 80);
+      await yieldToUi();
+    }
+  }
+  assertNotCanceled();
+  updateProgress(90);
+  await yieldToUi();
   return JSON.stringify(filtered, null, 2);
 }
 
@@ -223,13 +273,15 @@ async function toXlsx(data: RowType[], columns: string[], headers: boolean): Pro
     sheetData += `<row r="${rowNum}">`;
     columns.forEach((col, i) => {
       const cellRef = getExcelColumnName(i) + rowNum;
-      sheetData += `<c r="${cellRef}" t="inlineStr"><is><t>${escapeXml(col)}</t></is></c>`;
+      sheetData += `<c r="${cellRef}" t="inlineStr"><is><t>${escapeXml(getExportColumnName(col))}</t></is></c>`;
     });
     sheetData += '</row>';
     rowNum++;
   }
   
-  for (const row of data) {
+  const totalRows = Math.max(data.length, 1);
+  for (let dataIndex = 0; dataIndex < data.length; dataIndex++) {
+    const row = data[dataIndex];
     sheetData += `<row r="${rowNum}">`;
     columns.forEach((col, i) => {
       const cellRef = getExcelColumnName(i) + rowNum;
@@ -246,6 +298,11 @@ async function toXlsx(data: RowType[], columns: string[], headers: boolean): Pro
     });
     sheetData += '</row>';
     rowNum++;
+    if (dataIndex % 250 === 0) {
+      assertNotCanceled();
+      updateProgress((dataIndex + 1) / totalRows * 75);
+      await yieldToUi();
+    }
   }
 
   // Calculate the dimension reference (e.g., "A1:ZZ1000")
@@ -292,11 +349,22 @@ async function toXlsx(data: RowType[], columns: string[], headers: boolean): Pro
   zip.file('xl/_rels/workbook.xml.rels', workbookRels);
   zip.file('xl/worksheets/sheet1.xml', worksheet);
   
-  return await zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  assertNotCanceled();
+  return await zip.generateAsync(
+    { type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+    (metadata) => updateProgress(75 + metadata.percent * 0.2),
+  );
+}
+
+function cancelExport() {
+  cancelRequested = true;
 }
 
 async function doExport() {
   exporting.value = true;
+  cancelRequested = false;
+  updateProgress(0);
+  await nextTick();
   
   try {
     let blob: Blob;
@@ -304,19 +372,19 @@ async function doExport() {
     
     switch (selectedFormat.value) {
       case 'csv':
-        const csvContent = toDelimited(props.data, props.columns, ',', quoteStrings.value, includeHeaders.value);
+        const csvContent = await toDelimited(props.data, props.columns, ',', includeHeaders.value);
         blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
         extension = 'csv';
         break;
         
       case 'tsv':
-        const tsvContent = toDelimited(props.data, props.columns, '\t', quoteStrings.value, includeHeaders.value);
+        const tsvContent = await toDelimited(props.data, props.columns, '\t', includeHeaders.value);
         blob = new Blob([tsvContent], { type: 'text/tab-separated-values;charset=utf-8' });
         extension = 'tsv';
         break;
         
       case 'json':
-        const jsonContent = toJson(props.data, props.columns);
+        const jsonContent = await toJson(props.data, props.columns);
         blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8' });
         extension = 'json';
         break;
@@ -329,6 +397,8 @@ async function doExport() {
       default:
         throw new Error(`Unknown format: ${selectedFormat.value}`);
     }
+    assertNotCanceled();
+    updateProgress(100);
     
     // Download
     const url = URL.createObjectURL(blob);
@@ -345,6 +415,9 @@ async function doExport() {
     
     emit('close');
   } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      return;
+    }
     console.error('Export failed:', e);
     alert('Export failed. Please try again.');
   } finally {

@@ -1,5 +1,5 @@
 <template>
-  <div class="fixed inset-0 z-50 items-center align-top p-6">
+  <div class="fixed inset-0 z-50 items-center align-top p-6" :style="managerOverlayStyle">
     <!-- Background overlay -->
     <div class="absolute inset-0 bg-black opacity-50" @click="$emit('close')"></div>
 
@@ -167,14 +167,10 @@
               :disabled="totalCount === 0 || loading || exporting"
               class="cursor-pointer px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 flex items-center gap-2"
             >
-              <svg v-if="exporting" class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
-              </svg>
-              <svg v-else class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
               </svg>
-              {{ exporting ? 'Loading...' : 'Export' }}
+              Export
             </button>
             <button
                 @click="resetSettings"
@@ -353,13 +349,11 @@
           </tbody>
         </table>
 
-        <!-- Loading State -->
-        <div v-if="loading && rows.length === 0" class="h-[300px] relative">
-          <LoadingOverlay size="sm" />
-        </div>
+        <!-- Initial loading space; the single modal-level overlay is rendered below. -->
+        <div v-if="loading && rows.length === 0" class="h-[300px]"></div>
 
         <!-- Loading more indicator -->
-        <div v-if="loading && rows.length > 0" class="py-4 flex items-center justify-center bg-gray-50">
+        <div v-if="loading && currentOffset > 0" class="py-4 flex items-center justify-center bg-gray-50">
           <svg class="animate-spin h-5 w-5 text-primary-500 mr-2" fill="none" viewBox="0 0 24 24">
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
@@ -377,6 +371,22 @@
           </div>
         </div>
       </div>
+
+      <LoadingOverlay
+        v-if="initialLoading || (loading && currentOffset === 0)"
+        size="md"
+        primaryStatus="Loading data..."
+        currentPhaseHint="Preparing Data Manager"
+      />
+
+      <LoadingOverlay
+        v-if="exporting"
+        size="md"
+        primaryStatus="Loading export data..."
+        currentPhaseHint="Fetching all matching rows for export"
+        cancellable
+        @cancel="cancelExportFetch"
+      />
     </div>
 
     <!-- Export Modal -->
@@ -407,7 +417,7 @@
 
 <script setup lang="ts">
 import axios from "axios";
-import { ref, computed, watch, onMounted, onUnmounted } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted, inject, nextTick, type Ref } from "vue";
 
 import { API_BASE_URL } from "@/shared/Config";
 import {
@@ -489,13 +499,16 @@ const showCountMatrix = ref(true);
 const rows = ref<RowType[]>([]);
 const totalCount = ref(0);
 const loading = ref(false);
+const initialLoading = ref(true);
 const error = ref("");
 const showColumnDropdown = ref(false);
 const showExportModal = ref(false);
 const exporting = ref(false);
+const exportAbortController = ref<AbortController | null>(null);
 const allExportData = ref<RowType[]>([]);
 const showBlastWarning = ref(false);
 const pendingBlastParams = ref<{ fieldType: string; sequence: string } | null>(null);
+const suppressAutoReload = ref(true);
 
 // Lazy loading state
 const pageSize = 100;
@@ -504,6 +517,18 @@ const hasMoreData = computed(() => rows.value.length < totalCount.value);
 
 // Refs
 const tableContainer = ref<HTMLElement | null>(null);
+const sidebarOpen = inject<Ref<boolean> | undefined>("sidebarOpen", undefined);
+const viewportWidth = ref(typeof window !== "undefined" ? window.innerWidth : 1024);
+
+function updateViewportWidth() {
+  if (typeof window === "undefined") return;
+  viewportWidth.value = window.innerWidth;
+}
+
+const managerOverlayStyle = computed(() => {
+  const sidebarWidth = sidebarOpen?.value && viewportWidth.value >= 768 ? 320 : 0;
+  return { left: `${sidebarWidth}px` };
+});
 
 // Compute gene filters (transcript/gene metadata columns)
 const geneFilters = computed(() => {
@@ -775,12 +800,11 @@ async function fetchColumnInfo() {
 }
 
 // Reload data from scratch
-function reloadData() {
+async function reloadData() {
   rows.value = [];
   currentOffset.value = 0;
   totalCount.value = 0;
-  fetchTotalCount();
-  fetchData();
+  await fetchData();
 }
 
 // Fetch total count for current filters
@@ -807,6 +831,8 @@ async function fetchTotalCount() {
 // Handle export: fetch ALL data first, then show modal
 async function handleExport() {
   exporting.value = true;
+  const controller = new AbortController();
+  exportAbortController.value = controller;
   
   try {
     const expressionOption = getExpressionOption(selectedLayer.value);
@@ -841,17 +867,25 @@ async function handleExport() {
       requestBody.gene_ids = parsedGeneIds.value;
     }
     
-    const response = await axios.post(`${API_BASE_URL}/api/data`, requestBody);
+    const response = await axios.post(`${API_BASE_URL}/api/data`, requestBody, { signal: controller.signal });
     const responseData = response.data;
     allExportData.value = Array.isArray(responseData) ? responseData : (responseData?.data ?? []);
     
     showExportModal.value = true;
   } catch (e: unknown) {
+    if (axios.isCancel(e) || (axios.isAxiosError(e) && e.code === "ERR_CANCELED")) {
+      return;
+    }
     console.error("Error fetching export data:", e);
     error.value = "Failed to load data for export";
   } finally {
+    exportAbortController.value = null;
     exporting.value = false;
   }
+}
+
+function cancelExportFetch() {
+  exportAbortController.value?.abort();
 }
 
 // Fetch data with current settings (for viewer, paginated)
@@ -903,8 +937,8 @@ async function fetchData() {
     
     if (currentOffset.value === 0) {
       rows.value = rowData;
-      // Fetch actual total count on first load
-      fetchTotalCount();
+      // Fetch actual total count on first load before dismissing the loading overlay.
+      await fetchTotalCount();
     } else {
       rows.value = [...rows.value, ...rowData];
     }
@@ -991,6 +1025,7 @@ function handleClickOutside(event: MouseEvent) {
 // Debounced reload on settings change
 let reloadTimeout: ReturnType<typeof setTimeout> | null = null;
 function debouncedReload() {
+  if (suppressAutoReload.value || initialLoading.value) return;
   if (reloadTimeout) clearTimeout(reloadTimeout);
   reloadTimeout = setTimeout(() => {
     reloadData();
@@ -1027,13 +1062,26 @@ watch([geneFilters, sampleFilters], () => {
 }, { deep: true });
 
 onMounted(async () => {
+  initialLoading.value = true;
+  suppressAutoReload.value = true;
+  updateViewportWidth();
+  window.addEventListener("resize", updateViewportWidth);
   document.addEventListener("click", handleClickOutside);
-  await fetchColumnInfo();
-  // Auto-load data when modal opens
-  fetchData();
+  try {
+    await fetchColumnInfo();
+    // Auto-load data when modal opens. Keep the initial overlay active until
+    // columns, settings, first page, and count have all settled.
+    await fetchData();
+  } finally {
+    await nextTick();
+    suppressAutoReload.value = false;
+    initialLoading.value = false;
+  }
 });
 
 onUnmounted(() => {
+  window.removeEventListener("resize", updateViewportWidth);
+  exportAbortController.value?.abort();
   document.removeEventListener("click", handleClickOutside);
   if (reloadTimeout) clearTimeout(reloadTimeout);
 });

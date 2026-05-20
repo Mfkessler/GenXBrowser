@@ -1,5 +1,5 @@
 <template>
-  <div class="fixed inset-0 z-50 items-center align-top p-6">
+  <div class="fixed inset-0 z-50 items-center align-top p-6" :style="managerOverlayStyle">
     <!-- Background overlay -->
     <div class="absolute inset-0 bg-black opacity-50" @click="$emit('close')"></div>
 
@@ -52,7 +52,7 @@
               @click="showColumnDropdown = !showColumnDropdown"
               class="cursor-pointer w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-left flex justify-between items-center"
             >
-              <span class="truncate">{{ selectedColumns.length }} of {{ availableColumns.length }} selected</span>
+              <span class="truncate">{{ visibleColumns.length }} of {{ availableColumns.length }} selected</span>
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
               </svg>
@@ -76,7 +76,7 @@
                 </button>
               </div>
               <label
-                v-for="col in availableColumns"
+                v-for="col in selectableColumns"
                 :key="col"
                 class="flex items-center gap-2 px-3 py-2 hover:bg-gray-50 cursor-pointer"
               >
@@ -130,14 +130,10 @@
               :disabled="filteredRows.length === 0 || exporting"
               class="cursor-pointer px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 flex items-center gap-2"
             >
-              <svg v-if="exporting" class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
-              </svg>
-              <svg v-else class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
               </svg>
-              {{ exporting ? 'Loading...' : 'Export' }}
+              Export
             </button>
             <button
               @click="resetSettings"
@@ -313,13 +309,14 @@
       :filename="`${tableName}_metadata`"
       :hasFilters="parsedSampleIds.length > 0 || hasActiveSampleFilters"
       :totalCount="filteredRows.length"
+      row-label="samples"
       @close="showExportModal = false"
     />
   </div>
 </template>
 <script setup lang="ts">
 import axios from "axios";
-import { computed, onMounted, onUnmounted, ref, watch, nextTick } from "vue";
+import { computed, inject, onMounted, onUnmounted, ref, watch, nextTick, type Ref } from "vue";
 import type { RowType } from "@/shared/RowType";
 import { beautifyLabel, formatSpeciesValue, isCellEmpty } from "@/shared/utils";
 import { useFiltersStore } from "@/stores/filters";
@@ -378,6 +375,18 @@ const showExportModal = ref(false);
 const exporting = ref(false);
 const resetting = ref(false);
 const totalSamplesWithoutFilters = ref<number>(0); // Track total before filtering
+const sidebarOpen = inject<Ref<boolean> | undefined>("sidebarOpen", undefined);
+const viewportWidth = ref(typeof window !== "undefined" ? window.innerWidth : 1024);
+
+function updateViewportWidth() {
+  if (typeof window === "undefined") return;
+  viewportWidth.value = window.innerWidth;
+}
+
+const managerOverlayStyle = computed(() => {
+  const sidebarWidth = sidebarOpen?.value && viewportWidth.value >= 768 ? 320 : 0;
+  return { left: `${sidebarWidth}px` };
+});
 
 // Compute sample filters (sample metadata columns only)
 // For metadata tables (_meta), samples are ROWS and we filter them using sample_filters
@@ -407,16 +416,8 @@ const limit = 20;
 const page = ref(1);
 
 // Column name mappings
-const COLUMN_DISPLAY_NAMES: Record<string, string> = {
-  'tissue': 'TISSUE',
-  'assigned': 'ASSIGNED READS',
-  'pct_unmapped': 'PCT UNMAPPED',
-  'pct_no_feature': 'PCT NO FEATURE',
-  'pct_trimmed': 'PCT TRIMMED',
-};
-
 // Columns to hide
-const HIDDEN_COLUMNS = new Set<string>([]);
+const HIDDEN_COLUMNS = new Set<string>(['type', 'ismeta']);
 
 // RNA metrics columns
 const RNA_METRICS = ['assigned', 'pct_unmapped', 'pct_no_feature', 'pct_trimmed'];
@@ -424,8 +425,9 @@ const RNA_METRICS = ['assigned', 'pct_unmapped', 'pct_no_feature', 'pct_trimmed'
 // Get available columns (non-empty, non-hidden)
 const availableColumns = computed(() => {
   return allColumns.value.filter(col => {
+    if (col === sampleIdColumn.value) return true;
     // Don't hide if it's one of our important columns
-    if (HIDDEN_COLUMNS.has(col)) return false;
+    if (HIDDEN_COLUMNS.has(col.toLowerCase())) return false;
     
     // Check if column is completely empty
     const allEmpty = allRows.value.every(row => isCellEmpty(row[col]));
@@ -438,8 +440,14 @@ const sampleIdColumn = computed(() => allColumns.value[0] || 'sample_id');
 
 // Visible columns for display
 const visibleColumns = computed(() => {
-  return selectedColumns.value.filter(col => availableColumns.value.includes(col));
+  const visible = selectedColumns.value.filter(col => availableColumns.value.includes(col));
+  if (!visible.includes(sampleIdColumn.value) && availableColumns.value.includes(sampleIdColumn.value)) {
+    return [sampleIdColumn.value, ...visible];
+  }
+  return visible;
 });
+
+const selectableColumns = computed(() => availableColumns.value.filter(col => col !== sampleIdColumn.value));
 
 // Filter rows based on search
 const filteredRows = computed(() => {
@@ -499,10 +507,11 @@ function getColumnDisplayName(col: string): string {
   if (col === sampleIdColumn.value) {
     return 'SAMPLE ID';
   }
-  
-  // Check custom mappings
-  if (COLUMN_DISPLAY_NAMES[col]) {
-    return COLUMN_DISPLAY_NAMES[col];
+
+  const configuredColumn = columnsStore.filterableColColumns.find(c => c.column_name === col)
+    ?? columnsStore.colColumns.find(c => c.column_name === col);
+  if (configuredColumn?.display_name) {
+    return beautifyLabel(configuredColumn.display_name);
   }
   
   // Use beautifyLabel for other columns
@@ -571,7 +580,7 @@ function clearSampleFilters() {
 
 // Column selection
 function selectAllColumns() {
-  selectedColumns.value = [...availableColumns.value];
+  selectedColumns.value = [...selectableColumns.value];
   saveSettings();
 }
 
@@ -617,7 +626,7 @@ function loadSettings() {
     try {
       const settings = JSON.parse(saved);
       // Validate columns still exist
-      const validCols = new Set(availableColumns.value);
+      const validCols = new Set(selectableColumns.value);
       selectedColumns.value = (settings.selectedColumns || []).filter(
         (col: string) => validCols.has(col)
       );
@@ -636,10 +645,10 @@ function loadSettings() {
 }
 
 function setDefaultColumns() {
-  // Default: Sample ID + TISSUE + 4 RNA metrics
+  // Default: configured sample metadata + RNA metrics. Sample ID is always visible.
+  const primarySampleColumn = columnsStore.tissueColumnName || 'tissue';
   const defaults = [
-    sampleIdColumn.value,
-    'tissue',
+    primarySampleColumn,
     ...RNA_METRICS
   ];
   
@@ -647,7 +656,7 @@ function setDefaultColumns() {
   
   // If we don't have enough columns, add more up to 6 columns
   if (selectedColumns.value.length < 6) {
-    for (const col of availableColumns.value) {
+    for (const col of selectableColumns.value) {
       if (!selectedColumns.value.includes(col) && selectedColumns.value.length < 6) {
         selectedColumns.value.push(col);
       }
@@ -696,11 +705,17 @@ async function fetchData() {
     const responseData = response.data;
     const rowData = Array.isArray(responseData) ? responseData : (responseData?.data ?? []);
     
-    allRows.value = rowData;
+    allRows.value = rowData.map((row: RowType) => {
+      const cleaned: RowType = {};
+      for (const [key, value] of Object.entries(row)) {
+        if (!HIDDEN_COLUMNS.has(key.toLowerCase())) cleaned[key] = value;
+      }
+      return cleaned;
+    });
     
     // Extract columns from first row
-    if (rowData.length > 0) {
-      const newColumns = Object.keys(rowData[0]);
+    if (allRows.value.length > 0) {
+      const newColumns = Object.keys(allRows.value[0]).filter(col => !HIDDEN_COLUMNS.has(col.toLowerCase()));
       // Only load settings on first load or when columns change
       if (allColumns.value.length === 0 || JSON.stringify(allColumns.value) !== JSON.stringify(newColumns)) {
         allColumns.value = newColumns;
@@ -710,7 +725,7 @@ async function fetchData() {
     
     // Fetch total count on first load (when we have no filters yet)
     if (totalSamplesWithoutFilters.value === 0 && Object.keys(sampleFilters.value).length === 0) {
-      totalSamplesWithoutFilters.value = rowData.length;
+      totalSamplesWithoutFilters.value = allRows.value.length;
     } else if (totalSamplesWithoutFilters.value === 0) {
       // If filters are active on first load, fetch total separately
       fetchTotalCount();
@@ -765,11 +780,14 @@ watch(
 );
 
 onMounted(() => {
+  updateViewportWidth();
+  window.addEventListener("resize", updateViewportWidth);
   document.addEventListener("click", handleClickOutside);
   fetchData();
 });
 
 onUnmounted(() => {
+  window.removeEventListener("resize", updateViewportWidth);
   document.removeEventListener("click", handleClickOutside);
 });
 </script>
