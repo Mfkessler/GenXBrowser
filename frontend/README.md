@@ -1,213 +1,137 @@
 # GenXBrowser Frontend
 
-> Vue.js frontend for the [GenXBrowser](../README.md) gene expression browser.
-
-[![Vue 3](https://img.shields.io/badge/Vue-3.x-4FC08D?logo=vue.js&logoColor=white)](https://vuejs.org/)
+[![Vue 3](https://img.shields.io/badge/Vue-3.5-4FC08D?logo=vue.js&logoColor=white)](https://vuejs.org/)
 [![Vite](https://img.shields.io/badge/Vite-7.x-646CFF?logo=vite&logoColor=white)](https://vitejs.dev/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind-4.x-06B6D4?logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
----
+Vue 3 single-page application for the [GenXBrowser](../README.md) gene-expression browser. Talks to the Flask backend over `/api/*` (proxied by Vite in development, rewritten by nginx in production builds).
 
-## Quick Start
+## Tech Stack
 
-### Via GenXPrep (Recommended)
+- **Vue 3.5** (`<script setup>` SFCs, Composition API) + **Pinia 3** for state.
+- **Vue Router 4** with content-aware data-loading on `/h`, `/o`, `/c`, `/p` routes.
+- **Vite 7** dev server + build tool; TypeScript 5.8 (`vue-tsc --build`).
+- **Tailwind CSS 4** (via `@tailwindcss/vite`) with a custom `@theme` token block in `src/assets/main.css`.
+- **Plotly.js (`plotly.js-dist-min` 3.x)** for the heatmap and box-plot visualisations.
+- **D3 7** + the bundled `phylotree.js` for phylogenetic trees.
+- **ml-hclust** for in-browser hierarchical clustering, with a dedicated `clustering.worker.ts` Web Worker.
+- **Axios** HTTP, **lodash-es** (debounce/throttle), **yaml** for the runtime config, **marked** for the About page.
+- **jsPDF + html2canvas-pro + JSZip** for PDF/PNG/ZIP exports.
+- **ESLint 9** + Vitest 3 + Playwright 1.53 for lint, unit and E2E tests.
+
+## Development Workflow
+
+Prerequisite: Node ≥ 20 (the production Dockerfile uses `node:20-alpine`).
 
 ```bash
-cd ../prepare
-genxprep app config.yml
-```
-
-This automatically sets up and starts the frontend along with the backend.
-
-### Manual Development
-
-```bash
+cd frontend/
 npm install
-npm run dev
-# Frontend available at http://localhost:5173
-# API requests are proxied to http://localhost:5000
+npm run dev            # Vite dev server on :5173, HMR enabled
+                       # /api/* is proxied to http://localhost:5000 - start the backend first
 ```
 
-## Scripts
+| Command | Purpose |
+|---|---|
+| `npm run dev` | Vite dev server with HMR |
+| `npm run build` | Type-checked production build (writes `dist/`) |
+| `npm run build:check` | Parallel `vue-tsc --build` + `vite build` |
+| `npm run build-only` | Production build without type-checking (matches the Dockerfile) |
+| `npm run preview` | Serve the production build locally |
+| `npm run type-check` | `vue-tsc --build` |
+| `npm run lint` | ESLint with `--fix` |
+| `npm run test:unit` | Vitest unit tests |
+| `npm run test:e2e` | Playwright E2E (`e2e/`, see `playwright.config.ts`) |
 
-| Command | Description |
-|---------|-------------|
-| `npm run dev` | Start Vite dev server with HMR |
-| `npm run build` | Build for production |
-| `npm run build:check` | Type-check + build in parallel |
-| `npm run build-only` | Build without type-checking |
-| `npm run preview` | Preview production build |
-| `npm run test:unit` | Run unit tests (Vitest) |
-| `npm run type-check` | TypeScript type checking (`vue-tsc`) |
-| `npm run lint` | Lint and auto-fix with ESLint |
+For a one-shot launch that also starts the backend, use `genxprep app config.yml` from the [`prepare/`](../prepare/README.md) directory.
 
-## Views / Routes
+### Build-time Environment
 
-| Route | View | Description |
-|-------|------|-------------|
-| `/` | CatalogView | Browse and select species/datasets |
-| `/about` | AboutView | About page (rendered from `public/about.md`) |
-| `/admin` | AdminView | Runtime configuration panel |
-| `/h/:table_names` | HeatmapView | Interactive gene expression heatmap |
-| `/o/:table_names` | OraView | Over-Representation Analysis results |
-| `/c/:table_names` | CompareExpression | Cross-species expression comparison (box plots) |
-| `/p/:table_names` | PhylogeneticTreeView | Newick gene tree visualization |
+The Dockerfile reads the following `VITE_*` build args:
 
-## Configuration
+| Arg | Default | Purpose |
+|---|---|---|
+| `VITE_BASE_URL` | `/` | Public base path for the SPA |
+| `VITE_API_BASE_URL` | `/api` | Where the SPA sends API requests at runtime |
+| `VITE_DATA_TYPE` | `Genes` | UI terminology - `Genes` or `Isoforms` |
+| `VITE_ALLOWED_HOSTS` | `""` | Comma-separated allow-list; `localhost` and `127.0.0.1` are always included |
 
-### AI Assistant
+### Runtime Config - `public/genxbrowser_config.yaml`
 
-When the backend exposes the assistant endpoints (see [backend/README.md](../backend/README.md#ai-assistant)), the frontend renders a slide-in chat panel via [`AssistantPanel.vue`](src/components/AssistantPanel.vue) (state in [`stores/assistant.ts`](src/stores/assistant.ts)).
-
-- The panel sends the live UI context (`view`, `selected_table_names`, `filters`, `visualizations`, optional analysis digests) on every message, so the model always reflects where the user is right now.
-- Backend responses include typed action blocks (`add_filter`, `viz_update`, `select_tables`, `set_expression_display`, `deeplink`, …) which the panel turns into one-click chips with an Undo step.
-- An **Auto-execute** toggle in the panel header (persisted in `localStorage` under `genx.assistant.autoExecute`) applies actions — including deep-link navigation — directly when streaming completes, without requiring per-action confirmation.
-- The empty-state "Try:" prompts are rendered from `/api/assistant/suggestions` and refreshed via the **Shuffle** button next to them, so every example is built from values that actually exist in the current dataset.
-- Data-bearing views (`/h`, `/c`, `/o`, `/p`) watch `route.query.id` and re-load the persisted filter / visualization state whenever the assistant points to a new hash on the same path, so re-runs (e.g. orthogroup ORA → GO ORA) refresh the view automatically.
-- The Heatmap and ORA views automatically **hide datasets that fall completely through the active filters**: a small probe against `/api/count` (with both `filters` and `sample_filters`) computes per-table sample/row counts; any table with `sample_count == 0` or `count == 0` is omitted from the grid and listed in a small footer note ("Hidden by current filter: …"). This keeps multi-species panels meaningful when a sample filter (e.g. `tissue=flower`) only applies to a subset of species.
-
-### Frontend Config (`public/genxbrowser_config.yaml`)
-
-Controls branding, feature access, and visualization settings. The config is loaded **at runtime** (not baked into the build):
+Branding and feature toggles are fetched at runtime (not baked into the bundle), so a single build can be re-skinned per deployment. `genxprep build` emits this file alongside the H5AD bundle; in a containerised setup it is mounted into `/usr/share/nginx/html/genxbrowser_config.yaml`.
 
 ```yaml
 corporate_identity:
-  company_name: "Your Organization"   # Displayed in sidebar/footer
-  logo: your-logo.png                 # Logo file in public/ (PNG format)
-  about: about.md                     # Markdown file in public/ for the About page
-  llm_name: ""                        # Display name for LLM feature (optional)
-  cc_by: ""                           # Creative Commons license short (e.g. "NC-SA")
+  company_name: "Your Organization"
+  logo:         your-logo.png       # file in public/
+  about:        about.md            # rendered on /about
+  llm_name:     ""                  # display name for the AI assistant
+  cc_by:        ""                  # CC short code (e.g. "NC-SA")
 access:
-  data: true                          # Enable data access
-  download: true                      # Enable data download/export
+  data:     true
+  download: true
 visualization:
-  id_column: gene_id                  # Primary identifier column
-  hide_columns:                       # Columns hidden from heatmap (saves RAM)
+  id_column: gene_id
+  hide_columns:                     # columns elided from the heatmap to save RAM
     - rna_seq
     - newick_str
 ```
 
-### Assets
+## Routes
 
-- **`src/assets/main.css`** — Tailwind CSS entry point with custom color theme
-- **`public/`** — Static assets served as-is (logo, about.md, favicon)
+| Path | View | Purpose |
+|---|---|---|
+| `/` | `CatalogView` | Dataset browser / multi-select |
+| `/about` | `AboutView` | Markdown rendered from `public/about.md` |
+| `/admin` | `AdminView` | Runtime config editor (Admin API) |
+| `/h/:table_names` | `HeatmapView` | Interactive heatmap |
+| `/o/:table_names` | `OraView` | Over-Representation Analysis |
+| `/c/:table_names` | `CompareExpression` | Cross-species box plots |
+| `/p/:table_names` | `PhylogeneticTreeView` | Newick gene-tree viewer |
 
-The `main.css` file must import Tailwind and define the color theme:
+Data-bearing views (`/h`, `/o`, `/c`, `/p`) watch `route.query.id` and re-hydrate persisted filter / visualization state when the assistant or a share link points at a new hash.
 
-```css
-@import "tailwindcss";
-@plugin '@tailwindcss/typography';
-
-@theme {
-  --color-primary-100: #e4f6b2;
-  --color-primary-300: #cfea83;
-  --color-primary-500: #a6c550;
-  --color-primary-700: #85a52e;
-  --color-primary-900: #628010;
-  --color-accent1-100: #f7b3bc;
-  --color-accent1-300: #eb8492;
-  --color-accent1-500: #c65060;
-  --color-accent1-700: #a62e3f;
-  --color-accent1-900: #80101f;
-  --color-accent2-100: #b195c9;
-  --color-accent2-300: #8862a6;
-  --color-accent2-500: #693e8c;
-  --color-accent2-700: #522675;
-  --color-accent2-900: #39115b;
-}
-```
-
-## Project Structure
+## Directory Structure
 
 ```
 frontend/
 ├── src/
-│   ├── App.vue                 # Root layout (sidebar + router-view + footer)
-│   ├── main.ts                 # App entry point
-│   ├── assets/
-│   │   ├── main.css            # Tailwind + custom theme
-│   │   └── phylotree.css       # Phylogenetic tree styles
-│   ├── components/             # Reusable Vue components
-│   │   ├── HeatmapComponent    # Core heatmap (Plotly.js)
-│   │   ├── AssistantPanel      # AI assistant chat (SSE + action chips, optional)
-│   │   ├── CatalogComponent    # Dataset browser with CatalogEntry cards
-│   │   ├── SidebarComponent    # Navigation sidebar
-│   │   ├── OraComponent        # ORA results display
-│   │   ├── PhylogeneticTree    # Newick tree (D3 + phylotree)
-│   │   ├── Compare             # Expression comparison (box plots)
-│   │   ├── VisualizationSettings # Heatmap display settings (layers, scales)
-│   │   ├── SettingsOverlay     # Settings panel overlay
-│   │   ├── *Filter components  # Numeric, Text, Boolean, Search filters
-│   │   ├── ExportModal         # TSV/PNG/PDF export
-│   │   ├── ShareOverlay        # URL-based filter sharing
-│   │   ├── BatchInputModal     # Batch gene ID input/validation
-│   │   ├── DataManagerModal    # Data management dialog
-│   │   ├── BlastWarningModal   # NCBI BLAST redirect warning
-│   │   ├── OverlayTable        # Tabular overlay for gene details
-│   │   ├── AnalysisCard        # Analysis type selection card
-│   │   ├── LoadingOverlay      # Loading animation overlay
-│   │   ├── CheckboxSelector    # Checkbox-based multi-select
-│   │   ├── DropdownMenu        # Reusable dropdown menu
-│   │   ├── CollapseWrapper     # Collapsible section wrapper
-│   │   ├── ToggleSwitch        # Toggle switch component
-│   │   ├── SortToggleButton    # Column sort toggle
-│   │   ├── InfoTooltip         # Info icon with tooltip
-│   │   └── ...                 # Modals, tooltips, empty states
-│   ├── stores/                 # Pinia state management
-│   │   ├── assistant.ts        # AI assistant chat state + action dispatch
-│   │   ├── catalog.ts          # Dataset catalog state
-│   │   ├── columns.ts          # Column definitions
-│   │   ├── filters.ts          # Active filter state
-│   │   └── visualization.ts    # Heatmap/display settings
-│   ├── shared/                 # Utilities and type definitions
-│   │   ├── Config.ts           # Config interface + API_BASE_URL
-│   │   ├── ExpressionDisplay.ts # Expression display mode types
-│   │   ├── MetaFormat.ts       # Metadata formatting utilities
-│   │   ├── RowType.ts          # Row type definitions
-│   │   ├── CatalogMeta.ts      # Catalog metadata types
-│   │   ├── OverlayConfig.ts    # Overlay configuration types
-│   │   ├── Colorscales.ts      # Color scale definitions
-│   │   ├── colorMapping.ts     # Color scale utilities
-│   │   ├── blast.ts            # NCBI BLAST integration
-│   │   ├── clustering.ts       # Clustering logic
-│   │   ├── clustering.worker.ts # Web worker for clustering
-│   │   ├── useClustering.ts    # Clustering composable
-│   │   ├── useFilterSeparation.ts # Filter separation composable
-│   │   ├── utils.ts            # Shared helpers (label formatting)
-│   │   ├── dataTypeLabels.ts   # Gene/Isoform terminology labels
-│   │   ├── metadataDisplayNames.ts # Metadata display name mappings
-│   │   ├── tooltipDirective.ts # Custom Vue tooltip directive
-│   │   └── ccByMappings.ts     # Creative Commons license mappings
-│   ├── types/
-│   │   └── plotly.d.ts         # Plotly type declarations
-│   ├── router/index.ts         # Vue Router configuration
-│   └── views/                  # Page-level view components
+│   ├── App.vue                  # Root layout (sidebar + router-view + footer)
+│   ├── main.ts                  # Bootstraps the app + runtime config fetch
+│   ├── router/index.ts          # Vue Router config (catalog, heatmap, ORA, …)
+│   ├── views/                   # One component per top-level route
+│   ├── components/              # Reusable UI (Heatmap, AssistantPanel, filters, modals…)
+│   ├── stores/                  # Pinia stores
+│   │   ├── assistant.ts         # AI chat state + action dispatch
+│   │   ├── catalog.ts           # Dataset selection
+│   │   ├── columns.ts           # Column definitions from /api/columns
+│   │   ├── filters.ts           # Active filter state (gene + sample)
+│   │   └── visualization.ts     # Heatmap / display settings
+│   ├── shared/                  # Framework-agnostic helpers and types
+│   │   ├── Config.ts            # API_BASE_URL + runtime config interface
+│   │   ├── clustering.ts        # Hierarchical clustering entry point
+│   │   ├── clustering.worker.ts # Web Worker variant
+│   │   ├── Colorscales.ts       # Plotly colour-scale presets
+│   │   ├── blast.ts             # NCBI BLAST link builder
+│   │   ├── metadataDisplayNames.ts
+│   │   ├── tooltipDirective.ts  # Custom v-tooltip
+│   │   └── … (utility modules)
+│   ├── utils/                   # Lower-level helpers
+│   ├── types/plotly.d.ts        # Plotly ambient types
+│   └── assets/
+│       ├── main.css             # Tailwind entry + @theme tokens
+│       └── phylotree.css
 ├── public/
-│   ├── genxbrowser_config.yaml # Frontend configuration (loaded at runtime)
-│   └── about.md                # About page content (Markdown)
-├── vite.config.ts              # Vite configuration
-├── package.json
-└── tsconfig.json
+│   ├── genxbrowser_config.yaml  # Runtime config (fetched on startup)
+│   └── about.md                 # About-page content
+├── e2e/                         # Playwright specs
+├── vite.config.ts               # Dev proxy: /api → http://localhost:5000
+├── vite.config.local.ts         # Local-only overrides
+├── nginx.conf                   # Used by the production image
+├── Dockerfile                   # Node-20 build → nginx:stable-alpine
+└── package.json
 ```
 
-## Key Dependencies
+## AI Assistant Integration
 
-- **Vue 3 + Pinia** — Reactive UI framework + state management
-- **Vue Router** — Client-side routing
-- **Vite 7** — Build tool and dev server
-- **Tailwind CSS 4** — Utility-first CSS
-- **Plotly.js** — Interactive heatmaps and box plots
-- **D3 + phylotree** — Phylogenetic tree visualization
-- **Axios** — HTTP client for API communication
-- **ml-hclust** — Client-side hierarchical clustering
-- **jsPDF + html2canvas-pro + JSZip** — Export (PDF, PNG, ZIP)
-- **marked** — Markdown rendering (About page)
-- **Floating UI** — Tooltip and popover positioning
-- **lodash-es** — Utility functions (debounce, throttle)
-- **yaml** — YAML config file parsing
-
-## IDE Setup
-
-[VSCode](https://code.visualstudio.com/) + [Vue - Official](https://marketplace.visualstudio.com/items?itemName=Vue.volar) extension (replaces Vetur).
-
-`vue-tsc` is used instead of `tsc` for type checking `.vue` files.
+When the backend exposes `/api/assistant/*` (see [backend/README.md](../backend/README.md)), the SPA renders a slide-in chat panel ([`AssistantPanel.vue`](src/components/AssistantPanel.vue), state in [`stores/assistant.ts`](src/stores/assistant.ts)). Every message ships the live UI context (`view`, `selected_table_names`, `filters`, `visualizations`, analysis digests). Streamed responses carry typed action blocks (`add_filter`, `viz_update`, `select_tables`, `set_expression_display`, `deeplink`, …) that the panel turns into one-click chips with Undo; an **Auto-execute** toggle (persisted in `localStorage` under `genx.assistant.autoExecute`) applies them automatically when streaming completes. Empty-state prompts come from `/api/assistant/suggestions` and refresh via the panel's **Shuffle** button. The Heatmap and ORA views also probe `/api/count` per dataset and hide species that fall entirely outside the active filters.
