@@ -117,7 +117,9 @@
       <NoNewickComponent
         :og="og"
         :show-full-tree="fullTreeAvailable"
+        :title="noNewickTitle"
         :message="noNewickMessage"
+        :hint="noNewickHint"
         @show-full-tree="loadFullNewickForOG"
       />
     </div>
@@ -144,6 +146,7 @@ import {
   type PhyloDatum,
 } from "@/utils/phyloLayout";
 import { API_BASE_URL } from "@/shared/Config.ts";
+import { fetchAnalysisLimits } from "@/shared/landingApi";
 import { COLORSCALES } from "@/shared/Colorscales.ts";
 import type { MetaFormat } from "@/shared/MetaFormat.ts";
 import type { RowType } from "@/shared/RowType.ts";
@@ -196,6 +199,7 @@ const initialUrlParsing = ref(true);
 // dropdown.  We guard against accidental rebuilds with a signature.
 const commonOGs_array = ref<string[]>([]);
 let lastOgListFilterSig: string | null = null;
+const ORTHOGROUP_FILTER_KEY = 'ortho_id';
 
 function computeFilterSignature(): string {
   // Sample the catalog filter context: per-dataset merged filters (minus
@@ -217,6 +221,19 @@ function computeFilterSignature(): string {
     datasetIds: filtersStore.datasetIdFilters,
     chain: filtersStore.filterChainVersion,
   });
+}
+
+function firstFilterToken(value: string): string {
+  return value
+    .split('|')
+    .map((token) => token.trim())
+    .find(Boolean) ?? '';
+}
+
+function activeOrthogroupFilterValue(): string {
+  const filter = filtersStore.filters[ORTHOGROUP_FILTER_KEY];
+  if (!filter || filter.has_value) return '';
+  return firstFilterToken(String(filter.value ?? ''));
 }
 
 // Tooltip modal state
@@ -266,7 +283,9 @@ let loadingProgressStart = 0;
 let loadingProgressEnd = 100;
 const fullTreeAvailable = ref(false);
 const noNewickResolved = ref(false);
+const noNewickTitle = ref("");
 const noNewickMessage = ref("");
+const noNewickHint = ref("Please select a different orthogroup for the Phylo Tree.");
 // Holds the full (unfiltered) Newick loaded via the "Show full tree" button.
 // Acts as fallback in renderTreeForSelectedOG so watchers don't wipe it out.
 const fullNewick = ref<string | null>(null);
@@ -282,6 +301,8 @@ let activeOgListAbortController: AbortController | null = null;
 let suppressSelectedOrthogroupWatcher = false;
 let activeRenderSignature: string | null = null;
 let lastCompletedRenderSignature: string | null = null;
+let lastObservedOrthogroupFilterValue = '';
+let activeLimitController: AbortController | null = null;
 
 type PhyloLoadTraceWindow = Window & {
   __phyloLoadTrace?: Array<Record<string, unknown>>;
@@ -307,6 +328,10 @@ function tracePhyloLoad(event: string, details: Record<string, unknown> = {}) {
 function currentRenderSignature(): string {
   return JSON.stringify({
     og: selectedOrthogroupKey(),
+    filters: filters.value,
+    datasetIds: filtersStore.datasetIdFilters,
+    filterChainVersion: filtersStore.filterChainVersion,
+    sampleFilters: sampleFilters.value,
     expression: visualizationStore.expressionDisplay,
     colorScale: visualizationStore.colorScale,
     legend: visualizationStore.legend,
@@ -344,6 +369,8 @@ function cancelActiveLoad(emitCancel = true) {
   loadRequestSeq += 1;
   activeAbortController?.abort();
   activeAbortController = null;
+  activeLimitController?.abort();
+  activeLimitController = null;
   ogListRequestSeq += 1;
   activeOgListAbortController?.abort();
   activeOgListAbortController = null;
@@ -537,7 +564,9 @@ async function showLoadingFrame(options: { preserveProgress?: boolean } = {}) {
   loading.value = true;
   if (!options.preserveProgress) loadingProgress.value = null;
   noNewickResolved.value = false;
+  noNewickTitle.value = "";
   noNewickMessage.value = "";
+  noNewickHint.value = "Please select a different orthogroup for the Phylo Tree.";
   await nextTick();
   await waitForPaint();
 }
@@ -777,9 +806,11 @@ async function fetchAllSelected(options: { keepLoading?: boolean } = {}): Promis
     // else: keep existing commonOGs_array as-is
 
     // Handle OG selection with persistence and fallback
-    // Priority: 1) initialOrthogroup from hash, 2) current store value, 3) first available
+    // Priority: 1) initialOrthogroup from hash, 2) direct ortho_id filter,
+    // 3) current store value, 4) first available
     const hashOG = props.initialOrthogroup;
-    const currentSelection = hashOG || selectedOrthogroup.value;
+    const filterOG = activeOrthogroupFilterValue();
+    const currentSelection = hashOG || filterOG || selectedOrthogroup.value;
     
     suppressSelectedOrthogroupWatcher = true;
     try {
@@ -789,6 +820,8 @@ async function fetchAllSelected(options: { keepLoading?: boolean } = {}): Promis
         if (matchingOG) {
           // Use the exact case from commonOGs_array for consistency
           selectedOrthogroup.value = matchingOG;
+        } else if (filterOG) {
+          selectedOrthogroup.value = filterOG;
         } else {
           selectedOrthogroup.value = commonOGs_array.value[0];
         }
@@ -1018,6 +1051,168 @@ function median(values: number[]): number {
 function resetContainer() {
   if (!phylotreeContainer.value) return;
   d3.select(phylotreeContainer.value).selectAll("*").remove();
+}
+
+function selectedDatasetNames(): string[] {
+  return props.existingTables && props.existingTables.length > 0
+    ? [...props.existingTables]
+    : [props.tableName].filter(Boolean);
+}
+
+async function resolvePhyloLimitMessage(signal?: AbortSignal): Promise<{ title: string; message: string; hint: string }> {
+  try {
+    const limits = await fetchAnalysisLimits();
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    const limit = limits?.phylo?.max_rows ?? null;
+    const datasets = selectedDatasetNames();
+
+    if (limit === null) {
+      return {
+        title: "Select an orthogroup to render a phylogenetic tree",
+        message: "The current filter set is too broad for an unscoped PhyloTree request.",
+        hint: "Apply an orthogroup or another sidebar filter before opening the PhyloTree.",
+      };
+    }
+
+    const counts = await Promise.all(
+      datasets.map(async (tableName) => {
+        const requestFilters = filtersStore.getMergedFilters(tableName);
+        const { data } = await axios.post(
+          `${API_BASE_URL}/api/count`,
+          {
+            table_name: tableName,
+            filters: requestFilters,
+            filter_chain: filtersStore.buildFilterChainPayload(requestFilters),
+            sample_filters: sampleFilters.value,
+          },
+          { signal },
+        );
+        return { tableName, count: Number(data.count ?? 0) };
+      }),
+    );
+
+    const overLimit = counts.filter(({ count }) => count > limit);
+    if (overLimit.length === 0) {
+      return {
+        title: "Select an orthogroup to render a phylogenetic tree",
+        message: "No orthogroup is currently selected for the PhyloTree.",
+        hint: "Choose an orthogroup from the sidebar filter or the transcript dropdown.",
+      };
+    }
+
+    const datasetList = overLimit
+      .map(({ tableName, count }) => `${beautifyLabel(tableName)} (${count.toLocaleString()} transcripts)`)
+      .join(", ");
+    const verb = overLimit.length === 1 ? "exceeds" : "exceed";
+
+    return {
+      title: "PhyloTree transcript limit exceeded",
+      message: `${datasetList} ${verb} the ${limit.toLocaleString()} transcript limit for PhyloTree.`,
+      hint: "Apply an orthogroup or another sidebar filter to reduce the result size.",
+    };
+  } catch (error) {
+    if (isCanceledRequest(error) || (error instanceof DOMException && error.name === "AbortError")) {
+      throw error;
+    }
+    console.error("Failed to resolve PhyloTree limit state:", error);
+    return {
+      title: "Select an orthogroup to render a phylogenetic tree",
+      message: "The current filter set is too broad for an unscoped PhyloTree request.",
+      hint: "Apply an orthogroup or another sidebar filter before opening the PhyloTree.",
+    };
+  }
+}
+
+async function currentPhyloContextExceedsLimit(signal?: AbortSignal): Promise<boolean> {
+  const limits = await fetchAnalysisLimits();
+  if (signal?.aborted) return false;
+  const limit = limits?.phylo?.max_rows ?? null;
+  if (limit === null) return false;
+
+  const datasets = selectedDatasetNames();
+  if (datasets.length === 0) return false;
+
+  const counts = await Promise.all(
+    datasets.map(async (tableName) => {
+      const requestFilters = filtersStore.getMergedFilters(tableName);
+      const { data } = await axios.post(
+        `${API_BASE_URL}/api/count`,
+        {
+          table_name: tableName,
+          filters: requestFilters,
+          filter_chain: filtersStore.buildFilterChainPayload(requestFilters),
+          sample_filters: sampleFilters.value,
+        },
+        { signal },
+      );
+      return Number(data.count ?? 0);
+    }),
+  );
+
+  return counts.some((count) => count > limit);
+}
+
+async function clearForExceededPhyloContext(reason: string) {
+  commonOGs_array.value = [];
+  newicks.value = {};
+  orthogroupCaseMap.value = {};
+  lastOgListFilterSig = computeFilterSignature();
+
+  suppressSelectedOrthogroupWatcher = true;
+  try {
+    selectedOrthogroup.value = '';
+    await nextTick();
+  } finally {
+    suppressSelectedOrthogroupWatcher = false;
+  }
+
+  updateUrlFromState();
+  await clearRenderedTree(reason, { showLimitState: true });
+}
+
+async function clearRenderedTree(reason = "clear", options: { showLimitState?: boolean } = {}) {
+  loadRequestSeq += 1;
+  activeAbortController?.abort();
+  activeAbortController = null;
+  activeLimitController?.abort();
+  const limitController = new AbortController();
+  if (options.showLimitState) activeLimitController = limitController;
+  activeRenderSignature = null;
+  lastCompletedRenderSignature = null;
+  resetContainer();
+  rows.value = [];
+  tableData.value = {};
+  highlightedGeneIds.value = {};
+  lastMetrics.value = null;
+  fullHierarchy.value = null;
+  fullNewick.value = null;
+  newickstr.value = null;
+  fullTreeAvailable.value = false;
+  noNewickResolved.value = false;
+  noNewickTitle.value = "";
+  noNewickMessage.value = "";
+  noNewickHint.value = "Please select a different orthogroup for the Phylo Tree.";
+  loading.value = false;
+  loadingProgress.value = null;
+  setLoadingPhaseHint("No orthogroup selected");
+  tracePhyloLoad("render-clear", { reason });
+
+  if (!options.showLimitState) return;
+
+  try {
+    const state = await resolvePhyloLimitMessage(limitController.signal);
+    if (limitController.signal.aborted || activeLimitController !== limitController) return;
+    noNewickTitle.value = state.title;
+    noNewickMessage.value = state.message;
+    noNewickHint.value = state.hint;
+    noNewickResolved.value = true;
+  } catch (error) {
+    if (!isCanceledRequest(error) && !(error instanceof DOMException && error.name === "AbortError")) {
+      console.error("Failed to show PhyloTree limit state:", error);
+    }
+  } finally {
+    if (activeLimitController === limitController) activeLimitController = null;
+  }
 }
 
 function getPrefix(name: string): string {
@@ -1841,13 +2036,18 @@ async function rerenderCurrentTree(metrics: any = lastMetrics.value): Promise<bo
 
 
 // Helper function to render tree for currently selected orthogroup
-async function renderTreeForSelectedOG(origin = "unknown") {
+async function renderTreeForSelectedOG(origin = "unknown", options: { force?: boolean } = {}) {
+  if (!selectedOrthogroup.value.trim()) {
+    await clearRenderedTree(`${origin}:empty-selection`, { showLimitState: true });
+    return;
+  }
+
   const renderSignature = currentRenderSignature();
-  if (activeRenderSignature === renderSignature) {
+  if (!options.force && activeRenderSignature === renderSignature) {
     tracePhyloLoad("render-skip-active-duplicate", { origin });
     return;
   }
-  if (!loading.value && lastCompletedRenderSignature === renderSignature) {
+  if (!options.force && !loading.value && lastCompletedRenderSignature === renderSignature) {
     tracePhyloLoad("render-skip-completed-duplicate", { origin });
     return;
   }
@@ -2070,15 +2270,64 @@ watch(
   async () => {
     // Don't fetch while hash is still loading
     if (props.hashLoading) return;
+    const filterOrthogroup = activeOrthogroupFilterValue();
+    const orthogroupFilterWasRemoved = lastObservedOrthogroupFilterValue !== '' && filterOrthogroup === '';
+    const forceRender = Boolean(filterOrthogroup);
+
+    if (filterOrthogroup) {
+      lastObservedOrthogroupFilterValue = filterOrthogroup;
+      fullNewick.value = null;
+      if (selectedOrthogroupKey() !== filterOrthogroup.toLowerCase()) {
+        suppressSelectedOrthogroupWatcher = true;
+        try {
+          selectedOrthogroup.value = filterOrthogroup;
+          await nextTick();
+        } finally {
+          suppressSelectedOrthogroupWatcher = false;
+        }
+      }
+    } else if (orthogroupFilterWasRemoved) {
+      lastObservedOrthogroupFilterValue = '';
+      suppressSelectedOrthogroupWatcher = true;
+      try {
+        selectedOrthogroup.value = '';
+        await nextTick();
+      } finally {
+        suppressSelectedOrthogroupWatcher = false;
+      }
+      updateUrlFromState();
+      await clearRenderedTree("orthogroup-filter-cleared", { showLimitState: true });
+      return;
+    }
+
+    if (!filterOrthogroup) {
+      const limitController = new AbortController();
+      activeLimitController?.abort();
+      activeLimitController = limitController;
+      try {
+        const exceedsLimit = await currentPhyloContextExceedsLimit(limitController.signal);
+        if (limitController.signal.aborted || activeLimitController !== limitController) return;
+        if (exceedsLimit) {
+          activeLimitController = null;
+          await clearForExceededPhyloContext("catalog-filters-limit-exceeded");
+          return;
+        }
+      } catch (error) {
+        if (!isCanceledRequest(error)) console.error("Failed to check PhyloTree filter limit:", error);
+      } finally {
+        if (activeLimitController === limitController) activeLimitController = null;
+      }
+    }
+
     const currentSig = computeFilterSignature();
     if (lastOgListFilterSig === currentSig) {
       tracePhyloLoad("catalog-filters-skip-current");
-      await renderTreeForSelectedOG("catalog-filters-current");
+      await renderTreeForSelectedOG("catalog-filters-current", { force: forceRender });
       return;
     }
     const ok = await fetchAllSelected({ keepLoading: true });
     if (!ok) return; // superseded by a concurrent watcher trigger
-    await renderTreeForSelectedOG("catalog-filters");
+    await renderTreeForSelectedOG("catalog-filters", { force: forceRender });
   },
   {deep: true}
 )
@@ -2212,6 +2461,7 @@ watch(
 
 onUnmounted(() => {
   activeAbortController?.abort();
+  activeLimitController?.abort();
 });
 
 

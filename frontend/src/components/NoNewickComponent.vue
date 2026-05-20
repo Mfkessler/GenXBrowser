@@ -1,8 +1,8 @@
 <template>
   <div
-    class="h-[90vh] flex flex-grow items-center justify-center bg-white border-1 border-gray-300 rounded-md"
+    class="min-h-[28rem] h-full flex flex-grow items-center justify-center bg-white px-4 py-12"
   >
-    <div class="text-center">
+    <div class="text-center max-w-3xl">
       <svg
         xmlns="http://www.w3.org/2000/svg"
         class="h-12 w-12 mx-auto mb-4 text-gray-700"
@@ -18,10 +18,10 @@
         />
       </svg>
       <p class="text-lg font-semibold text-gray-700">
-        No Newick string provided within the data base for the selected orthogroup {{og}}
+        {{ title || `No Newick string provided within the data base for the selected orthogroup ${og}` }}
       </p>
       <p class="text-gray-500">{{ message || "The selected species has no entry in this orthogroup." }}</p>
-      <p v-if="!showFullTree" class="mt-1 text-sm text-gray-400">Please select a different orthogroup for the Phylo Tree.</p>
+      <p v-if="!showFullTree && hint" class="mt-1 text-sm text-gray-400">{{ hint }}</p>
       <button
         v-if="showFullTree"
         class="mt-4 px-4 py-2 rounded-md text-sm font-medium text-white bg-[#8fbc45] hover:bg-[#7aaa30] transition-colors"
@@ -36,7 +36,9 @@
 defineProps<{
   og: string;
   showFullTree?: boolean;
+  title?: string;
   message?: string;
+  hint?: string;
 }>();
 
 const emit = defineEmits<{
