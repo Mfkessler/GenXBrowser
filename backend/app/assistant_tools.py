@@ -188,10 +188,19 @@ def get_analysis_limits(config_manager=None) -> Dict[str, Dict[str, Optional[int
 
 
 def _deeplink_flat_filters(filters: Dict[str, Any]) -> Dict[str, Any]:
-    nested = filters.get("filters") if isinstance(filters, dict) else None
-    if not isinstance(nested, dict):
+    if not isinstance(filters, dict):
         return {}
-    return {str(col): spec for col, spec in nested.items() if isinstance(spec, dict)}
+    nested = filters.get("filters") if isinstance(filters.get("filters"), dict) else None
+    source = nested if isinstance(nested, dict) else filters
+    reserved = {
+        "tags", "table_names", "filters", "datasetIdFilters", "idColumnName",
+        "filterChainColumns", "filterChainGroups", "filterChainVersion",
+    }
+    return {
+        str(col): spec
+        for col, spec in source.items()
+        if str(col) not in reserved and isinstance(spec, dict)
+    }
 
 
 def validate_analysis_request_limits(
@@ -626,6 +635,16 @@ _VIEW_CONTROLS: Dict[str, List[Dict[str, Any]]] = {
         {"key": "colOrder.name",   "type": "select_obs_column", "store_action": "setColOrderName"},
         {"key": "colOrder.order",  "type": "enum", "options": ["asc", "desc"],
          "store_action": "toggleColOrder"},
+        {"key": "customColOrder.enabled", "type": "boolean",
+         "store_action": "setCustomColOrderState"},
+        {"key": "customColOrder.mode", "type": "enum", "options": ["metadata", "samples"],
+         "store_action": "setCustomColOrderState"},
+        {"key": "customColOrder.metadataColumn", "type": "select_obs_column",
+         "store_action": "setCustomColOrderState"},
+        {"key": "customColOrder.metadataValues", "type": "string_array",
+         "store_action": "setCustomColOrderState"},
+        {"key": "customColOrder.sampleNames", "type": "string_array",
+         "store_action": "setCustomColOrderState"},
         {"key": "clustering.clusterRows", "type": "boolean", "store_action": "setClusterRows"},
         {"key": "clustering.clusterCols", "type": "boolean", "store_action": "setClusterCols"},
         {"key": "clustering.method", "type": "enum",
@@ -649,6 +668,21 @@ _VIEW_CONTROLS: Dict[str, List[Dict[str, Any]]] = {
          "store_action": "setCompareState"},
         {"key": "compare.showAllTranscripts", "type": "boolean",
          "store_action": "setCompareState"},
+        {"key": "compare.groupingColumn", "type": "select_obs_column",
+         "store_action": "setCompareState"},
+        {"key": "colOrder.name", "type": "select_obs_column", "store_action": "setColOrderName",
+         "note": "Compare uses the selected sample grouping column as its x-axis column order."},
+        {"key": "colOrder.order", "type": "enum", "options": ["asc", "desc"],
+         "store_action": "toggleColOrder"},
+        {"key": "customColOrder.enabled", "type": "boolean",
+         "store_action": "setCustomColOrderState"},
+        {"key": "customColOrder.mode", "type": "enum", "options": ["metadata"],
+         "store_action": "setCustomColOrderState",
+         "note": "Compare x-axis custom order is metadata-only, based on compare.groupingColumn."},
+        {"key": "customColOrder.metadataColumn", "type": "select_obs_column",
+         "store_action": "setCustomColOrderState"},
+        {"key": "customColOrder.metadataValues", "type": "string_array",
+         "store_action": "setCustomColOrderState"},
     ],
     "phylo": [
         {"key": "phyloTree.selectedOrthogroup", "type": "select_orthogroup",
@@ -657,6 +691,21 @@ _VIEW_CONTROLS: Dict[str, List[Dict[str, Any]]] = {
          "store_action": "setPhyloCollapsedNodes"},
         {"key": "phyloTree.branchLengthMode", "type": "enum",
          "options": ["cladogram", "phylogram"], "store_action": "setBranchLengthMode"},
+        {"key": "phyloTree.groupingColumn", "type": "select_obs_column",
+         "store_action": "setPhyloTreeState"},
+        {"key": "colOrder.name", "type": "select_obs_column", "store_action": "setColOrderName",
+         "note": "Phylo uses the selected sample grouping column as its x-axis column order."},
+        {"key": "colOrder.order", "type": "enum", "options": ["asc", "desc"],
+         "store_action": "toggleColOrder"},
+        {"key": "customColOrder.enabled", "type": "boolean",
+         "store_action": "setCustomColOrderState"},
+        {"key": "customColOrder.mode", "type": "enum", "options": ["metadata"],
+         "store_action": "setCustomColOrderState",
+         "note": "Phylo x-axis custom order is metadata-only, based on phyloTree.groupingColumn."},
+        {"key": "customColOrder.metadataColumn", "type": "select_obs_column",
+         "store_action": "setCustomColOrderState"},
+        {"key": "customColOrder.metadataValues", "type": "string_array",
+         "store_action": "setCustomColOrderState"},
         {"key": "clustering.clusterCols", "type": "boolean", "store_action": "setClusterCols"},
         {"key": "clustering.method", "type": "enum",
          "options": ["average", "complete", "ward"], "store_action": "setClusterMethod"},
@@ -666,9 +715,10 @@ _VIEW_CONTROLS: Dict[str, List[Dict[str, Any]]] = {
          "store_action": "setExpressionDisplay"},
     ],
     "ora": [
+        {"key": "oraRowSideColor", "type": "boolean", "store_action": "toggleOraRowSideColor"},
         {"key": "oraColumnName",  "type": "select_var_column", "store_action": "setOraColumnName"},
         {"key": "significance",   "type": "enum",
-         "options": ["0.001", "0.01", "0.05", "0.1"], "store_action": "setSignificance"},
+         "options": ["0.001", "0.01", "0.05"], "store_action": "setSignificance"},
         {"key": "oraTopN",        "type": "integer", "min": 1, "max": 500, "default": 10,
          "store_action": "setOraTopN"},
         {"key": "oraMinCount",    "type": "integer", "min": 1, "max": 50,
@@ -678,7 +728,7 @@ _VIEW_CONTROLS: Dict[str, List[Dict[str, Any]]] = {
         {"key": "oraTooltipFields", "type": "multi_select_var_column",
          "store_action": "setOraTooltipFields"},
         {"key": "oraOrder.name",  "type": "enum",
-         "options": ["p_value", "q_value", "fold_enrichment", "subset_count", "combined_score"],
+         "options": ["attr", "subset_count", "background_count", "gene_ratio", "fold_enrichment", "p_value"],
          "store_action": "setOraOrderName"},
         {"key": "oraOrder.order", "type": "enum",
          "options": ["asc", "desc"], "store_action": "toggleOraOrder"},
@@ -692,6 +742,12 @@ _COLOR_SCALES: List[str] = [
     "TURBO", "INFERNO", "MAGMA", "PLASMA", "CIVIDIS", "WARM", "COOL",
     "CUBEHELIXDEFAULT", "BUGN", "BUPU", "GNBU", "ORRD", "PUBUGN", "PUBU",
     "PURD", "RDPU", "YLGNBU", "YLGN", "YLORBR", "YLORRD",
+]
+
+_ORA_TOOLTIP_FIELDS: List[str] = [
+    "attribute_name", "go_name", "go_namespace", "go_depth", "subset_count",
+    "expected_count", "background_count", "fold_enrichment", "gene_ratio",
+    "p_value", "q_value", "combined_score",
 ]
 
 
@@ -813,6 +869,8 @@ def tool_list_view_settings(
             c["options"] = sorted(common_obs)
         elif ctype == "multi_select_table":
             c["options"] = codes
+        if c.get("key") == "oraTooltipFields":
+            c["options"] = _ORA_TOOLTIP_FIELDS
         controls_out.append(c)
 
     return {
@@ -1462,6 +1520,16 @@ def tool_build_deeplink(
     # what the frontend filter store expects (pipe-separated chips).
     try:
         filters = normalize_filter_payload(filters)
+        flat_from_payload = _deeplink_flat_filters(filters)
+        if flat_from_payload and not isinstance(filters.get("filters"), dict):
+            reserved = {
+                key: value for key, value in filters.items()
+                if key in {
+                    "tags", "table_names", "datasetIdFilters", "idColumnName",
+                    "filterChainColumns", "filterChainGroups", "filterChainVersion",
+                }
+            }
+            filters = {**reserved, "filters": flat_from_payload}
     except Exception as e:
         logger.warning("filter normalization failed: %s", e)
 
@@ -1510,7 +1578,7 @@ def tool_build_deeplink(
                     )
 
     if v in {"heatmap", "compare", "phylo", "ora"} and codes:
-        nested = (filters.get("filters") or {}) if isinstance(filters, dict) else {}
+        nested = _deeplink_flat_filters(filters)
         # Normalize {col: {value: "v1|v2", ...}} → {col: [v1, v2]}.
         flat_filters: Dict[str, List[str]] = {}
         for col, spec in nested.items():
@@ -1681,15 +1749,127 @@ _FILTER_MAP_SCHEMA: Dict[str, Any] = {
     },
 }
 
+_STRING_ARRAY_SCHEMA: Dict[str, Any] = {"type": "array", "items": {"type": "string"}}
+_NULLABLE_STRING_ARRAY_SCHEMA: Dict[str, Any] = {
+    "oneOf": [_STRING_ARRAY_SCHEMA, {"type": "null"}],
+}
+_ORDER_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string"},
+        "order": {"type": "string", "enum": ["asc", "desc"]},
+    },
+    "additionalProperties": False,
+}
+_CLUSTERING_PATCH_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "clusterRows": {"type": "boolean"},
+        "clusterCols": {"type": "boolean"},
+        "method": {"type": "string", "enum": ["average", "complete", "ward"]},
+        "distance": {"type": "string", "enum": ["correlation", "euclidean"]},
+    },
+    "additionalProperties": False,
+}
+_CUSTOM_COL_ORDER_PATCH_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "enabled": {"type": "boolean"},
+        "mode": {"type": "string", "enum": ["metadata", "samples"]},
+        "metadataColumn": {"type": "string"},
+        "metadataValues": _STRING_ARRAY_SCHEMA,
+        "sampleNames": _STRING_ARRAY_SCHEMA,
+    },
+    "additionalProperties": False,
+}
+_COMPARE_PATCH_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "plotType": {"type": "string", "enum": ["line", "box", "violin"]},
+        "plotHeight": {"type": "integer", "minimum": 200, "maximum": 1200},
+        "selectedOrthogroup": {"type": "string"},
+        "selectedSpecies": _STRING_ARRAY_SCHEMA,
+        "showAllTranscripts": {"type": "boolean"},
+        "groupingColumn": {"type": "string"},
+    },
+    "additionalProperties": False,
+}
+_PHYLO_PATCH_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "selectedOrthogroup": {"type": "string"},
+        "collapsedNodes": _STRING_ARRAY_SCHEMA,
+        "branchLengthMode": {"type": "string", "enum": ["cladogram", "phylogram"]},
+        "groupingColumn": {"type": "string"},
+    },
+    "additionalProperties": False,
+}
+
+_VISUALIZATION_PATCH_PROPERTIES: Dict[str, Any] = {
+    "rowLabel": {"type": "boolean"},
+    "colLabel": {"type": "boolean"},
+    "legend": {"type": "boolean"},
+    "colorScale": {"type": "string", "enum": _COLOR_SCALES},
+    "rowSideColors": _STRING_ARRAY_SCHEMA,
+    "colSideColors": _STRING_ARRAY_SCHEMA,
+    "tooltipFields": _NULLABLE_STRING_ARRAY_SCHEMA,
+    "showSequencesInTooltip": {"type": "boolean"},
+    "sequencePreviewLength": {"type": "integer", "minimum": 20, "maximum": 1000},
+    "rowOrder": _ORDER_SCHEMA,
+    "rowOrder.name": {"type": "string"},
+    "rowOrder.order": {"type": "string", "enum": ["asc", "desc"]},
+    "colOrder": _ORDER_SCHEMA,
+    "colOrder.name": {"type": "string"},
+    "colOrder.order": {"type": "string", "enum": ["asc", "desc"]},
+    "customColOrder": _CUSTOM_COL_ORDER_PATCH_SCHEMA,
+    "customColOrder.enabled": {"type": "boolean"},
+    "customColOrder.mode": {"type": "string", "enum": ["metadata", "samples"]},
+    "customColOrder.metadataColumn": {"type": "string"},
+    "customColOrder.metadataValues": _STRING_ARRAY_SCHEMA,
+    "customColOrder.sampleNames": _STRING_ARRAY_SCHEMA,
+    "clustering": _CLUSTERING_PATCH_SCHEMA,
+    "clustering.clusterRows": {"type": "boolean"},
+    "clustering.clusterCols": {"type": "boolean"},
+    "clustering.method": {"type": "string", "enum": ["average", "complete", "ward"]},
+    "clustering.distance": {"type": "string", "enum": ["correlation", "euclidean"]},
+    "compare": _COMPARE_PATCH_SCHEMA,
+    "compare.plotType": {"type": "string", "enum": ["line", "box", "violin"]},
+    "compare.plotHeight": {"type": "integer", "minimum": 200, "maximum": 1200},
+    "compare.selectedOrthogroup": {"type": "string"},
+    "compare.selectedSpecies": _STRING_ARRAY_SCHEMA,
+    "compare.showAllTranscripts": {"type": "boolean"},
+    "compare.groupingColumn": {"type": "string"},
+    "phyloTree": _PHYLO_PATCH_SCHEMA,
+    "phyloTree.selectedOrthogroup": {"type": "string"},
+    "phyloTree.collapsedNodes": _STRING_ARRAY_SCHEMA,
+    "phyloTree.branchLengthMode": {"type": "string", "enum": ["cladogram", "phylogram"]},
+    "phyloTree.groupingColumn": {"type": "string"},
+    "oraRowSideColor": {"type": "boolean"},
+    "oraColumnName": {"type": "string"},
+    "significance": {"type": "string", "enum": ["0.001", "0.01", "0.05"]},
+    "oraTopN": {"type": "integer", "minimum": 1, "maximum": 500},
+    "oraMinCount": {"type": "integer", "minimum": 1, "maximum": 50},
+    "oraGoDepthFilter": {"oneOf": [{"type": "integer", "minimum": 0}, {"type": "string"}]},
+    "oraTooltipFields": {"type": "array", "items": {"type": "string", "enum": _ORA_TOOLTIP_FIELDS}},
+    "oraOrder": _ORDER_SCHEMA,
+    "oraOrder.name": {"type": "string", "enum": ["attr", "subset_count", "background_count", "gene_ratio", "fold_enrichment", "p_value"]},
+    "oraOrder.order": {"type": "string", "enum": ["asc", "desc"]},
+}
+
 _VISUALIZATION_PATCH_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "description": (
-        "Whitelisted visualization patch. Prefer dotted keys such as "
-        "'clustering.clusterRows' or nested objects like {'clustering': "
-        "{'clusterRows': true}}. Values are validated client-side against "
-        "the same ranges and enums as the manual UI."
+        "Tool Specification: shallow visualization-store patch for controls "
+        "that already exist in the manual UI. Strict Property Schemas: each "
+        "property below declares its exact JSON type, enum, and numeric bounds. "
+        "Validation Rules: row/.var metadata is accepted only by row settings "
+        "(rowSideColors, rowOrder, tooltip/ORA columns), while sample/.obs "
+        "metadata is accepted only by column/sample settings (colSideColors, "
+        "colOrder, groupingColumn, customColOrder.metadataColumn). Call "
+        "list_view_settings first for the instance-specific column options."
     ),
-    "additionalProperties": True,
+    "properties": _VISUALIZATION_PATCH_PROPERTIES,
+    "additionalProperties": False,
 }
 
 _VIEW_STATE_SCHEMA: Dict[str, Any] = {

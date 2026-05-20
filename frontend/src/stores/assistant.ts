@@ -278,30 +278,34 @@ export const useAssistantStore = defineStore("assistant", () => {
 
   async function extractAndDispatchActions(msg: ChatMessage, clientContext?: ClientContext) {
     const re = /```(action|deeplink|viz_update|add_filter|remove_filter|clear_filters|select_tables|set_expression_display|compute)\s*\n([\s\S]*?)\n```/gi;
-    const blocks: RegExpExecArray[] = [];
+    const blocks: Array<{ tag: string; spec: Record<string, unknown>; kind: AssistantAction["kind"] }> = [];
     let m: RegExpExecArray | null;
-    while ((m = re.exec(msg.content)) !== null) blocks.push(m);
-
-    msg.actions = msg.actions || [];
-    for (const match of blocks) {
-      const tag = match[1].toLowerCase();
+    while ((m = re.exec(msg.content)) !== null) {
+      const tag = m[1].toLowerCase();
       let spec: Record<string, unknown>;
       try {
-        spec = JSON.parse(match[2]);
+        spec = JSON.parse(m[2]);
       } catch {
         continue;
       }
       const kind = (tag === "action" ? String(spec.kind || "").toLowerCase() : tag) as AssistantAction["kind"];
       if (!kind) continue;
+      blocks.push({ tag, spec, kind });
+    }
+    const actionAwareFilters = deriveFiltersForAssistantActions(clientContext?.filters, blocks);
+
+    msg.actions = msg.actions || [];
+    for (const { spec, kind } of blocks) {
       const action: AssistantAction = { kind, spec, status: "pending" };
       msg.actions.push(action);
 
       if (kind === "deeplink") {
         try {
+          const deeplinkFilters = mergeDeeplinkFilters(actionAwareFilters, spec.filters);
           const { data } = await axios.post(`${API_BASE_URL}/api/assistant/deeplink`, {
             view: spec.view,
             tables: spec.tables || [],
-            filters: spec.filters || {},
+            filters: deeplinkFilters,
             visualizations: spec.visualizations || {},
           });
           action.url_path = data.url_path;
@@ -334,6 +338,107 @@ export const useAssistantStore = defineStore("assistant", () => {
       }
       // viz_update / add_filter stay "pending" and are applied from the UI via applyAction().
     }
+  }
+
+  function deriveFiltersForAssistantActions(
+    contextFilters: Record<string, unknown> | undefined,
+    blocks: Array<{ kind: AssistantAction["kind"]; spec: Record<string, unknown> }>,
+  ): Record<string, unknown> {
+    const state = cloneFilterState(contextFilters);
+    for (const block of blocks) {
+      if (block.kind === "clear_filters") {
+        state.filters = {};
+      } else if (block.kind === "remove_filter") {
+        const column = String(block.spec.column || block.spec.key || "").trim();
+        if (column) delete state.filters[column];
+      } else if (block.kind === "add_filter") {
+        const column = String(block.spec.column || block.spec.key || "").trim();
+        if (!column) continue;
+        const rawSpec = block.spec as { value?: unknown; values?: unknown; match_mode?: unknown; exact?: unknown };
+        state.filters[column] = {
+          value: rawSpec.values !== undefined ? rawSpec.values : rawSpec.value,
+          match_mode: rawSpec.match_mode === "and" ? "and" : "or",
+          exact: rawSpec.exact === undefined ? true : rawSpec.exact === true,
+        };
+      }
+    }
+    return state;
+  }
+
+  function cloneFilterState(contextFilters: Record<string, unknown> | undefined): Record<string, unknown> & {
+    filters: Record<string, unknown>;
+    datasetIdFilters: Record<string, unknown>;
+  } {
+    const source = contextFilters && typeof contextFilters === "object" ? contextFilters : {};
+    const nestedFilters = source.filters && typeof source.filters === "object" && !Array.isArray(source.filters)
+      ? source.filters as Record<string, unknown>
+      : {};
+    const datasetIdFilters = source.datasetIdFilters && typeof source.datasetIdFilters === "object" && !Array.isArray(source.datasetIdFilters)
+      ? source.datasetIdFilters as Record<string, unknown>
+      : {};
+    return {
+      ...source,
+      tags: Array.isArray(source.tags) ? [...source.tags] : [],
+      table_names: Array.isArray(source.table_names) ? [...source.table_names] : [],
+      filters: { ...nestedFilters },
+      datasetIdFilters: { ...datasetIdFilters },
+    };
+  }
+
+  function mergeDeeplinkFilters(
+    derivedFilters: Record<string, unknown>,
+    explicitFilters: unknown,
+  ): Record<string, unknown> {
+    const explicit = explicitFilters && typeof explicitFilters === "object" && !Array.isArray(explicitFilters)
+      ? explicitFilters as Record<string, unknown>
+      : {};
+    const derivedNested = derivedFilters.filters && typeof derivedFilters.filters === "object" && !Array.isArray(derivedFilters.filters)
+      ? derivedFilters.filters as Record<string, unknown>
+      : {};
+    const explicitNested = extractFilterMap(explicit);
+    const derivedDataset = derivedFilters.datasetIdFilters && typeof derivedFilters.datasetIdFilters === "object" && !Array.isArray(derivedFilters.datasetIdFilters)
+      ? derivedFilters.datasetIdFilters as Record<string, unknown>
+      : {};
+    const explicitDataset = explicit.datasetIdFilters && typeof explicit.datasetIdFilters === "object" && !Array.isArray(explicit.datasetIdFilters)
+      ? explicit.datasetIdFilters as Record<string, unknown>
+      : {};
+
+    return {
+      ...derivedFilters,
+      ...copyFilterStateMetadata(explicit),
+      tags: Array.isArray(explicit.tags) ? explicit.tags : (Array.isArray(derivedFilters.tags) ? derivedFilters.tags : []),
+      table_names: Array.isArray(explicit.table_names) ? explicit.table_names : (Array.isArray(derivedFilters.table_names) ? derivedFilters.table_names : []),
+      filters: { ...derivedNested, ...explicitNested },
+      datasetIdFilters: { ...derivedDataset, ...explicitDataset },
+    };
+  }
+
+  function extractFilterMap(rawFilters: Record<string, unknown>): Record<string, unknown> {
+    if (rawFilters.filters && typeof rawFilters.filters === "object" && !Array.isArray(rawFilters.filters)) {
+      return rawFilters.filters as Record<string, unknown>;
+    }
+    const reserved = new Set([
+      "tags", "table_names", "filters", "datasetIdFilters", "idColumnName",
+      "filterChainColumns", "filterChainGroups", "filterChainVersion",
+    ]);
+    return Object.fromEntries(
+      Object.entries(rawFilters).filter(([key, value]) => {
+        if (reserved.has(key)) return false;
+        if (value === null || value === undefined) return false;
+        if (Array.isArray(value)) return true;
+        if (typeof value !== "object") return true;
+        const spec = value as Record<string, unknown>;
+        return "value" in spec || "values" in spec || "match_mode" in spec || "exact" in spec;
+      }),
+    );
+  }
+
+  function copyFilterStateMetadata(rawFilters: Record<string, unknown>): Record<string, unknown> {
+    const allowed = new Set([
+      "tags", "table_names", "datasetIdFilters", "idColumnName",
+      "filterChainColumns", "filterChainGroups", "filterChainVersion",
+    ]);
+    return Object.fromEntries(Object.entries(rawFilters).filter(([key]) => allowed.has(key)));
   }
 
   function formatDeeplinkGuardError(error: unknown): string | null {

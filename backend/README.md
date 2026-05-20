@@ -170,6 +170,20 @@ The assistant is **opt-in** and only activates when `LLM_API_BASE`, `LLM_API_KEY
 
 `list_view_settings(view, tables?)` is **instance-aware**: it returns only the expression-display options whose backing layer (`tpm`, `tmm`, `getmm`, …) is actually present in every selected H5AD file, plus the per-view controls (color scales, ORA grouping columns, plot type, …) with their valid value spaces. The system prompt requires the LLM to call this tool before emitting any `set_expression_display` or `viz_update` action so it never picks a value that the user cannot select in the UI.
 
+Example tool execution path with full arguments:
+
+```json
+{"name":"list_view_settings","arguments":{"view":"heatmap","tables":["CS"]}}
+```
+
+Valid response-driven action block for adding a row annotation:
+
+```viz_update
+{"patch":{"rowSideColors":["ortho_id","tf_family"]}}
+```
+
+The visualization patch schema is strict: row/.var metadata such as `ortho_id` belongs only in row annotation, row ordering, tooltip, or ORA-column settings, while sample/.obs metadata belongs only in column annotation, sample grouping, column ordering, and custom x-axis settings. Unsupported paths or axis-mismatched values are rejected before the frontend mutates the visualization store.
+
 Responses are markdown plus typed action blocks (`add_filter`, `viz_update`, `select_tables`, `set_expression_display`, `deeplink`, …) that the frontend either turns into one-click chips or applies directly when the user enables Auto-execute. Per-tool rate limits and a hard prompt-size cap (32 000 chars) are enforced by `routes.py`.
 
 The panel's example prompts come from `/api/assistant/suggestions`, which samples real values (species, tissues, TF families, orthogroup IDs) from the loaded H5AD files and renders them into a small set of templates. Each click on the **Shuffle** button issues a fresh request, so the suggestions stay grounded in the actual data and never produce "no results" queries.

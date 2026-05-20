@@ -42,9 +42,9 @@ _TEMPLATES: List[Dict[str, Any]] = [
         "text": "Show expression of {tf_family} in {tissue} samples as a heatmap.",
     },
     {
-        "id": "tissue_filter",
+        "id": "tissue_heatmap",
         "slots": ["tissue", "species"],
-        "text": "Filter {species} to {tissue} samples and show the top expressed genes.",
+        "text": "Filter {species} to {tissue} samples and open a heatmap.",
     },
     {
         "id": "ortho_compare",

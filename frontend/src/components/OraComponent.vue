@@ -233,6 +233,7 @@
       v-if="showExportModal"
       :data="oraExportPayload.data"
       :columns="oraExportPayload.columns"
+      :columnDisplayNames="oraExportColumnDisplayNames"
       :metaColumns="oraExportPayload.metaColumns"
       :sampleColumns="oraExportPayload.sampleColumns"
       :filename="oraExportPayload.filename"
@@ -279,6 +280,7 @@ import ShareOverlay from "./ShareOverlay.vue";
 import ExportModal from "./ExportModal.vue";
 import OraTooltipModal from "./OraTooltipModal.vue";
 import { beautifyLabel, compareValues } from "@/shared/utils";
+import { getDisplayName } from "@/shared/metadataDisplayNames";
 import { useVisualizationStore } from "@/stores/visualization";
 import { useColumnsStore } from "@/stores/columns";
 import { useAssistantStore } from "@/stores/assistant";
@@ -554,6 +556,24 @@ const oraExportMetricColumns = [
   'combined_score',
   'odds_ratio',
 ];
+
+const oraExportColumnDisplayNames = computed(() => {
+  const selectedColumnDisplayName = getDisplayName(visualizationStore.oraColumnName);
+  const mapping: Record<string, string> = {
+    attribute: selectedColumnDisplayName,
+  };
+
+  for (const column of oraExportMetaColumns.value) {
+    if (column === 'attribute') continue;
+    mapping[column] = getDisplayName(column, beautifyLabel(column));
+  }
+
+  for (const column of oraExportMetricColumns) {
+    mapping[column] = beautifyLabel(column);
+  }
+
+  return mapping;
+});
 
 const oraExportPayload = computed(() => {
   const metaColumns = oraExportMetaColumns.value;

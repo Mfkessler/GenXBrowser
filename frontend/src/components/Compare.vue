@@ -113,6 +113,7 @@
       v-if="showExportModal"
       :data="exportData"
       :columns="exportColumns"
+      :columnDisplayNames="exportColumnDisplayNames"
       :metaColumns="exportMetaColumns"
       :sampleColumns="exportSampleColumns"
       :filename="exportFilename"
@@ -166,6 +167,7 @@ import ShareOverlay from "@/components/ShareOverlay.vue";
 import ExportModal from "@/components/ExportModal.vue";
 import VisualizationSettings from "@/components/VisualizationSettings.vue";
 import DropdownMenu from "@/components/DropdownMenu.vue";
+import { getDisplayName } from "@/shared/metadataDisplayNames";
 
 import { useRoute, useRouter } from "vue-router";
 
@@ -375,6 +377,19 @@ const exportSampleColumns = computed(() => {
 
 const exportColumns = computed(() => {
   return [...exportMetaColumns.value, ...exportSampleColumns.value];
+});
+
+const exportColumnDisplayNames = computed(() => {
+  const mapping: Record<string, string> = {
+    species: beautifyLabel('dataset'),
+    [filtersStore.idColumnName]: getDisplayName(filtersStore.idColumnName),
+  };
+
+  for (const column of exportSampleColumns.value) {
+    mapping[column] = column;
+  }
+
+  return mapping;
 });
 
 const exportData = computed<RowType[]>(() => {

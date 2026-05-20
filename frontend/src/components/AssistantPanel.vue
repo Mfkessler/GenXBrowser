@@ -358,6 +358,7 @@ import {
 import { useFiltersStore } from "@/stores/filters";
 import { useVisualizationStore } from "@/stores/visualization";
 import { useCatalogStore } from "@/stores/catalog";
+import { useColumnsStore } from "@/stores/columns";
 import {
   createAssistantActionDispatcher,
   restoreSnapshot,
@@ -369,6 +370,7 @@ const store = useAssistantStore();
 const filtersStore = useFiltersStore();
 const visualizationStore = useVisualizationStore();
 const catalogStore = useCatalogStore();
+const columnsStore = useColumnsStore();
 const router = useRouter();
 const route = useRoute();
 const draft = ref("");
@@ -604,6 +606,7 @@ function dispatcherDeps() {
   return {
     filtersStore,
     visualizationStore: visualizationStore as unknown as Parameters<typeof createAssistantActionDispatcher>[0]["visualizationStore"],
+    columnsStore,
     catalogStore,
     router,
     route,

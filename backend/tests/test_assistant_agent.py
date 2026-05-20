@@ -233,6 +233,21 @@ def test_build_deeplink_all_sentinel_with_filter_drops_empty_tables():
     assert res["tables"] == ["CS"]
 
 
+def test_build_deeplink_accepts_legacy_flat_filter_shape():
+    """Older prompt examples used {column: spec} directly for deeplink
+    filters. The assistant guard must still count those filters instead of
+    treating the request as unfiltered.
+    """
+    svc = _make_fake_service()
+    res = tools.tool_build_deeplink(
+        svc, view="heatmap", tables=["all"],
+        filters={"tf_family": {"value": "GATA", "match_mode": "or", "exact": True}},
+    )
+    assert res["tables"] == ["CS"]
+    stored = svc._store[res["id"]]
+    assert stored["filters"]["filters"]["tf_family"]["value"] == "GATA"
+
+
 def test_build_deeplink_obs_filter_drops_species_without_matching_samples():
     """Sample-metadata filters (e.g. tissue=flower) must drop species
     whose .obs has zero matching samples — not fail the whole deeplink.
@@ -287,6 +302,27 @@ def test_list_view_settings_marks_unavailable_layers():
     assert "VIRIDIS" in color_ctrl["options"]
 
 
+def test_list_view_settings_exposes_new_visualization_controls():
+    svc = _make_fake_service()
+    heatmap = tools.tool_list_view_settings(svc, view="heatmap", tables=["CS"])
+    heatmap_keys = {c["key"] for c in heatmap["controls"]}
+    assert {"customColOrder.enabled", "customColOrder.metadataColumn"} <= heatmap_keys
+
+    compare = tools.tool_list_view_settings(svc, view="compare", tables=["CS"])
+    compare_keys = {c["key"] for c in compare["controls"]}
+    assert {"compare.groupingColumn", "customColOrder.metadataValues"} <= compare_keys
+
+    phylo = tools.tool_list_view_settings(svc, view="phylo", tables=["CS"])
+    phylo_keys = {c["key"] for c in phylo["controls"]}
+    assert {"phyloTree.groupingColumn", "phyloTree.branchLengthMode"} <= phylo_keys
+
+    ora = tools.tool_list_view_settings(svc, view="ora", tables=["CS"])
+    ora_by_key = {c["key"]: c for c in ora["controls"]}
+    assert "oraRowSideColor" in ora_by_key
+    assert ora_by_key["significance"]["options"] == ["0.001", "0.01", "0.05"]
+    assert "0.1" not in ora_by_key["significance"]["options"]
+
+
 def test_list_view_settings_rejects_unknown_view():
     svc = _make_fake_service()
     res = tools.tool_list_view_settings(svc, view="rainbow")
@@ -315,6 +351,20 @@ def test_openai_schema_has_expected_tools():
     names = {t["function"]["name"] for t in tools.openai_schema()}
     assert {"list_schema", "list_view_settings", "resolve_value",
             "count_rows", "top_groups", "build_deeplink"} <= names
+
+
+def test_visualization_patch_schema_is_strict_and_axis_documented():
+    schema = next(
+        t["function"]["parameters"]["properties"]["visualizations"]
+        for t in tools.openai_schema()
+        if t["function"]["name"] == "build_deeplink"
+    )
+    assert schema["additionalProperties"] is False
+    assert "rowSideColors" in schema["properties"]
+    assert "customColOrder.metadataColumn" in schema["properties"]
+    assert "compare.groupingColumn" in schema["properties"]
+    assert "phyloTree.groupingColumn" in schema["properties"]
+    assert "row/.var metadata" in schema["description"]
 
 
 # ---------------------------------------------------------------------------

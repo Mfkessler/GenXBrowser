@@ -221,6 +221,7 @@
       v-if="showExportModal"
       :data="heatmapExportPayload.data"
       :columns="heatmapExportPayload.columns"
+      :columnDisplayNames="heatmapExportColumnDisplayNames"
       :metaColumns="heatmapExportPayload.metaColumns"
       :sampleColumns="heatmapExportPayload.sampleColumns"
       :filename="heatmapExportPayload.filename"
@@ -403,6 +404,17 @@ const isHeatmapZoomed = computed(() => zoomWindow.value !== null);
 const heatmapExportMetaColumns = computed(() =>
   columnNames.value.includes(idColumn.value) ? [idColumn.value] : [],
 );
+
+const heatmapExportColumnDisplayNames = computed(() => {
+  const mapping: Record<string, string> = {};
+  for (const column of heatmapExportMetaColumns.value) {
+    mapping[column] = getDisplayName(column);
+  }
+  for (const column of visibleColumns.value) {
+    mapping[column] = column;
+  }
+  return mapping;
+});
 
 const heatmapExportPayload = computed(() => {
   const metaColumns = heatmapExportMetaColumns.value;

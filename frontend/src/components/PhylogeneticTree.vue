@@ -91,6 +91,7 @@
       v-if="showExportModal"
       :data="phyloExportPayload.data"
       :columns="phyloExportPayload.columns"
+      :columnDisplayNames="phyloExportColumnDisplayNames"
       :metaColumns="phyloExportPayload.metaColumns"
       :sampleColumns="phyloExportPayload.sampleColumns"
       :filename="phyloExportPayload.filename"
@@ -452,6 +453,20 @@ const phyloExportPayload = computed(() => {
     filename: `phylotree_${selectedOrthogroup.value || props.tableName}_${visualizationStore.expressionDisplay.optionId}`,
     hasFilters: Object.keys(filters.value).length > 0,
   };
+});
+
+const phyloExportColumnDisplayNames = computed(() => {
+  const identifierColumn = config.visualization.id_column;
+  const mapping: Record<string, string> = {
+    dataset: beautifyLabel('dataset'),
+    [identifierColumn]: getDisplayName(identifierColumn),
+  };
+
+  for (const column of phyloExportPayload.value.sampleColumns) {
+    mapping[column] = column;
+  }
+
+  return mapping;
 });
 
 // URL state management

@@ -32,7 +32,23 @@ export interface VisualizationApi {
   toObject?: () => Record<string, unknown>;
   replaceState?: (state: Record<string, unknown>) => void;
   setExpressionDisplay?: (id: string, layer: string | null, transform: "raw" | "log2" | "zscore") => void;
-  setCompareState?: (state: { expression?: string; selectedSpecies?: string[] }) => void;
+  setCompareState?: (state: {
+    expression?: string;
+    selectedSpecies?: string[];
+    plotType?: "line" | "box" | "violin";
+    plotHeight?: number;
+    selectedOrthogroup?: string;
+    showAllTranscripts?: boolean;
+    groupingColumn?: string;
+  }) => void;
+}
+
+export interface ColumnsApi {
+  rowColumns?: Array<{ column_name: string }>;
+  colColumns?: Array<{ column_name: string }>;
+  filterableColColumns?: Array<{ column_name: string }>;
+  orderableColColumns?: Array<{ column_name: string }>;
+  sampleMetadata?: Array<Record<string, unknown>>;
 }
 
 export interface CatalogApi {
@@ -43,6 +59,7 @@ export interface CatalogApi {
 export interface DispatcherDeps {
   filtersStore: FiltersApi;
   visualizationStore: VisualizationApi;
+  columnsStore?: ColumnsApi;
   catalogStore: CatalogApi;
   router: Router;
   route: RouteLocationNormalizedLoaded;
@@ -75,24 +92,38 @@ const EXPRESSION_OPTIONS: Record<string, { layer: string | null; transform: "raw
   raw: { layer: "X", transform: "raw" },
 };
 
-const SIGNIFICANCE_THRESHOLDS = new Set(["0.001", "0.01", "0.05", "0.1"]);
+const SIGNIFICANCE_THRESHOLDS = new Set(["0.001", "0.01", "0.05"]);
 const CLUSTER_METHODS = new Set(["average", "complete", "ward"]);
 const CLUSTER_DISTANCES = new Set(["correlation", "euclidean"]);
+const CUSTOM_ORDER_MODES = new Set(["metadata", "samples"]);
+const ORA_ORDER_FIELDS = new Set(["attr", "subset_count", "background_count", "gene_ratio", "fold_enrichment", "p_value"]);
+const ORA_TOOLTIP_FIELDS = new Set([
+  "attribute_name", "go_name", "go_namespace", "go_depth", "subset_count",
+  "expected_count", "background_count", "fold_enrichment", "gene_ratio",
+  "p_value", "q_value", "combined_score",
+]);
 
-const ALLOWED_PATCH_PATHS: Record<string, (value: unknown) => unknown> = {
+type PatchValidator = (value: unknown, deps: DispatcherDeps) => unknown;
+
+const ALLOWED_PATCH_PATHS: Record<string, PatchValidator> = {
   rowLabel: booleanValue,
   colLabel: booleanValue,
   legend: booleanValue,
   colorScale: enumValue(COLOR_SCALES, "colorScale"),
-  rowSideColors: stringArrayValue("rowSideColors"),
-  colSideColors: stringArrayValue("colSideColors"),
-  tooltipFields: nullableStringArrayValue("tooltipFields"),
+  rowSideColors: rowColumnArrayValue("rowSideColors"),
+  colSideColors: colColumnArrayValue("colSideColors"),
+  tooltipFields: nullableRowColumnArrayValue("tooltipFields"),
   showSequencesInTooltip: booleanValue,
   sequencePreviewLength: integerRangeValue("sequencePreviewLength", 20, 1000),
-  "rowOrder.name": stringValue("rowOrder.name"),
+  "rowOrder.name": rowColumnValue("rowOrder.name", true),
   "rowOrder.order": enumValue(new Set(["asc", "desc"]), "rowOrder.order"),
-  "colOrder.name": stringValue("colOrder.name"),
+  "colOrder.name": obsColumnValue("colOrder.name", true),
   "colOrder.order": enumValue(new Set(["asc", "desc"]), "colOrder.order"),
+  "customColOrder.enabled": booleanValue,
+  "customColOrder.mode": enumValue(CUSTOM_ORDER_MODES, "customColOrder.mode"),
+  "customColOrder.metadataColumn": obsColumnValue("customColOrder.metadataColumn"),
+  "customColOrder.metadataValues": stringArrayValue("customColOrder.metadataValues"),
+  "customColOrder.sampleNames": sampleNameArrayValue("customColOrder.sampleNames"),
   "clustering.clusterRows": booleanValue,
   "clustering.clusterCols": booleanValue,
   "clustering.method": enumValue(CLUSTER_METHODS, "clustering.method"),
@@ -102,16 +133,19 @@ const ALLOWED_PATCH_PATHS: Record<string, (value: unknown) => unknown> = {
   "compare.selectedOrthogroup": stringValue("compare.selectedOrthogroup"),
   "compare.selectedSpecies": stringArrayValue("compare.selectedSpecies"),
   "compare.showAllTranscripts": booleanValue,
+  "compare.groupingColumn": obsColumnValue("compare.groupingColumn"),
   "phyloTree.selectedOrthogroup": stringValue("phyloTree.selectedOrthogroup"),
   "phyloTree.collapsedNodes": stringArrayValue("phyloTree.collapsedNodes"),
   "phyloTree.branchLengthMode": enumValue(new Set(["cladogram", "phylogram"]), "phyloTree.branchLengthMode"),
-  oraColumnName: stringValue("oraColumnName"),
+  "phyloTree.groupingColumn": obsColumnValue("phyloTree.groupingColumn"),
+  oraRowSideColor: booleanValue,
+  oraColumnName: rowColumnValue("oraColumnName"),
   significance: enumValue(SIGNIFICANCE_THRESHOLDS, "significance"),
   oraTopN: integerRangeValue("oraTopN", 1, 500),
   oraMinCount: integerRangeValue("oraMinCount", 1, 50),
-  oraGoDepthFilter: stringValue("oraGoDepthFilter"),
-  oraTooltipFields: stringArrayValue("oraTooltipFields"),
-  "oraOrder.name": enumValue(new Set(["p_value", "q_value", "fold_enrichment", "subset_count", "combined_score"]), "oraOrder.name"),
+  oraGoDepthFilter: integerAsStringRangeValue("oraGoDepthFilter", 0, 100),
+  oraTooltipFields: enumArrayValue(ORA_TOOLTIP_FIELDS, "oraTooltipFields"),
+  "oraOrder.name": enumValue(ORA_ORDER_FIELDS, "oraOrder.name"),
   "oraOrder.order": enumValue(new Set(["asc", "desc"]), "oraOrder.order"),
 };
 
@@ -241,7 +275,7 @@ function applyVizUpdate(action: AssistantAction, deps: DispatcherDeps): Dispatch
   const entries = normalizePatchEntries(patch);
   const validated = entries.map(({ path, value }) => ({
     path,
-    value: validatePatchValue(path.join("."), value),
+    value: validatePatchValue(path.join("."), value, deps),
   }));
   if (validated.length === 0) throw new Error("no valid visualization patch keys");
 
@@ -371,10 +405,10 @@ function normalizePatchEntries(patch: Record<string, unknown>) {
   return entries;
 }
 
-function validatePatchValue(path: string, value: unknown): unknown {
+function validatePatchValue(path: string, value: unknown, deps: DispatcherDeps): unknown {
   const validator = ALLOWED_PATCH_PATHS[path];
   if (!validator) throw new Error(`unsupported visualization setting: ${path}`);
-  return validator(value);
+  return validator(value, deps);
 }
 
 function normalizeFilterValue(raw: unknown): string {
@@ -407,6 +441,11 @@ function stringValue(field: string) {
   return (value: unknown) => nonEmptyString(value, field);
 }
 
+function optionalStringValue(value: unknown, field: string): string {
+  if (value === "") return "";
+  return nonEmptyString(value, field);
+}
+
 function nullableStringValue(value: unknown, field: string): string | null {
   if (value === null) return null;
   return nonEmptyString(value, field);
@@ -419,10 +458,11 @@ function stringArrayValue(field: string) {
   };
 }
 
-function nullableStringArrayValue(field: string) {
-  return (value: unknown): string[] | null => {
-    if (value === null) return null;
-    return stringArrayValue(field)(value);
+function enumArrayValue(options: Set<string>, field: string) {
+  const validate = enumValue(options, field);
+  return (value: unknown): string[] => {
+    if (!Array.isArray(value)) throw new Error(`${field} must be an array`);
+    return value.map((item) => validate(item));
   };
 }
 
@@ -440,10 +480,95 @@ function integerRangeValue(field: string, min: number, max: number) {
   };
 }
 
+function integerAsStringRangeValue(field: string, min: number, max: number) {
+  return (value: unknown): string => {
+    const numberValue = typeof value === "number" ? value : Number(String(value ?? "").trim());
+    if (!Number.isInteger(numberValue)) throw new Error(`${field} must be an integer`);
+    if (numberValue < min || numberValue > max) throw new Error(`${field} must be between ${min} and ${max}`);
+    return String(numberValue);
+  };
+}
+
 function enumValue(options: Set<string>, field: string) {
   return (value: unknown): string => {
     const text = nonEmptyString(value, field);
     if (!options.has(text)) throw new Error(`${field} must be one of: ${Array.from(options).join(", ")}`);
     return text;
+  };
+}
+
+function columnNames(columns: Array<{ column_name: string }> | undefined): Set<string> {
+  return new Set((columns || []).map((column) => String(column.column_name || "")).filter(Boolean));
+}
+
+function rowColumnNames(deps: DispatcherDeps): Set<string> {
+  return columnNames(deps.columnsStore?.rowColumns);
+}
+
+function obsColumnNames(deps: DispatcherDeps): Set<string> {
+  const names = new Set<string>();
+  for (const source of [deps.columnsStore?.colColumns, deps.columnsStore?.filterableColColumns, deps.columnsStore?.orderableColColumns]) {
+    for (const name of columnNames(source)) names.add(name);
+  }
+  return names;
+}
+
+function ensureKnownColumn(value: string, options: Set<string>, field: string, axisLabel: string, allowEmpty = false): string {
+  if (allowEmpty && value === "") return value;
+  if (options.size === 0) return value;
+  if (!options.has(value)) {
+    throw new Error(`${field} must be a ${axisLabel} column. '${value}' is not available for that axis.`);
+  }
+  return value;
+}
+
+function rowColumnValue(field: string, allowEmpty = false) {
+  return (value: unknown, deps: DispatcherDeps): string => {
+    const text = allowEmpty ? optionalStringValue(value, field) : nonEmptyString(value, field);
+    return ensureKnownColumn(text, rowColumnNames(deps), field, "row/.var", allowEmpty);
+  };
+}
+
+function obsColumnValue(field: string, allowEmpty = false) {
+  return (value: unknown, deps: DispatcherDeps): string => {
+    const text = allowEmpty ? optionalStringValue(value, field) : nonEmptyString(value, field);
+    return ensureKnownColumn(text, obsColumnNames(deps), field, "sample/.obs", allowEmpty);
+  };
+}
+
+function rowColumnArrayValue(field: string) {
+  return (value: unknown, deps: DispatcherDeps): string[] => {
+    const values = stringArrayValue(field)(value);
+    const options = rowColumnNames(deps);
+    return values.map((item) => ensureKnownColumn(item, options, field, "row/.var"));
+  };
+}
+
+function nullableRowColumnArrayValue(field: string) {
+  return (value: unknown, deps: DispatcherDeps): string[] | null => {
+    if (value === null) return null;
+    return rowColumnArrayValue(field)(value, deps);
+  };
+}
+
+function colColumnArrayValue(field: string) {
+  return (value: unknown, deps: DispatcherDeps): string[] => {
+    const values = stringArrayValue(field)(value);
+    const options = obsColumnNames(deps);
+    return values.map((item) => ensureKnownColumn(item, options, field, "sample/.obs"));
+  };
+}
+
+function sampleNameArrayValue(field: string) {
+  return (value: unknown, deps: DispatcherDeps): string[] => {
+    const values = stringArrayValue(field)(value);
+    const samples = new Set((deps.columnsStore?.sampleMetadata || [])
+      .map((record) => String(record.column_name ?? ""))
+      .filter(Boolean));
+    if (samples.size === 0) return values;
+    return values.map((item) => {
+      if (!samples.has(item)) throw new Error(`${field} contains unknown sample '${item}'`);
+      return item;
+    });
   };
 }

@@ -1725,6 +1725,16 @@ def assistant_deeplink():
     try:
         from . import assistant_tools as _at
         filters = _at.normalize_filter_payload(filters)
+        flat_filters = _at._deeplink_flat_filters(filters)
+        if flat_filters and not isinstance(filters.get("filters"), dict):
+            reserved = {
+                key: value for key, value in filters.items()
+                if key in {
+                    "tags", "table_names", "datasetIdFilters", "idColumnName",
+                    "filterChainColumns", "filterChainGroups", "filterChainVersion",
+                }
+            }
+            filters = {**reserved, "filters": flat_filters}
     except Exception as e:
         logger.warning(f"filter normalization failed: {e}")
 
