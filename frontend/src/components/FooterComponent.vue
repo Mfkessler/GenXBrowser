@@ -10,14 +10,14 @@
       <!-- Center: Compliance Link -->
       <div>
           <a
-            :aria-label="`Open link to ${ccByText}`"
-            :href="ccByLink"
+            :aria-label="`Open link to ${licenseText}`"
+            :href="licenseLink"
             target="_blank"
             rel="noopener"
             class="hover:text-gray-600 underline transition"
-            v-tooltip="`Open link to ${ccByText}`"
+            v-tooltip="`Open link to ${licenseText}`"
           >
-            {{ ccByText }} ({{ ccByShortform }})
+            {{ licenseText }}
           </a>
       </div>
 
@@ -44,7 +44,6 @@
 import { inject } from "vue";
 
 import { type Config } from "@/shared/Config";
-import { getCcByMappings } from "@/shared/ccByMappings";
 
 const config = inject("config") as Config;
 
@@ -63,11 +62,9 @@ function resolveLogoUrl(logo: string): string {
 
 const logoUrl = resolveLogoUrl(config.corporate_identity.logo);
 const companyName = config.corporate_identity.company_name;
-
-// Dynamically resolve the CC-BY
-const [ccByShortform, ccByText, ccByLink] = getCcByMappings(
-  String(config.corporate_identity.cc_by),
-);
+const baseUrl = import.meta.env.BASE_URL || "/";
+const licenseText = "MIT License";
+const licenseLink = `${baseUrl}LICENSE.txt`;
 
 const startedAt = new Date();
 const pad = (n: number) => n.toString().padStart(2, "0");
