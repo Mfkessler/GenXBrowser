@@ -1,7 +1,7 @@
 <template>
-  <div class="w-full min-h-full bg-white border-r-1 border-gray-300">
+  <div class="w-full min-h-full bg-gray-50">
     <!-- Action Buttons Row -->
-    <div class="relative flex items-center justify-center px-4 py-3 border-b-1 border-gray-300">
+    <div class="relative flex items-center justify-center px-4 py-3 border-b-1 border-white bg-gray-50">
       <!-- Close Sidebar Button (Left side, absolute positioned).
            Classic "X" close icon. -->
       <button
@@ -76,10 +76,10 @@
     />
 
     <!-- Tabs -->
-    <div class="flex whitespace-nowrap">
+    <div class="flex whitespace-nowrap bg-gray-50">
       <button
         :class="[
-          'flex-1 px-4 py-2 bg-white cursor-pointer',
+          'flex-1 px-4 py-2 bg-gray-50 cursor-pointer',
           selectedTab === 'meta'
             ? 'text-gray-700 font-bold'
             : 'border-b-1 border-r-1 border-gray-300 text-gray-400 shadow-inner',
@@ -95,7 +95,7 @@
       </button>
       <button
         :class="[
-          'flex-1 px-4 py-2 bg-white cursor-pointer',
+          'flex-1 px-4 py-2 bg-gray-50 cursor-pointer',
           selectedTab === 'columnMeta'
             ? 'text-gray-700 font-bold'
             : 'border-b-1 border-l-1 border-gray-300 text-gray-400 shadow-inner',
@@ -110,7 +110,7 @@
         Samples
       </button>
     </div>
-    <div class="p-4 overflow-x-hidden">
+    <div class="p-4 overflow-x-hidden bg-gray-50 pb-6">
       <div v-if="loading" class="text-gray-500">Loading filters...</div>
       <div v-else>
         <SearchFilter

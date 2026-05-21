@@ -122,11 +122,17 @@ onMounted(() => {
     position: fixed;
     inset: 0 auto 0 0;
     z-index: 45;
+    height: 100dvh;
+    max-height: 100dvh;
     max-width: min(320px, 88vw);
     box-shadow: 8px 0 24px rgba(15, 23, 42, 0.18);
   }
 
   .app-sidebar-inner {
+    height: 100dvh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
     width: min(320px, 88vw);
   }
 }

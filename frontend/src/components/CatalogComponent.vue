@@ -8,7 +8,7 @@
     <!-- Catalog Label -->
     <div class="mt-6 mb-4 max-w-5xl mx-auto" v-if="catalog.length > 0">
       <h2 class="text-gray-600 font-semibold text-base mb-3">
-        Catalog
+        Datasets
       </h2>
     </div>
 

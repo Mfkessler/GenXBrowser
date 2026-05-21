@@ -1,5 +1,5 @@
 <template>
-  <div class="relative py-1 border-b border-gray-300">
+  <div class="relative py-1 border-b border-white bg-gray-50">
     <CollapseWrapper
       v-if="label !== 'tissue_types'"
       ref="collapseWrapperRef"
