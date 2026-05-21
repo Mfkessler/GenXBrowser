@@ -1009,10 +1009,19 @@ function getSideColorAttributeValues(dataSource: Record<string, unknown>[], colN
 
 function getSideColorDisplayValue(value: SideColorValue, colType: string): string {
   if (colType === "array") {
-    const terms = normalizeMetadataList(value);
+    const terms = normalizeMetadataList(value)
+      .map((term) => term.trimEnd())
+      .filter((term) => term.trim().length > 0);
     return terms.length > 0 ? terms.join("<br>") : "None";
   }
-  return String(value ?? "");
+
+  const normalizedValue = String(value ?? "").trimEnd();
+  return normalizedValue.trim().length > 0 ? normalizedValue : "";
+}
+
+function getSideColorTooltipValue(value: SideColorValue, colType: string): string | null {
+  const tooltipValue = getSideColorDisplayValue(value, colType);
+  return tooltipValue.trim().length > 0 ? tooltipValue : null;
 }
 
 function getSideColorDataValue(value: SideColorValue, colType: string): string {
@@ -1191,7 +1200,9 @@ async function renderSideColors({
         .style("font-size", "0.75rem")
         .style("border-radius", "0.375rem")
         .style("padding", "0.25rem 0.5rem")
-        .style("min-width", "6rem")
+        .style("display", "inline-block")
+        .style("width", "max-content")
+        .style("min-width", "0")
         .style("max-width", "20rem")
         .style("border", "1px solid #d1d5db")
         .style("box-shadow", "0 1px 2px rgba(0,0,0,0.05)")
@@ -1202,7 +1213,7 @@ async function renderSideColors({
       .on("mouseover", function (this: SVGRectElement, event, d) {
         d3.select(this).attr("stroke", "white").style("stroke-width", 2);
 
-        let tooltipValue = "";
+        let tooltipValue: string | null = null;
 
         if (
           (colType === "double precision" || colType === "bigint") &&
@@ -1212,9 +1223,15 @@ async function renderSideColors({
         ) {
           // For numeric columns with buckets, show the actual value (not the bucket range)
           const formattedValue = Number.isInteger(d) ? d.toLocaleString() : d.toFixed(2);
-          tooltipValue = String(formattedValue);
+          const normalizedValue = String(formattedValue).trimEnd();
+          tooltipValue = normalizedValue.trim().length > 0 ? normalizedValue : null;
         } else {
-          tooltipValue = getSideColorDisplayValue(d, colType);
+          tooltipValue = getSideColorTooltipValue(d, colType);
+        }
+
+        if (!tooltipValue) {
+          tooltip.style("visibility", "hidden");
+          return;
         }
 
         tooltip.html(tooltipValue);
