@@ -113,31 +113,15 @@
       </div>
     </div>
 
-    <!-- Main dot plot container -->
-    <div
-      v-if="loading || !renderReady || (rowCount <= 5000 && rowCount > 0)"
-      ref="plotShell"
-      data-testid="ora-plot-shell"
-      class="relative flex flex-col overflow-hidden border border-gray-300 rounded-md bg-white"
-      :style="plotShellStyle"
-    >
-      <LoadingOverlay
-        v-if="(loading || !renderReady) && !props.deferLoadingOverlay"
-        primaryStatus="Analyzing transcriptomic data..."
-        :currentPhaseHint="loadingPhaseHint"
-        cancellable
-        @cancel="cancelActiveLoad"
-      />
-
+    <template v-if="loading || !renderReady || (rowCount <= 5000 && rowCount > 0)">
+      <!-- ORA Info Banner (collapsible, default collapsed) -->
       <div
-        class="h-full flex flex-col"
-        :class="{ 'invisible pointer-events-none': loading || !renderReady || rowCount <= 0 || rowCount > 5000 }"
+        v-if="oraMetadata && renderReady && rowCount > 0 && rowCount <= 5000"
+        class="mb-2 p-3 bg-blue-50 border border-blue-200 rounded-md text-sm"
       >
-        <!-- ORA Info Banner (collapsible, default collapsed) -->
-        <div v-if="oraMetadata" class="mb-3 p-3 bg-blue-50 border border-blue-200 rounded-md text-sm flex-shrink-0">
         <div
           class="flex items-center justify-between cursor-pointer select-none"
-          @click="oraInfoOpen = !oraInfoOpen"
+          @click="toggleOraInfo"
         >
           <div class="font-semibold text-blue-900">
             Over-Representation Analysis (ORA)
@@ -170,7 +154,7 @@
               </span>
             </div>
             <div v-if="oraMetadata.unannotated_subset_count > 0 || oraMetadata.unannotated_background_count > 0" class="text-xs text-blue-700">
-              Unannotated genes are excluded from the ORA universe for the selected metadata column.
+              Unannotated transcripts are excluded from the ORA universe for the selected metadata column.
             </div>
             <div>
               <strong>Enrichment Tests:</strong> {{ oraMetadata.total_tests }} total,
@@ -188,24 +172,49 @@
               Displaying only terms with GO depth at least {{ goDepthFilterStatus.depth }}.
               {{ goDepthFilterStatus.hiddenCount }} terms at shallower depths were filtered before Top N was selected.
             </div>
+            <div v-if="minCountFilterStatus" class="text-blue-700 bg-blue-100 rounded px-2 py-1 mt-1">
+              <strong>Minimum {{ getEntityCountLabel() }}:</strong>
+              Displaying only terms with at least {{ minCountFilterStatus.threshold }} {{ getEntityLabelPluralLower() }}.
+              {{ minCountFilterStatus.hiddenCount }} significant terms below this threshold were filtered before GO depth filtering and Top N was selected.
+            </div>
             <div class="text-xs text-blue-600 mt-2">
               <strong>Combined Score</strong> = -log10(q-value) x gene_ratio
               | Accounts for both statistical significance and effect size
             </div>
           </div>
         </transition>
-        </div>
+      </div>
+
+      <!-- Main dot plot container -->
+      <div
+        ref="plotShell"
+        data-testid="ora-plot-shell"
+        class="relative flex flex-col overflow-hidden border border-gray-300 rounded-md bg-white"
+        :style="plotShellStyle"
+      >
+        <LoadingOverlay
+          v-if="(loading || !renderReady) && !props.deferLoadingOverlay"
+          primaryStatus="Analyzing transcriptomic data..."
+          :currentPhaseHint="loadingPhaseHint"
+          cancellable
+          @cancel="cancelActiveLoad"
+        />
 
         <div
-          ref="visualizationRoot"
-          class="flex-1 min-h-0 bg-white flex flex-row overflow-hidden"
+          class="h-full flex flex-col"
+          :class="{ 'invisible pointer-events-none': loading || !renderReady || rowCount <= 0 || rowCount > 5000 }"
         >
-          <div class="flex-grow relative w-full overflow-hidden">
-            <div ref="dotplotContainer" class="w-full h-full"></div>
+          <div
+            ref="visualizationRoot"
+            class="flex-1 min-h-0 bg-white flex flex-row overflow-hidden"
+          >
+            <div class="flex-grow relative w-full overflow-hidden">
+              <div ref="dotplotContainer" class="w-full h-full"></div>
+            </div>
           </div>
         </div>
       </div>
-    </div>
+    </template>
 
     <div v-else-if="rowCount > 5000">
       <div class="p-6 text-center text-gray-600 border border-gray-300 rounded-md">
@@ -354,7 +363,6 @@ const availablePlotHeight = ref(600);
 const maxBubbleRadius = 15;
 const minimumBubbleGap = 4;
 const plotVerticalChrome = 126;
-const collapsedOraInfoHeight = 58;
 
 function getLargestBubbleDiameter(entries: PValueEntry[]): number {
   if (!entries.length) return maxBubbleRadius * 2;
@@ -463,9 +471,10 @@ const finalPlotHeight = computed(() => {
   const visibleRows = Math.max(pValueEntries.value.length, 1);
   const rowHeight = getLargestBubbleDiameter(pValueEntries.value) + minimumBubbleGap;
   const minimumHeight = visualizationStore.legend ? 300 : 240;
-  const bubbleSafeHeight = visibleRows * rowHeight + plotVerticalChrome + collapsedOraInfoHeight;
+  const bubbleSafeHeight = visibleRows * rowHeight + plotVerticalChrome;
   return Math.max(minimumHeight, bubbleSafeHeight);
 });
+
 const hasPreparedPlotData = computed(() => pValueEntries.value.length > 0 || oraMetadata.value !== null);
 const activePlotHeight = computed(() => loading.value && !hasPreparedPlotData.value ? availablePlotHeight.value : finalPlotHeight.value);
 const plotShellStyle = computed(() => ({
@@ -660,6 +669,18 @@ const pValueEntries = computed(() => {
 const currentSignificantCount = computed(() => significanceFilteredEntries.value.length);
 const currentCriteriaCount = computed(() => criteriaFilteredEntries.value.length);
 
+const minCountHiddenCount = computed(() => {
+  const threshold = visualizationStore.oraMinCount;
+  if (threshold <= 1) return 0;
+  return significanceFilteredEntries.value.filter((entry) => entry.subset_count < threshold).length;
+});
+
+const minCountFilterStatus = computed(() => {
+  const threshold = visualizationStore.oraMinCount;
+  if (threshold <= 1 || minCountHiddenCount.value <= 0) return null;
+  return { threshold, hiddenCount: minCountHiddenCount.value };
+});
+
 const goDepthHiddenCount = computed(() => {
   if (activeGoDepthFilter.value !== null) {
     return significanceFilteredEntries.value.filter((entry) => {
@@ -692,6 +713,10 @@ function syncAvailableGoDepths() {
       .map((entry) => entry.go_depth)
       .filter((depth): depth is number => typeof depth === 'number' && Number.isInteger(depth) && depth > 0)],
   );
+}
+
+function toggleOraInfo() {
+  oraInfoOpen.value = !oraInfoOpen.value;
 }
 
 /**
@@ -1919,7 +1944,7 @@ let lastContainerWidth = 0;
 
 function handleWindowResize() {
   updateAvailablePlotHeight();
-  if (!loading.value && renderReady.value && pValueEntries.value.length > 0) {
+  if (!loading.value && renderReady.value && hasPreparedPlotData.value) {
     if (resizeTimeout) clearTimeout(resizeTimeout);
     resizeTimeout = setTimeout(() => {
       drawDotPlot();
@@ -1955,14 +1980,17 @@ onMounted(async () => {
       
       const newWidth = entry.contentRect.width;
       
-      // Only redraw if width changed significantly (>5px) to avoid loops
-      if (Math.abs(newWidth - lastContainerWidth) > 5) {
+      // Width changes require a redraw; height-only changes from the info banner
+      // should not rescale the dot plot internals.
+      if (
+        Math.abs(newWidth - lastContainerWidth) > 5
+      ) {
         lastContainerWidth = newWidth;
         
         // Debounce resize events
         if (resizeTimeout) clearTimeout(resizeTimeout);
         resizeTimeout = setTimeout(() => {
-          if (!loading.value && renderReady.value && pValueEntries.value.length > 0) {
+          if (!loading.value && renderReady.value && hasPreparedPlotData.value) {
             drawDotPlot();
           }
         }, 150);
