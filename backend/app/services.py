@@ -1089,11 +1089,11 @@ class GenXBrowserService:
         
         result_data = {}
 
-        # Track whether caller passed explicit columns.  When no columns are
-        # given we fall back to get_all_columns() which respects the admin-panel
-        # visibility flag – but virtual columns (newick_str, sequences) must
-        # always be injected regardless of that flag so trees / sequences still
-        # work even when the columns are hidden in the sidebar.
+        # Track whether caller passed explicit columns. When no columns are
+        # given we fall back to get_all_columns(), which respects the admin-panel
+        # visibility flag. Protein/RNA virtual sequence columns follow that same
+        # visibility rule because they are Data Manager / tooltip metadata, not
+        # sidebar filter columns. newick_str is still injected for tree assembly.
         explicit_columns_requested = bool(columns)
 
         if not columns:
@@ -1199,11 +1199,12 @@ class GenXBrowserService:
                 )
             
             if 'gene_id' in df.columns:
-                if 'protein_seq' in columns or add_all_virtual:
+                visible_default_virtuals = set(columns) if add_all_virtual else set()
+                if 'protein_seq' in columns or (add_all_virtual and 'protein_seq' in visible_default_virtuals):
                     df['protein_seq'] = df['gene_id'].apply(
                         lambda gid: self.sequences.get_protein_seq(species_code, gid) if pd.notna(gid) else ''
                     )
-                if 'rna_seq' in columns or add_all_virtual:
+                if 'rna_seq' in columns or (add_all_virtual and 'rna_seq' in visible_default_virtuals):
                     df['rna_seq'] = df['gene_id'].apply(
                         lambda gid: self.sequences.get_rna_seq(species_code, gid) if pd.notna(gid) else ''
                     )

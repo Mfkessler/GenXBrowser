@@ -2,6 +2,7 @@
 import { ref, computed, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { getDisplayName, sequenceFields } from "@/shared/metadataDisplayNames";
+import { useColumnsStore } from "@/stores/columns";
 import axios from "axios";
 import { API_BASE_URL } from "@/shared/Config";
 import { getEntityMetadataLabel } from "@/shared/dataTypeLabels";
@@ -24,6 +25,7 @@ export interface TooltipModalProps {
 const props = defineProps<TooltipModalProps>();
 const route = useRoute();
 const router = useRouter();
+const columnsStore = useColumnsStore();
 const emit = defineEmits<{
   close: [];
 }>();
@@ -41,6 +43,12 @@ const metadataFields = computed(() => {
     (key) => !props.heatmapCols.includes(key) && key !== props.idColumn
   );
 });
+
+const visibleSequenceFields = computed(() => new Set(
+  columnsStore.rowColumns
+    .map((column) => column.column_name)
+    .filter((columnName) => sequenceFields.includes(columnName))
+));
 
 const identificationFields = computed(() => {
   return metadataFields.value.filter((key) =>
@@ -82,7 +90,9 @@ const annotationFields = computed(() => {
 });
 
 const sequences = computed(() => {
-  return metadataFields.value.filter((key) => sequenceFields.includes(key));
+  return metadataFields.value.filter(
+    (key) => sequenceFields.includes(key) && visibleSequenceFields.value.has(key)
+  );
 });
 
 const selectedOrthogroup = computed(() => {

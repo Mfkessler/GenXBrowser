@@ -116,7 +116,7 @@
         <SearchFilter
           v-for="col in selectedTab === 'meta'
             ? filteredRowColumns
-            : columnsStore.filterableColColumns"
+            : filteredColColumns"
           :key="col.column_name"
           v-model="filters[col.column_name]"
           :label="getDisplayName(col.column_name, col.display_name)"
@@ -145,7 +145,7 @@ import { useFiltersStore, type FilterValue } from "@/stores/filters";
 import SearchFilter from "./SearchFilter.vue";
 import GlobalFilterChainModal from "./GlobalFilterChainModal.vue";
 import { getEntityLabelPlural } from "@/shared/dataTypeLabels";
-import { getDisplayName } from "@/shared/metadataDisplayNames";
+import { getDisplayName, sequenceFields } from "@/shared/metadataDisplayNames";
 
 const config = inject("config") as Config;
 
@@ -177,9 +177,16 @@ const loading = ref(true);
 const filters = ref<Record<string, FilterValue>>({ ...filtersStore.filters });
 const filterChainOpen = ref(false);
 
-// Columns filtered to exclude the transcript/gene ID column (handled per-dataset in cards)
+const sidebarExcludedRowColumns = new Set([config.visualization.id_column, ...sequenceFields]);
+
+// Columns filtered to exclude the transcript/gene ID column and sequence metadata.
+// Sequence visibility is handled by Data Manager/tooltips, never by Sidebar filters.
 const filteredRowColumns = computed(() =>
-  columnsStore.rowColumns.filter((col) => col.column_name !== config.visualization.id_column)
+  columnsStore.rowColumns.filter((col) => !sidebarExcludedRowColumns.has(col.column_name))
+);
+
+const filteredColColumns = computed(() =>
+  columnsStore.filterableColColumns.filter((col) => !sequenceFields.includes(col.column_name))
 );
 
 const rowFilterColumnNames = computed(() => new Set(filteredRowColumns.value.map((col) => col.column_name)));

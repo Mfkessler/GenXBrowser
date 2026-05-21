@@ -66,6 +66,11 @@ def build_service(config, adata_by_species):
     service._custom_overlays = {}
     service._save_custom_overlays = lambda: None
     service.reload_config = lambda: None
+    service.gene_trees = {}
+    service.sequences = SimpleNamespace(
+        get_protein_seq=lambda _species_code, gene_id: f"PROT:{gene_id}",
+        get_rna_seq=lambda _species_code, gene_id: f"RNA:{gene_id}",
+    )
     return service
 
 
@@ -164,6 +169,46 @@ def test_meta_table_data_uses_dynamic_configured_sample_metadata_columns():
 
     assert list(df.columns) == ["column_name", "type", "description", "format", "ismeta", "tissue", "condition"]
     assert df.iloc[0]["condition"] == "stress"
+
+
+def test_default_data_respects_sequence_visibility_for_tooltip_metadata():
+    adata = build_adata()
+    config = {
+        "species": {"AT": {"enabled": True}},
+        "column_definitions": {
+            "description": {
+                "display_name": "Description",
+                "type": "text",
+                "is_meta": True,
+                "is_sample_metadata": False,
+                "visible": True,
+                "order": 0,
+            },
+            "protein_seq": {
+                "display_name": "Protein Sequence",
+                "type": "text",
+                "is_meta": True,
+                "is_sample_metadata": False,
+                "visible": False,
+                "order": 1,
+            },
+            "rna_seq": {
+                "display_name": "RNA Sequence",
+                "type": "text",
+                "is_meta": True,
+                "is_sample_metadata": False,
+                "visible": True,
+                "order": 2,
+            },
+        },
+    }
+    service = build_service(config, {"AT": adata})
+
+    df, _ = service.get_data(table_name="AT", columns=[], filters={}, limit=10)
+
+    assert "description" in df.columns
+    assert "rna_seq" in df.columns
+    assert "protein_seq" not in df.columns
 
 
 def test_delete_metadata_column_cleans_stale_config_references():

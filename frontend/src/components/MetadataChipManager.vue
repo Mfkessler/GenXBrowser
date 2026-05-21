@@ -29,7 +29,7 @@
     <!-- Info Banner -->
     <div class="chip-info">
       <span class="info-icon">ℹ️</span>
-      Drag to reorder · Click 👁 to show/hide · Double-click label to rename · Change the green badge to override the data type · Click <strong>sep:</strong> badge on array columns to toggle the multi-value separator · Click <strong>Default</strong> badge on sample columns to set/unset the default sample column
+      Drag to reorder · Click 👁 to show/hide in Data Manager and tooltips · Double-click label to rename · Change the green badge to override the data type · <strong>SEQ</strong> marks sequence metadata, which never appears as a sidebar filter · Click <strong>sep:</strong> badge on array columns to toggle the multi-value separator · Click <strong>Default</strong> badge on sample columns to set/unset the default sample column
     </div>
 
     <!-- Draggable Chips -->
@@ -80,6 +80,15 @@
 
           <!-- Column Name Badge -->
           <code class="chip-code" :title="element.name">{{ element.name }}</code>
+
+          <!-- Sequence Role Badge -->
+          <span
+            v-if="element.is_sequence_metadata"
+            class="chip-sequence-badge"
+            title="Sequence metadata: visibility controls Data Manager and tooltips only; this column is never shown as a sidebar filter"
+          >
+            SEQ
+          </span>
 
           <!-- Type Select (editable) -->
           <select
@@ -163,6 +172,7 @@ import {
   getEntityLabel,
   getEntityLabelLower,
 } from '@/shared/dataTypeLabels';
+import { sequenceFields } from '@/shared/metadataDisplayNames';
 
 export interface ChipItem {
   name: string;
@@ -176,6 +186,7 @@ export interface ChipItem {
   order: number;
   source: 'auto' | 'custom';
   sortable?: boolean;
+  is_sequence_metadata: boolean;
 }
 
 interface ColumnDefinition {
@@ -236,6 +247,7 @@ export default defineComponent({
           order: def.order ?? 999,
           source: def.source || 'auto',
           sortable: def.sortable,
+          is_sequence_metadata: sequenceFields.includes(name),
         };
 
         if (chip.is_sample_metadata) {
@@ -716,6 +728,21 @@ export default defineComponent({
   white-space: nowrap;
   flex-shrink: 0;
   transition: background 0.15s, border-color 0.15s;
+}
+
+.chip-sequence-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid #bae6fd;
+  background: #f0f9ff;
+  color: #0369a1;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .chip-sep-badge:hover {
