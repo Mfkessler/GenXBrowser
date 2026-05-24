@@ -363,6 +363,12 @@ const availablePlotHeight = ref(600);
 const maxBubbleRadius = 15;
 const minimumBubbleGap = 4;
 const plotVerticalChrome = 126;
+const oraLegendAreaWidth = 150;
+const oraLegendSpacingVertical = 20;
+const oraColorLegendHeight = 120;
+const oraSizeLegendTopMargin = 50;
+const oraSizeLegendCircleSpacing = 50;
+const oraLegendBottomPadding = 16;
 
 function getLargestBubbleDiameter(entries: PValueEntry[]): number {
   if (!entries.length) return maxBubbleRadius * 2;
@@ -374,6 +380,34 @@ function getLargestBubbleDiameter(entries: PValueEntry[]): number {
     .domain([minSubsetCount, maxSubsetCount])
     .range([6, maxBubbleRadius]);
   return Math.ceil((d3.max(entries, (entry) => sizeScale(entry.subset_count)) ?? maxBubbleRadius) * 2);
+}
+
+function getSizeLegendValues(entries: PValueEntry[]): number[] {
+  const counts = entries.map((entry) => entry.subset_count);
+  const minSubsetCount = d3.min(counts) ?? 0;
+  const maxSubsetCount = d3.max(counts) ?? 0;
+  return [
+    minSubsetCount,
+    Math.round((minSubsetCount + maxSubsetCount) / 2),
+    maxSubsetCount,
+  ].filter((value, index, values) => value > 0 && values.indexOf(value) === index);
+}
+
+function getLegendRequiredHeight(entries: PValueEntry[]): number {
+  if (!visualizationStore.legend) return 240;
+  const sizeLegendValues = getSizeLegendValues(entries);
+  const sizeLegendContentHeight =
+    oraSizeLegendTopMargin
+    + Math.max(0, sizeLegendValues.length - 1) * oraSizeLegendCircleSpacing
+    + maxBubbleRadius;
+
+  return Math.ceil(
+    50
+      + oraColorLegendHeight
+      + oraLegendSpacingVertical
+      + sizeLegendContentHeight
+      + oraLegendBottomPadding,
+  );
 }
 
 function updateAvailablePlotHeight() {
@@ -470,7 +504,7 @@ function cancelActiveLoad(emitCancel = true) {
 const finalPlotHeight = computed(() => {
   const visibleRows = Math.max(pValueEntries.value.length, 1);
   const rowHeight = getLargestBubbleDiameter(pValueEntries.value) + minimumBubbleGap;
-  const minimumHeight = visualizationStore.legend ? 300 : 240;
+  const minimumHeight = getLegendRequiredHeight(pValueEntries.value);
   const bubbleSafeHeight = visibleRows * rowHeight + plotVerticalChrome;
   return Math.max(minimumHeight, bubbleSafeHeight);
 });
@@ -1413,13 +1447,9 @@ async function drawDotPlot() {
   const containerWidth = container.clientWidth || 800;
   const containerHeight = container.clientHeight || finalPlotHeight.value;
 
-  const legendAreaWidth = 150; // width reserved for legend on right
-  const legendSpacingVertical = 20; // vertical spacing between legends
-  const legendHeight = 120;
-
   const margin = {
     top: 50,
-    right: visualizationStore.legend ? legendAreaWidth + 40 : 40,
+    right: visualizationStore.legend ? oraLegendAreaWidth + 40 : 40,
     bottom: 76,
     left: 120,
   };
@@ -1467,7 +1497,7 @@ async function drawDotPlot() {
 
     sizeLegendGroup = legendGroup
       .append("g")
-      .attr("transform", `translate(0, ${legendHeight + legendSpacingVertical})`);
+      .attr("transform", `translate(0, ${oraColorLegendHeight + oraLegendSpacingVertical})`);
   }
 
   // Sort entries for plotting order
@@ -1754,19 +1784,15 @@ async function drawDotPlot() {
       { top: 20, right: 0, bottom: 0, left: 0 }, // no margin inside group
       "q-value (FDR)",
     );
-    const sizeValues = [
-      minSubsetCount,
-      Math.round((minSubsetCount + maxSubsetCount) / 2),
-      maxSubsetCount,
-    ].filter((v) => v > 0);
+    const sizeValues = getSizeLegendValues(sortedEntries);
 
     createSizeLegend(
       sizeLegendGroup, // pass the bottom legend group
       sizeScale,
       sizeValues,
-      50,
+      oraSizeLegendCircleSpacing,
       0, // leftMargin inside group
-      50, // topMargin inside group
+      oraSizeLegendTopMargin,
       "Observed Count",
     );
   }
