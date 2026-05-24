@@ -1,6 +1,4 @@
-# GenXBrowser
-
-**Interactive browser for gene expression analysis.**
+## Interactive browser for gene expression analysis.
 
 GenXBrowser visualizes gene expression data stored in AnnData (.h5ad) files. Select datasets from the catalog, apply filters based on gene metadata, and choose from multiple analysis types - including single-dataset analysis and cross-species comparisons.
 

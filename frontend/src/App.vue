@@ -52,14 +52,17 @@
       </div>
     </main>
 
-    <FooterComponent :hidden="footerHidden" />
+    <div ref="footerShell">
+      <FooterComponent :hidden="footerHidden" />
+    </div>
 
     <!-- Global AI assistant (always visible when enabled) -->
     <template v-if="assistantStore.enabled">
       <AssistantPanel />
       <button
         v-show="!assistantStore.open"
-        class="fixed bottom-6 right-6 z-40 cursor-pointer rounded-full bg-blue-600/70 hover:bg-blue-600 text-white shadow-xl p-4 flex items-center justify-center transition-colors"
+        class="fixed right-6 z-40 cursor-pointer rounded-full bg-blue-600/70 hover:bg-blue-600 text-white shadow-xl p-4 flex items-center justify-center transition-colors"
+        :style="{ bottom: assistantBottomOffset }"
         :aria-label="`Open ${assistantStore.displayName}`"
         v-tooltip:left="`Ask ${assistantStore.displayName}`"
         @click="assistantStore.open = true"
@@ -70,7 +73,7 @@
   </div>
 </template>
 <script setup lang="ts">
-import { onMounted, provide, ref } from "vue";
+import { onBeforeUnmount, onMounted, provide, ref } from "vue";
 
 import FooterComponent from "./components/FooterComponent.vue";
 import SidebarComponent from "./components/SidebarComponent.vue";
@@ -85,11 +88,29 @@ const sidebarOpen = ref(true);
 const footerHidden = ref(false);
 const showSidebarHint = ref(false);
 const assistantStore = useAssistantStore();
+const footerShell = ref<HTMLElement | null>(null);
+const assistantBottomOffset = ref("1rem");
+
+let footerResizeObserver: ResizeObserver | null = null;
+
+function updateAssistantBottomOffset() {
+  const footerHeight = footerShell.value?.offsetHeight ?? 0;
+  assistantBottomOffset.value = `${footerHeight + 16}px`;
+}
 
 provide("sidebarOpen", sidebarOpen);
 
 onMounted(() => {
   assistantStore.loadFeatures();
+  updateAssistantBottomOffset();
+
+  if (typeof ResizeObserver !== "undefined" && footerShell.value) {
+    footerResizeObserver = new ResizeObserver(updateAssistantBottomOffset);
+    footerResizeObserver.observe(footerShell.value);
+  }
+
+  window.addEventListener("resize", updateAssistantBottomOffset);
+
   // Check if user has seen the sidebar hint before
   const hasSeenHint = localStorage.getItem('sidebar-hint-seen');
   if (!hasSeenHint) {
@@ -100,6 +121,11 @@ onMounted(() => {
       localStorage.setItem('sidebar-hint-seen', 'true');
     }, 5000);
   }
+});
+
+onBeforeUnmount(() => {
+  footerResizeObserver?.disconnect();
+  window.removeEventListener("resize", updateAssistantBottomOffset);
 });
 </script>
 
