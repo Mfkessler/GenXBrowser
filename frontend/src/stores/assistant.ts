@@ -301,16 +301,20 @@ export const useAssistantStore = defineStore("assistant", () => {
 
       if (kind === "deeplink") {
         try {
-          const deeplinkFilters = mergeDeeplinkFilters(actionAwareFilters, spec.filters);
+          const deeplinkState = buildDeeplinkState(actionAwareFilters, spec, clientContext);
           const { data } = await axios.post(`${API_BASE_URL}/api/assistant/deeplink`, {
             view: spec.view,
             tables: spec.tables || [],
-            filters: deeplinkFilters,
-            visualizations: spec.visualizations || {},
+            filters: deeplinkState.filters,
+            visualizations: deeplinkState.visualizations,
           });
           action.url_path = data.url_path;
           action.view = data.view;
           action.status = "applied";
+          if (deeplinkState.summary) action.summary = deeplinkState.summary;
+          if (deeplinkState.note && !msg.content.includes(deeplinkState.note)) {
+            msg.content = `${msg.content.trim()}\n\n${deeplinkState.note}`;
+          }
           if (!msg.deeplink) msg.deeplink = { view: data.view, url_path: data.url_path };
         } catch (e) {
           action.status = "error";
@@ -385,10 +389,34 @@ export const useAssistantStore = defineStore("assistant", () => {
     };
   }
 
+  function buildDeeplinkState(
+    derivedFilters: Record<string, unknown>,
+    spec: Record<string, unknown>,
+    clientContext?: ClientContext,
+  ): { filters: Record<string, unknown>; visualizations: Record<string, unknown>; summary?: string; note?: string } {
+    const filterPlan = mergeDeeplinkFilters(derivedFilters, spec.filters);
+    const targetView = normalizeViewName(spec.view);
+    const currentView = normalizeViewName(clientContext?.view || routeViewFromPath(clientContext?.route));
+    const visualizations = buildDeeplinkVisualizations(spec.visualizations, targetView);
+    const resetViz = targetView && targetView !== currentView
+      ? resetVisualizationLabelsForView(targetView)
+      : [];
+    const summaryParts = [
+      filterPlan.summary,
+      resetViz.length ? `reset ${resetViz.join(", ")}` : "",
+    ].filter(Boolean);
+    return {
+      filters: filterPlan.filters,
+      visualizations,
+      summary: summaryParts.join("; ") || undefined,
+      note: formatStateResolutionNote(targetView, filterPlan.clearedKeys),
+    };
+  }
+
   function mergeDeeplinkFilters(
     derivedFilters: Record<string, unknown>,
     explicitFilters: unknown,
-  ): Record<string, unknown> {
+  ): { filters: Record<string, unknown>; clearedKeys: string[]; summary?: string } {
     const explicit = explicitFilters && typeof explicitFilters === "object" && !Array.isArray(explicitFilters)
       ? explicitFilters as Record<string, unknown>
       : {};
@@ -402,15 +430,119 @@ export const useAssistantStore = defineStore("assistant", () => {
     const explicitDataset = explicit.datasetIdFilters && typeof explicit.datasetIdFilters === "object" && !Array.isArray(explicit.datasetIdFilters)
       ? explicit.datasetIdFilters as Record<string, unknown>
       : {};
+    const explicitHasFilters = Object.keys(explicitNested).length > 0 || Object.keys(explicitDataset).length > 0;
 
-    return {
+    if (explicitHasFilters) {
+      const clearedKeys = changedOrDroppedFilterKeys(derivedNested, explicitNested);
+      const datasetCleared = changedOrDroppedFilterKeys(derivedDataset, explicitDataset);
+      const filters = {
+        ...derivedFilters,
+        ...copyFilterStateMetadata(explicit),
+        tags: Array.isArray(explicit.tags) ? explicit.tags : (Array.isArray(derivedFilters.tags) ? derivedFilters.tags : []),
+        table_names: Array.isArray(explicit.table_names) ? explicit.table_names : (Array.isArray(derivedFilters.table_names) ? derivedFilters.table_names : []),
+        filters: { ...explicitNested },
+        datasetIdFilters: { ...explicitDataset },
+      };
+      const allCleared = [...clearedKeys, ...datasetCleared.map((key) => `dataset:${key}`)];
+      return {
+        filters,
+        clearedKeys: allCleared,
+        summary: allCleared.length ? `replaced active filter state (${allCleared.join(", ")})` : undefined,
+      };
+    }
+
+    return { filters: {
       ...derivedFilters,
       ...copyFilterStateMetadata(explicit),
       tags: Array.isArray(explicit.tags) ? explicit.tags : (Array.isArray(derivedFilters.tags) ? derivedFilters.tags : []),
       table_names: Array.isArray(explicit.table_names) ? explicit.table_names : (Array.isArray(derivedFilters.table_names) ? derivedFilters.table_names : []),
       filters: { ...derivedNested, ...explicitNested },
       datasetIdFilters: { ...derivedDataset, ...explicitDataset },
-    };
+    }, clearedKeys: [] };
+  }
+
+  function changedOrDroppedFilterKeys(
+    current: Record<string, unknown>,
+    next: Record<string, unknown>,
+  ): string[] {
+    return Object.keys(current).filter((key) => {
+      const currentValue = normalizeFilterComparisonValue(current[key]);
+      const nextValue = normalizeFilterComparisonValue(next[key]);
+      return nextValue === "" || currentValue !== nextValue;
+    });
+  }
+
+  function normalizeFilterComparisonValue(raw: unknown): string {
+    if (raw === null || raw === undefined) return "";
+    if (Array.isArray(raw)) return raw.map(String).sort().join("|");
+    if (typeof raw !== "object") return String(raw);
+    const spec = raw as Record<string, unknown>;
+    const value = spec.value ?? spec.values ?? "";
+    const values = Array.isArray(value) ? value.map(String) : String(value).split("|");
+    return JSON.stringify({
+      value: values.map((item) => item.trim()).filter(Boolean).sort(),
+      match_mode: spec.match_mode || "or",
+      exact: spec.exact !== false,
+      has_value: spec.has_value === true,
+    });
+  }
+
+  function buildDeeplinkVisualizations(explicitVisualizations: unknown, targetView: string): Record<string, unknown> {
+    const visualizations = explicitVisualizations && typeof explicitVisualizations === "object" && !Array.isArray(explicitVisualizations)
+      ? { ...(explicitVisualizations as Record<string, unknown>) }
+      : {};
+    if (targetView !== "compare") {
+      visualizations.compare = {
+        ...(visualizations.compare && typeof visualizations.compare === "object" && !Array.isArray(visualizations.compare)
+          ? visualizations.compare as Record<string, unknown>
+          : {}),
+        selectedOrthogroup: "",
+        selectedSpecies: [],
+      };
+    }
+    if (targetView !== "phylo") {
+      visualizations.phyloTree = {
+        ...(visualizations.phyloTree && typeof visualizations.phyloTree === "object" && !Array.isArray(visualizations.phyloTree)
+          ? visualizations.phyloTree as Record<string, unknown>
+          : {}),
+        selectedOrthogroup: "",
+      };
+    }
+    return visualizations;
+  }
+
+  function resetVisualizationLabelsForView(targetView: string): string[] {
+    const labels: string[] = [];
+    if (targetView !== "compare") labels.push("compare orthogroup");
+    if (targetView !== "phylo") labels.push("phylo orthogroup");
+    return labels;
+  }
+
+  function normalizeViewName(value: unknown): string {
+    const text = String(value || "").toLowerCase();
+    if (text.includes("heatmap")) return "heatmap";
+    if (text.includes("compare") || text.includes("expression")) return "compare";
+    if (text.includes("phylo")) return "phylo";
+    if (text.includes("ora")) return "ora";
+    if (text.includes("catalog")) return "catalog";
+    return text;
+  }
+
+  function routeViewFromPath(route: unknown): string {
+    const text = String(route || "");
+    if (text.startsWith("/h/")) return "heatmap";
+    if (text.startsWith("/c/")) return "compare";
+    if (text.startsWith("/p/")) return "phylo";
+    if (text.startsWith("/o/")) return "ora";
+    if (text.startsWith("/catalog")) return "catalog";
+    return "";
+  }
+
+  function formatStateResolutionNote(targetView: string, clearedKeys: string[]): string | undefined {
+    if (!clearedKeys.length) return undefined;
+    const shown = clearedKeys.slice(0, 4).join(", ");
+    const more = clearedKeys.length > 4 ? ` and ${clearedKeys.length - 4} more` : "";
+    return `Clearing active filter state (${shown}${more}) to open the requested ${targetView || "view"}.`;
   }
 
   function extractFilterMap(rawFilters: Record<string, unknown>): Record<string, unknown> {
@@ -499,6 +631,7 @@ export const useAssistantStore = defineStore("assistant", () => {
     displayName,
     loadFeatures,
     sendMessage,
+    extractAndDispatchActions,
     cancel,
     reset,
     setAnalysisContext,

@@ -57,6 +57,21 @@ def _resolve_species_codes(service, tables: Optional[List[str]]) -> List[str]:
     return out
 
 
+def _species_table_lookup(service) -> Dict[str, str]:
+    """Return canonical species-code -> table_name mapping for display/URLs."""
+    try:
+        all_entries = service.get_tables(include_disabled=False)
+    except Exception:
+        return {}
+    out: Dict[str, str] = {}
+    for entry in all_entries:
+        code = entry.get("_species_code") or entry.get("code")
+        table_name = entry.get("table_name") or entry.get("full_name") or code
+        if isinstance(code, str) and code and isinstance(table_name, str) and table_name:
+            out[code] = table_name
+    return out
+
+
 def _column_series(adata, column: str):
     """Return a pd.Series for a var or obs column, trying both spaces."""
     if column in adata.var.columns:
@@ -64,6 +79,84 @@ def _column_series(adata, column: str):
     if column in adata.obs.columns:
         return adata.obs[column], "obs"
     return None, None
+
+
+def _column_display_maps(config_manager=None) -> Dict[str, Dict[str, str]]:
+    """Return fresh internal/display column-name maps from project config."""
+    internal_to_display: Dict[str, str] = {}
+    display_to_internal: Dict[str, str] = {}
+    try:
+        if config_manager is not None:
+            col_defs = config_manager.get_column_definitions() or {}
+        else:
+            col_defs = {}
+    except Exception:
+        col_defs = {}
+
+    for internal, spec in col_defs.items():
+        if not isinstance(internal, str):
+            continue
+        display = None
+        if isinstance(spec, dict):
+            display = spec.get("display_name")
+        display = str(display or internal).strip() or internal
+        internal_to_display[internal] = display
+        display_to_internal[internal.lower()] = internal
+        display_to_internal[display.lower()] = internal
+
+    try:
+        raw_mappings = config_manager.get_column_mappings() if config_manager is not None else {}
+    except Exception:
+        raw_mappings = {}
+    if isinstance(raw_mappings, dict):
+        for internal, display in raw_mappings.items():
+            if not isinstance(internal, str) or not isinstance(display, str):
+                continue
+            internal_to_display.setdefault(internal, display)
+            display_to_internal[internal.lower()] = internal
+            display_to_internal[display.lower()] = internal
+
+    return {
+        "internal_to_display": internal_to_display,
+        "display_to_internal": display_to_internal,
+    }
+
+
+def _display_name_for(config_manager, column: str) -> str:
+    maps = _column_display_maps(config_manager)
+    return maps.get("internal_to_display", {}).get(column, column)
+
+
+def _resolve_column_name(config_manager, column: str, known_columns: Optional[set] = None) -> str:
+    """Resolve a user/UI display label to the internal H5AD column key."""
+    raw = str(column or "").strip()
+    if not raw:
+        return raw
+    if known_columns and raw in known_columns:
+        return raw
+    maps = _column_display_maps(config_manager)
+    resolved = maps.get("display_to_internal", {}).get(raw.lower())
+    if resolved and ((not known_columns) or resolved in known_columns):
+        return resolved
+    if known_columns:
+        for c in known_columns:
+            if str(c).lower() == raw.lower():
+                return str(c)
+    return raw
+
+
+def _normalize_filter_columns_for_df(
+    config_manager,
+    filters: Optional[Dict[str, Any]],
+    columns: set,
+) -> Dict[str, Any]:
+    if not filters:
+        return {}
+    out: Dict[str, Any] = {}
+    for col, spec in filters.items():
+        resolved = _resolve_column_name(config_manager, str(col), columns)
+        out[resolved] = spec
+    return out
 
 
 def _split_array_values(series, separators: Tuple[str, ...] = (",", "|", ";")) -> List[str]:
@@ -203,6 +296,36 @@ def _deeplink_flat_filters(filters: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _normalize_deeplink_filter_columns(
+    service,
+    config_manager,
+    codes: List[str],
+    filters: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not isinstance(filters, dict):
+        return filters
+    nested = filters.get("filters") if isinstance(filters.get("filters"), dict) else None
+    if not isinstance(nested, dict) or not nested:
+        return filters
+    known_cols: set = set()
+    for code in codes:
+        try:
+            adata = service.registry.load(code)
+        except Exception:
+            adata = None
+        if adata is None:
+            continue
+        known_cols.update(adata.var.columns)
+        known_cols.update(adata.obs.columns)
+    if not known_cols:
+        return filters
+    normalized = {
+        _resolve_column_name(config_manager, str(col), known_cols): spec
+        for col, spec in nested.items()
+    }
+    return {**filters, "filters": normalized}
+
+
 def validate_analysis_request_limits(
     service,
     config_manager,
@@ -302,6 +425,7 @@ def apply_assistant_filters(
     obs_filters: Optional[Dict[str, Any]] = None,
     var_column_types: Optional[Dict[str, str]] = None,
     obs_column_types: Optional[Dict[str, str]] = None,
+    config_manager=None,
 ):
     """Apply rich filter specs to an AnnData's ``.var`` / ``.obs`` frames.
 
@@ -332,6 +456,8 @@ def apply_assistant_filters(
 
     var_df = adata.var
     obs_df = adata.obs
+    var_filters = _normalize_filter_columns_for_df(config_manager, var_filters, set(var_df.columns))
+    obs_filters = _normalize_filter_columns_for_df(config_manager, obs_filters, set(obs_df.columns))
 
     if var_filters:
         try:
@@ -374,6 +500,8 @@ _VALUE_COUNTER_CACHE: Dict[Tuple[str, float, str], List[Tuple[str, "Counter"]]] 
 # and unchanged. The columns tuple lets exact assistant filters avoid scanning
 # unrelated high-cardinality annotation columns on the cold path.
 _FILTER_COLUMN_TYPE_CACHE: Dict[Tuple[str, float, str, Tuple[str, ...]], Dict[str, str]] = {}
+
+_WARMUP_CACHE: Dict[str, Any] = {"mtime": None, "summary": None}
 
 # Columns that are pointless to scan with substring-match for resolve_value
 # (gene IDs, free-text descriptions). They drown the result list and
@@ -539,21 +667,23 @@ def tool_list_schema(service, cm, *, max_values_per_col: int = 0) -> Dict[str, A
             try:
                 s = df[col]
                 dtype = str(s.dtype)
+                display_name = _display_name_for(cm, col)
                 if dtype.startswith("float") or dtype.startswith("int"):
                     nonnull = s.dropna()
                     return {
                         "name": col,
+                        "display_name": display_name,
                         "dtype": "numeric",
                         "n_nonnull": int(nonnull.size),
                         "min": float(nonnull.min()) if nonnull.size else None,
                         "max": float(nonnull.max()) if nonnull.size else None,
                     }
                 if dtype.startswith("bool"):
-                    return {"name": col, "dtype": "boolean", "n_true": int(s.sum())}
+                    return {"name": col, "display_name": display_name, "dtype": "boolean", "n_true": int(s.sum())}
                 unique = s.dropna().astype(str).nunique()
-                return {"name": col, "dtype": "text", "n_unique": int(unique)}
+                return {"name": col, "display_name": display_name, "dtype": "text", "n_unique": int(unique)}
             except Exception:
-                return {"name": col, "dtype": "unknown"}
+                return {"name": col, "display_name": _display_name_for(cm, col), "dtype": "unknown"}
 
         summary_entry = {
             "table_name": entry.get("table_name"),
@@ -585,6 +715,11 @@ def tool_list_schema(service, cm, *, max_values_per_col: int = 0) -> Dict[str, A
     # Common action-block vocabulary so the LLM remembers what to emit.
     return {
         "tables": tables,
+        "column_internal_names": _column_display_maps(cm).get("internal_to_display", {}),
+        "column_display_names": {
+            display: internal
+            for internal, display in _column_display_maps(cm).get("internal_to_display", {}).items()
+        },
         "views": ["heatmap", "compare", "phylo", "ora", "catalog"],
         "action_kinds": [
             "deeplink", "add_filter", "remove_filter", "clear_filters",
@@ -592,6 +727,47 @@ def tool_list_schema(service, cm, *, max_values_per_col: int = 0) -> Dict[str, A
         ],
         "action_block_schemas": _ACTION_BLOCK_SCHEMAS,
     }
+
+
+def warmup_runtime_cache(service, cm) -> Dict[str, Any]:
+    """Prime static/semi-static assistant metadata caches for this instance."""
+    try:
+        from .overview import _overview_mtime
+        mtime = _overview_mtime(service, cm)
+    except Exception:
+        mtime = None
+    if _WARMUP_CACHE.get("summary") is not None and _WARMUP_CACHE.get("mtime") == mtime:
+        return _WARMUP_CACHE["summary"]
+    schema = tool_list_schema(service, cm)
+    tables = schema.get("tables") or []
+    summary = {
+        "mtime": mtime,
+        "datasets": [
+            {
+                "code": t.get("code"),
+                "label": t.get("table_name") or t.get("full_name") or t.get("code"),
+                "n_samples": t.get("n_samples"),
+                "n_genes": t.get("n_genes"),
+            }
+            for t in tables
+        ],
+        "species_names": [t.get("full_name") or t.get("table_name") or t.get("code") for t in tables],
+        "structural_columns": {
+            "var": sorted({c.get("name") for t in tables for c in (t.get("var_columns") or []) if c.get("name")}),
+            "obs": sorted({c.get("name") for t in tables for c in (t.get("obs_columns") or []) if c.get("name")}),
+        },
+        "column_internal_names": schema.get("column_internal_names", {}),
+        "column_display_names": schema.get("column_display_names", {}),
+        "views": schema.get("views", []),
+    }
+    _WARMUP_CACHE["mtime"] = mtime
+    _WARMUP_CACHE["summary"] = summary
+    return summary
+
+
+def tool_state_summary(service, cm) -> Dict[str, Any]:
+    """Unified cached state summary for fast first-pass assistant routing."""
+    return warmup_runtime_cache(service, cm)
 
 
 # Static catalog of expression-display options. The frontend mirror lives at
@@ -888,6 +1064,7 @@ def tool_list_view_settings(
 
 def tool_list_distinct_values(
     service,
+    config_manager=None,
     *,
     column: str,
     table: Optional[str] = None,
@@ -910,6 +1087,7 @@ def tool_list_distinct_values(
             continue
         if adata is None:
             continue
+        column = _resolve_column_name(config_manager, column, set(adata.var.columns) | set(adata.obs.columns))
         series, _ns = _column_series(adata, column)
         if series is None:
             continue
@@ -924,11 +1102,12 @@ def tool_list_distinct_values(
                 break
         if len(values) >= int(limit):
             break
-    return {"column": column, "values": values, "truncated": len(values) >= int(limit)}
+    return {"column": column, "display_name": _display_name_for(config_manager, column), "values": values, "truncated": len(values) >= int(limit)}
 
 
 def tool_resolve_value(
     service,
+    config_manager=None,
     *,
     query: str,
     tables: Optional[List[str]] = None,
@@ -969,6 +1148,7 @@ def tool_resolve_value(
                 for v in exact:
                     hits.append({
                         "table": code, "namespace": ns_name, "column": col,
+                        "display_name": _display_name_for(config_manager, col),
                         "value": v, "count": counter[v], "match": "exact",
                     })
                 if exact:
@@ -984,6 +1164,7 @@ def tool_resolve_value(
                 for v in subs[:3]:
                     hits.append({
                         "table": code, "namespace": ns_name, "column": col,
+                        "display_name": _display_name_for(config_manager, col),
                         "value": v, "count": counter[v], "match": "substring",
                     })
 
@@ -1084,6 +1265,7 @@ def tool_search_go_terms(
 
 def tool_count_rows(
     service,
+    config_manager=None,
     *,
     table=None,
     tables=None,
@@ -1122,12 +1304,15 @@ def tool_count_rows(
         if adata is None:
             per_table.append({"table": code, "error": "table not loaded"})
             continue
+        var_filters_norm = _normalize_filter_columns_for_df(config_manager, var_filters, set(adata.var.columns))
+        obs_filters_norm = _normalize_filter_columns_for_df(config_manager, obs_filters, set(adata.obs.columns))
         var_f, obs_f = apply_assistant_filters(
             service, adata,
-            var_filters=var_filters or {},
-            obs_filters=obs_filters or {},
-            var_column_types=_cached_filter_column_types(service, adata, code, "var", list(var_filters.keys())) if var_filters else None,
-            obs_column_types=_cached_filter_column_types(service, adata, code, "obs", list(obs_filters.keys())) if obs_filters else None,
+            var_filters=var_filters_norm,
+            obs_filters=obs_filters_norm,
+            var_column_types=_cached_filter_column_types(service, adata, code, "var", list(var_filters_norm.keys())) if var_filters_norm else None,
+            obs_column_types=_cached_filter_column_types(service, adata, code, "obs", list(obs_filters_norm.keys())) if obs_filters_norm else None,
+            config_manager=config_manager,
         )
         n_var = int(len(var_f))
         n_obs = int(len(obs_f))
@@ -1175,6 +1360,7 @@ def _coerce_tables_arg(table, tables) -> Optional[Any]:
 
 def tool_top_groups(
     service,
+    config_manager=None,
     *,
     table=None,
     tables=None,
@@ -1217,11 +1403,13 @@ def tool_top_groups(
         if adata is None:
             per_table.append({"table": code, "error": "table not loaded"})
             continue
+        group_column = _resolve_column_name(config_manager, group_column, set(adata.var.columns))
+        var_filters_norm = _normalize_filter_columns_for_df(config_manager, var_filters, set(adata.var.columns))
         if group_column not in adata.var.columns:
             per_table.append({"table": code, "error": f"column '{group_column}' not in .var"})
             continue
         # Validate filter columns up front so the LLM sees a clear error.
-        bad = [c for c in (var_filters or {}) if c not in adata.var.columns]
+        bad = [c for c in (var_filters_norm or {}) if c not in adata.var.columns]
         if bad:
             per_table.append({
                 "table": code,
@@ -1229,7 +1417,7 @@ def tool_top_groups(
             })
             continue
         var_f, _ = apply_assistant_filters(
-            service, adata, var_filters=var_filters or {},
+            service, adata, var_filters=var_filters_norm or {}, config_manager=config_manager,
         )
         filtered = var_f[group_column]
         n_rows = int(len(var_f))
@@ -1292,6 +1480,7 @@ def tool_top_groups(
 
 def tool_common_values(
     service,
+    config_manager=None,
     *,
     column: str,
     tables: Optional[List[str]] = None,
@@ -1334,28 +1523,32 @@ def tool_common_values(
             continue
         if adata is None:
             continue
+        column_resolved = _resolve_column_name(
+            config_manager, column, set(adata.var.columns) | set(adata.obs.columns)
+        )
         # Resolve which namespace contains the column for this table.
-        if ns_pref == "var" and column in adata.var.columns:
+        if ns_pref == "var" and column_resolved in adata.var.columns:
             ns = "var"
-        elif ns_pref == "obs" and column in adata.obs.columns:
+        elif ns_pref == "obs" and column_resolved in adata.obs.columns:
             ns = "obs"
         elif ns_pref == "auto":
-            if column in adata.var.columns:
+            if column_resolved in adata.var.columns:
                 ns = "var"
-            elif column in adata.obs.columns:
+            elif column_resolved in adata.obs.columns:
                 ns = "obs"
             else:
                 continue
         else:
             continue
-        series = adata.var[column] if ns == "var" else adata.obs[column]
+        series = adata.var[column_resolved] if ns == "var" else adata.obs[column_resolved]
+        column = column_resolved
         per_table_namespace[code] = ns
         # Optional per-table filter pre-narrow (only for var-namespaced columns).
         vf = vf_map.get(code) or {}
         if vf and ns == "var":
             try:
                 var_f, _ = apply_assistant_filters(service, adata, var_filters=vf)
-                series = var_f[column] if column in var_f.columns else series.iloc[0:0]
+                series = var_f[column_resolved] if column_resolved in var_f.columns else series.iloc[0:0]
             except Exception as e:  # noqa: BLE001
                 logger.warning("common_values pre-narrow failed for %s: %s", code, e)
                 series = series.iloc[0:0]
@@ -1379,6 +1572,7 @@ def tool_common_values(
 
     return {
         "column": column,
+        "display_name": _display_name_for(config_manager, column),
         "tables": list(per_table.keys()),
         "namespaces": per_table_namespace,
         "per_table_distinct": {k: sorted(v)[:50] for k, v in per_table.items()},
@@ -1391,6 +1585,7 @@ def tool_common_values(
 
 def tool_summary_stats(
     service,
+    config_manager=None,
     *,
     table=None,
     tables=None,
@@ -1429,14 +1624,18 @@ def tool_summary_stats(
         if adata is None:
             per_table.append({"table": code, "error": "table not loaded"})
             continue
+        column = _resolve_column_name(config_manager, column, set(adata.var.columns) | set(adata.obs.columns))
+        var_filters_norm = _normalize_filter_columns_for_df(config_manager, var_filters, set(adata.var.columns))
+        obs_filters_norm = _normalize_filter_columns_for_df(config_manager, obs_filters, set(adata.obs.columns))
         df_full = adata.obs if namespace == "obs" else adata.var
         if column not in df_full.columns:
             per_table.append({"table": code, "error": f"column '{column}' not in .{namespace}"})
             continue
         var_f, obs_f = apply_assistant_filters(
             service, adata,
-            var_filters=var_filters or {},
-            obs_filters=obs_filters or {},
+            var_filters=var_filters_norm or {},
+            obs_filters=obs_filters_norm or {},
+            config_manager=config_manager,
         )
         df = obs_f if namespace == "obs" else var_f
         s = pd.to_numeric(df[column], errors="coerce").dropna()
@@ -1532,6 +1731,11 @@ def tool_build_deeplink(
             filters = {**reserved, "filters": flat_from_payload}
     except Exception as e:
         logger.warning("filter normalization failed: %s", e)
+
+    try:
+        filters = _normalize_deeplink_filter_columns(service, config_manager, codes, filters)
+    except Exception as e:
+        logger.warning("display-name filter normalization failed: %s", e)
 
     # GUARD: Never let the assistant open an empty plot (heatmap / compare /
     # ora / phylo). For data-bearing views, drop any selected table that has
@@ -1705,12 +1909,15 @@ def tool_build_deeplink(
     except Exception as e:
         return {"error": f"store_filter failed: {e}"}
 
+    code_to_table = _species_table_lookup(service)
+    route_tables = [code_to_table.get(code, code) for code in codes]
+
     prefix = {"heatmap": "h", "compare": "c", "phylo": "p", "ora": "o"}.get(v, "")
     if v == "catalog":
         url_path = f"/catalog?id={hash_id}"
     else:
-        url_path = f"/{prefix}/{','.join(codes)}?id={hash_id}"
-    out = {"id": hash_id, "url_path": url_path, "view": v, "tables": codes}
+        url_path = f"/{prefix}/{','.join(route_tables)}?id={hash_id}"
+    out = {"id": hash_id, "url_path": url_path, "view": v, "tables": route_tables}
     if dropped_tables:
         out["dropped_tables"] = dropped_tables
     if warnings:
@@ -1939,6 +2146,20 @@ _ACTION_BLOCK_SCHEMAS: Dict[str, Any] = {
 }
 
 _TOOL_SCHEMAS: List[Dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "state_summary",
+            "description": (
+                "Return a cached high-level summary of this GenXBrowser "
+                "instance: dataset IDs/labels, species names, structural "
+                ".var/.obs columns, and fresh display-name mappings. Prefer "
+                "this for initial routing; call list_schema only when column "
+                "dtypes or per-table details are needed."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -2221,15 +2442,16 @@ def openai_schema() -> List[Dict[str, Any]]:
 
 def _get_dispatch():
     return {
+        "state_summary": lambda service, cm, **kw: tool_state_summary(service, cm),
         "list_schema": lambda service, cm, **kw: tool_list_schema(service, cm, **kw),
         "list_view_settings": lambda service, cm, **kw: tool_list_view_settings(service, **kw),
-        "resolve_value": lambda service, cm, **kw: tool_resolve_value(service, **kw),
+        "resolve_value": lambda service, cm, **kw: tool_resolve_value(service, cm, **kw),
         "search_go_terms": lambda service, cm, **kw: tool_search_go_terms(service, **kw),
-        "list_distinct_values": lambda service, cm, **kw: tool_list_distinct_values(service, **kw),
-        "count_rows": lambda service, cm, **kw: tool_count_rows(service, **kw),
-        "top_groups": lambda service, cm, **kw: tool_top_groups(service, **kw),
-        "summary_stats": lambda service, cm, **kw: tool_summary_stats(service, **kw),
-        "common_values": lambda service, cm, **kw: tool_common_values(service, **kw),
+        "list_distinct_values": lambda service, cm, **kw: tool_list_distinct_values(service, cm, **kw),
+        "count_rows": lambda service, cm, **kw: tool_count_rows(service, cm, **kw),
+        "top_groups": lambda service, cm, **kw: tool_top_groups(service, cm, **kw),
+        "summary_stats": lambda service, cm, **kw: tool_summary_stats(service, cm, **kw),
+        "common_values": lambda service, cm, **kw: tool_common_values(service, cm, **kw),
         "build_deeplink": lambda service, cm, **kw: tool_build_deeplink(service, cm, **kw),
     }
 

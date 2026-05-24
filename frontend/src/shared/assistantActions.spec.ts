@@ -1,7 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createAssistantActionDispatcher, type DispatcherDeps } from "./assistantActions";
+import { useAssistantStore, type ChatMessage, type ClientContext } from "@/stores/assistant";
 import type { AssistantAction } from "@/stores/assistant";
+import { createPinia, setActivePinia } from "pinia";
+
+vi.mock("axios", () => ({
+  default: {
+    post: vi.fn(async (_url: string, payload: Record<string, unknown>) => ({
+      data: { id: "abc123def4567890", url_path: "/h/CS?id=abc123def4567890", view: payload.view || "heatmap" },
+    })),
+    isAxiosError: () => false,
+  },
+}));
+
+beforeEach(() => {
+  setActivePinia(createPinia());
+});
 
 function makeDeps(): DispatcherDeps {
   const state: Record<string, unknown> = {
@@ -88,5 +103,35 @@ describe("assistant visualization action guardrails", () => {
     expect(action.status).toBe("applied");
     expect(deps.visualizationStore.$state.rowSideColors).toEqual(["ortho_id", "tf_family"]);
     expect(deps.visualizationStore.$state.colSideColors).toEqual(["tissue_types"]);
+  });
+});
+
+describe("assistant deeplink state planning", () => {
+  it("uses explicit deeplink filters as the target state and clears stale filters", async () => {
+    const store = useAssistantStore();
+    const msg: ChatMessage = {
+      role: "assistant",
+      content: 'Opening.\n\n```deeplink\n{"view":"heatmap","tables":["all"],"filters":{"filters":{"tf_family":{"value":"GRAS","exact":true}}}}\n```',
+    };
+    const context: ClientContext = {
+      view: "compare expression",
+      route: "/c/CS?id=oldstate",
+      filters: {
+        filters: {
+          tf_family: { value: "C2H2", exact: true },
+          ortho_id: { value: "OG0002324", exact: true },
+        },
+        datasetIdFilters: {},
+      },
+      visualizations: { compare: { selectedOrthogroup: "OG0002324" } },
+    };
+
+    await (store as unknown as { extractAndDispatchActions: (msg: ChatMessage, ctx: ClientContext) => Promise<void> })
+      .extractAndDispatchActions(msg, context);
+
+    expect(msg.actions?.[0]?.status).toBe("applied");
+    expect(msg.actions?.[0]?.summary).toContain("tf_family");
+    expect(msg.actions?.[0]?.summary).toContain("ortho_id");
+    expect(msg.content).toContain("Clearing active filter state");
   });
 });

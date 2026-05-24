@@ -326,6 +326,17 @@ def create_app():
     
     # Initialize GenXBrowser service (wrapper over h5ad-lib)
     app.h5ad_service = GenXBrowserService(app.config_manager)
+    try:
+        from . import assistant_tools
+        warm = assistant_tools.warmup_runtime_cache(app.h5ad_service, app.config_manager)
+        logger.info(
+            "Assistant warmup cached %d dataset(s), %d var column(s), %d obs column(s)",
+            len(warm.get("datasets", [])),
+            len(warm.get("structural_columns", {}).get("var", [])),
+            len(warm.get("structural_columns", {}).get("obs", [])),
+        )
+    except Exception as e:
+        logger.warning("Assistant warmup skipped: %s", e)
 
     # Seed LLM assistant configuration from environment variables on first boot.
     # Persisted values in project_config.json take precedence once the admin

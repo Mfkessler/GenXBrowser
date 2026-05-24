@@ -11,6 +11,7 @@ import numpy as np
 import logging
 import os
 import json
+import re
 from typing import Any, Dict, List, Optional
 
 from . import filter_parser
@@ -1437,6 +1438,20 @@ def _build_assistant_context(service, cm, selected_tables: Optional[List[str]] =
                 for s in kept_species
             ],
         }
+        try:
+            col_defs = cm.get_column_definitions() or {}
+            internal_to_display = {
+                str(k): str((v or {}).get("display_name") or k)
+                for k, v in col_defs.items()
+                if isinstance(k, str) and isinstance(v, dict)
+            }
+            slim["column_internal_names"] = dict(list(internal_to_display.items())[:120])
+            slim["column_display_names"] = {
+                display: internal
+                for internal, display in list(internal_to_display.items())[:120]
+            }
+        except Exception:
+            pass
         if selected_set is not None and omitted_codes:
             slim["omitted_species"] = {
                 "count": len(omitted_codes),
@@ -1447,6 +1462,261 @@ def _build_assistant_context(service, cm, selected_tables: Optional[List[str]] =
     except Exception as e:
         logger.warning(f"Assistant context build failed: {e}")
         return "{}"
+
+
+_FAST_PHYLO_RE = re.compile(r"\b(?:open|show|zeige|öffne)?\s*(?:the\s+)?(?:gene\s+tree|phylo(?:genetic)?\s*tree|phylotree|genbaum|stammbaum)\s+(?:for\s+)?(?:orthogroup\s+)?(OG[0-9A-Za-z_.-]+)\b", re.I)
+_FAST_TF_HEATMAP_RE = re.compile(r"\b(?:open|show|zeige|öffne).*?heatmap.*?(?:all\s+)?(.+?)\s+transcription\s+factors?\s+(?:across\s+(?:every|all)\s+(?:species|datasets)|in\s+([A-Za-z0-9_.-]+))", re.I)
+_FAST_TF_HEATMAP_AS_RE = re.compile(r"\b(?:show|open|zeige|öffne)\s+(.+?)\s+transcription\s+factors?\s+as\s+a\s+heatmap\s+in\s+([A-Za-z0-9_.-]+)\b", re.I)
+_FAST_TF_ORA_RE = re.compile(r"\b(?:run|start|zeige|öffne).*?\bORA\b.*?on\s+(.+?)\s+transcription\s+factors?\s+in\s+([A-Za-z0-9_.-]+)\b", re.I)
+_FAST_SAMPLE_HEATMAP_RE = re.compile(r"\bfilter\s+([A-Za-z0-9_.-]+)\s+to\s+samples\s+where\s+(.+?)\s+is\s+(.+?)\s+and\s+open\s+a\s+heatmap\b", re.I)
+_FAST_TF_SAMPLE_HEATMAP_RE = re.compile(r"\bshow\s+expression\s+of\s+(.+?)\s+in\s+(?:(?P<table>[A-Za-z0-9_.-]+)\s+)?samples\s+where\s+(.+?)\s+is\s+(.+?)\s+as\s+a\s+heatmap\b", re.I)
+_FAST_COMPARE_ORTHO_RE = re.compile(r"\bcompare\s+expression\s+of\s+orthogroup\s+(OG[0-9A-Za-z_.-]+)\s+across\s+all\s+species\b", re.I)
+_FAST_TOP_TF_RE = re.compile(r"\bwhich\s+transcription\s+factor\s+family\s+is\s+most\s+represented\s+in\s+([A-Za-z0-9_.-]+)\b", re.I)
+_FAST_COMMON_SAMPLE_RE = re.compile(r"\bwhich\s+sample\s+metadata\s+values\s+are\s+common\s+to\s+every\s+species\b", re.I)
+_FAST_SHARED_ORTHO_RE = re.compile(r"\bwhich\s+orthogroups\s+are\s+shared\s+across\s+all\s+loaded\s+species\b", re.I)
+_FAST_SUMMARY_RE = re.compile(r"\bsummarize\s+the\s+([A-Za-z0-9_.-]+)\s+dataset\b", re.I)
+
+
+def _assistant_species_display_lookup(service) -> Dict[str, str]:
+    lookup: Dict[str, str] = {}
+    try:
+        entries = service.get_tables(include_disabled=False)
+    except Exception:
+        entries = []
+    for entry in entries:
+        table_name = str(entry.get("table_name") or entry.get("full_name") or entry.get("_species_code") or entry.get("code") or "").strip()
+        code = str(entry.get("_species_code") or entry.get("code") or "").strip()
+        if not table_name:
+            continue
+        display = table_name.replace("_", " ").strip()
+        if display:
+            parts = display.split()
+            if len(parts) >= 2:
+                display = " ".join([parts[0].capitalize(), *[p.lower() for p in parts[1:]]])
+            else:
+                display = display.capitalize()
+        for key in (table_name, code, entry.get("full_name"), entry.get("display_name")):
+            if isinstance(key, str) and key.strip():
+                lookup[key.strip().lower()] = display or key.strip()
+    return lookup
+
+
+def _assistant_fast_path_response(service, cm, user_text: str, client_ctx: Dict[str, Any]) -> Optional[str]:
+    """Handle generated assistant examples without needing an LLM round-trip."""
+    text = str(user_text or "").strip()
+    if not text:
+        return None
+
+    from . import assistant_tools as _at
+
+    def _has_var_column(tables: List[str], column: str) -> bool:
+        try:
+            sentinels = {"all", "*", "__all__", "every", "everything"}
+            raw_tables = None if any(str(t).strip().lower() in sentinels for t in tables) else tables
+            codes = _at._resolve_species_codes(service, raw_tables)
+        except Exception:
+            codes = []
+        for code in codes:
+            try:
+                adata = service.registry.load(code)
+            except Exception:
+                adata = None
+            var_df = getattr(adata, "var", None) if adata is not None else None
+            if var_df is not None and column in var_df.columns:
+                return True
+        return False
+
+    selected = []
+    if isinstance(client_ctx, dict):
+        raw = client_ctx.get("selected_table_names") or client_ctx.get("tables") or []
+        if isinstance(raw, list):
+            selected = [str(item) for item in raw if str(item).strip()]
+    selected_or_all = selected or ["all"]
+
+    phylo_match = _FAST_PHYLO_RE.search(text)
+    if phylo_match:
+        og_id = phylo_match.group(1)
+        result = _at.tool_build_deeplink(
+            service, cm,
+            view="phylo",
+            tables=selected_or_all,
+            filters={"filters": {"ortho_id": {"value": og_id, "match_mode": "or", "exact": True}}},
+            visualizations={"phyloTree": {"selectedOrthogroup": og_id}},
+        )
+        if result.get("error"):
+            return f"I could not open that phylo view: {result.get('error')}"
+        return (
+            f"Opening the gene tree for {og_id}.\n\n"
+            "```deeplink\n"
+            + json.dumps({
+                "view": "phylo",
+                "tables": result.get("tables") or selected_or_all,
+                "filters": {"filters": {"ortho_id": {"value": og_id, "match_mode": "or", "exact": True}}},
+                "visualizations": {"phyloTree": {"selectedOrthogroup": og_id}},
+            }, ensure_ascii=False)
+            + "\n```"
+        )
+
+    compare_match = _FAST_COMPARE_ORTHO_RE.search(text)
+    if compare_match:
+        og_id = compare_match.group(1)
+        result = _at.tool_build_deeplink(
+            service, cm,
+            view="compare",
+            tables=["all"],
+            filters={"filters": {"ortho_id": {"value": og_id, "match_mode": "or", "exact": True}}},
+            visualizations={"compare": {"selectedOrthogroup": og_id}},
+        )
+        if result.get("error"):
+            return f"I could not open that compare view: {result.get('error')}"
+        return (
+            f"Opening the compare view for {og_id}.\n\n"
+            "```deeplink\n"
+            + json.dumps({
+                "view": "compare",
+                "tables": result.get("tables") or ["all"],
+                "filters": {"filters": {"ortho_id": {"value": og_id, "match_mode": "or", "exact": True}}},
+                "visualizations": {"compare": {"selectedOrthogroup": og_id}},
+            }, ensure_ascii=False)
+            + "\n```"
+        )
+
+    sample_match = _FAST_SAMPLE_HEATMAP_RE.search(text)
+    tf_sample_match = _FAST_TF_SAMPLE_HEATMAP_RE.search(text)
+    if sample_match or tf_sample_match:
+        if sample_match:
+            tables = [sample_match.group(1)]
+            trait_label = sample_match.group(2).strip()
+            trait_value = sample_match.group(3).strip(" .")
+            filters = {trait_label: {"value": trait_value, "match_mode": "or", "exact": True}}
+        else:
+            table = tf_sample_match.group("table")
+            tables = [table] if table else selected_or_all
+            tf_family = tf_sample_match.group(1).strip(" .")
+            trait_label = tf_sample_match.group(3).strip()
+            trait_value = tf_sample_match.group(4).strip(" .")
+            filters = {
+                "tf_family": {"value": tf_family, "match_mode": "or", "exact": True},
+                trait_label: {"value": trait_value, "match_mode": "or", "exact": True},
+            }
+        result = _at.tool_build_deeplink(
+            service, cm, view="heatmap", tables=tables,
+            filters={"filters": filters}, visualizations={},
+        )
+        if result.get("error"):
+            return f"I could not open that heatmap view: {result.get('error')}"
+        return (
+            f"Opening the heatmap for samples where {trait_label} is {trait_value}.\n\n"
+            "```deeplink\n"
+            + json.dumps({
+                "view": "heatmap",
+                "tables": result.get("tables") or tables,
+                "filters": {"filters": filters},
+                "visualizations": {},
+            }, ensure_ascii=False)
+            + "\n```"
+        )
+
+    top_tf_match = _FAST_TOP_TF_RE.search(text)
+    if top_tf_match:
+        table = top_tf_match.group(1)
+        result = _at.tool_top_groups(service, cm, table=table, group_column="tf_family", top_n=3)
+        top = result.get("top") or []
+        if top:
+            first = top[0]
+            return f"In {table}, the most represented transcription factor family is {first.get('value')} ({first.get('count')} transcripts)."
+        return f"I could not find transcription factor family counts for {table}."
+
+    if _FAST_COMMON_SAMPLE_RE.search(text):
+        summary = _at.tool_state_summary(service, cm)
+        obs_cols = summary.get("structural_columns", {}).get("obs", [])
+        column = "condition" if "condition" in obs_cols else ("tissue" if "tissue" in obs_cols else (obs_cols[0] if obs_cols else ""))
+        if column:
+            tables = [str(d.get("code")) for d in (summary.get("datasets") or []) if d.get("code")]
+            result = _at.tool_common_values(service, cm, column=column, tables=tables, namespace="obs", limit=20)
+            values = result.get("values") or []
+            display = result.get("display_name") or column
+            if values:
+                shown = ", ".join(str(v) for v in values[:10])
+                suffix = f" ({result.get('n_common')} total)" if result.get("n_common") else ""
+                return f"Common {display} values across the loaded species: {shown}{suffix}."
+            return f"I found no common {display} values across every loaded species."
+
+    if _FAST_SHARED_ORTHO_RE.search(text):
+        summary = _at.tool_state_summary(service, cm)
+        tables = [str(d.get("code")) for d in (summary.get("datasets") or []) if d.get("code")]
+        result = _at.tool_common_values(service, cm, column="ortho_id", tables=tables, namespace="var", limit=10)
+        values = result.get("values") or []
+        if values:
+            return f"I found {result.get('n_common')} orthogroups shared across all loaded species. Examples: {', '.join(values[:10])}."
+        return "I found no orthogroups shared across every loaded species."
+
+    summary_match = _FAST_SUMMARY_RE.search(text)
+    if summary_match:
+        target = summary_match.group(1)
+        summary = _at.tool_state_summary(service, cm)
+        for dataset in summary.get("datasets") or []:
+            if str(dataset.get("code", "")).lower() == target.lower() or str(dataset.get("label", "")).lower() == target.lower():
+                return (
+                    f"{dataset.get('label') or dataset.get('code')} ({dataset.get('code')}) contains "
+                    f"{dataset.get('n_genes')} transcripts across {dataset.get('n_samples')} samples."
+                )
+        return f"I could not find a loaded dataset named {target}."
+
+    species_display = _assistant_species_display_lookup(service)
+
+    for regex, view, default_tables, visualizations in (
+        (_FAST_TF_ORA_RE, "ora", None, {"oraColumnName": "go_terms"}),
+        (_FAST_TF_HEATMAP_RE, "heatmap", ["all"], {}),
+        (_FAST_TF_HEATMAP_AS_RE, "heatmap", None, {}),
+    ):
+        match = regex.search(text)
+        if not match:
+            continue
+        family = re.sub(r"\b(?:of|all|the)\b", "", match.group(1), flags=re.I).strip(" .")
+        family = re.sub(r"\s+", " ", family)
+        if not family:
+            continue
+        explicit_table = match.group(2) if len(match.groups()) >= 2 else None
+        tables = [explicit_table] if explicit_table else (default_tables or selected_or_all)
+        if _has_var_column(tables, "tf_family"):
+            column = "tf_family"
+            value = family
+        else:
+            resolved = _at.tool_resolve_value(service, cm, query=family, tables=tables, max_hits=8)
+            hits = [h for h in (resolved.get("hits") or []) if h.get("namespace") == "var"]
+            tf_hit = hits[0] if hits else None
+            if not tf_hit:
+                return None
+            column = str(tf_hit.get("column") or "tf_family")
+            value = str(tf_hit.get("value") or family)
+        result = _at.tool_build_deeplink(
+            service, cm,
+            view=view,
+            tables=tables,
+            filters={"filters": {column: {"value": value, "match_mode": "or", "exact": True}}},
+            visualizations=visualizations,
+        )
+        if result.get("error"):
+            return f"I could not open that {view} view: {result.get('error')}"
+        label = "GO term ORA" if view == "ora" else "heatmap"
+        table_label = ""
+        if view == "ora" and tables:
+            table_label = species_display.get(str(tables[0]).lower(), str(tables[0]))
+            table_label = f" in {table_label}"
+        return (
+            f"Opening the {label} for {value} transcription factors{table_label}.\n\n"
+            "```deeplink\n"
+            + json.dumps({
+                "view": view,
+                "tables": result.get("tables") or tables,
+                "filters": {"filters": {column: {"value": value, "match_mode": "or", "exact": True}}},
+                "visualizations": visualizations,
+            }, ensure_ascii=False)
+            + "\n```"
+        )
+
+    return None
 
 
 @api_bp.route('/api/assistant/chat', methods=['POST'])
@@ -1472,6 +1742,20 @@ def assistant_chat():
     for m in messages:
         if not isinstance(m, dict) or m.get("role") not in ("user", "assistant", "system") or not isinstance(m.get("content"), str):
             return jsonify({"error": "malformed message"}), 400
+    latest_user = next((m.get("content") or "" for m in reversed(messages) if m.get("role") == "user"), "")
+    guarded = assistant_module.scope_guard_response(latest_user)
+    if guarded:
+        stream = bool(body.get("stream", True))
+        if stream:
+            from flask import Response
+            def _guarded_sse():
+                yield f"data: {json.dumps({'delta': guarded}, ensure_ascii=False)}\n\n"
+                yield "event: done\ndata: {\"model\": \"scope-guard\", \"iterations\": 0}\n\n"
+            return Response(_guarded_sse(), mimetype="text/event-stream", headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            })
+        return jsonify({"ok": True, "model": "scope-guard", "content": guarded}), 200
     # Hard cap on total prompt size.
     total_chars = sum(len(m["content"]) for m in messages)
     if total_chars > 32000:
@@ -1484,9 +1768,22 @@ def assistant_chat():
     max_tool_iterations = int(cfg.get("max_tool_iterations", 6))
     tool_deadline_s = float(cfg.get("tool_deadline_s", 90))
 
+    client_ctx = body.get("client_context") or {}
+    fast_content = _assistant_fast_path_response(get_service(), cm, latest_user, client_ctx if isinstance(client_ctx, dict) else {})
+    if fast_content:
+        if stream:
+            from flask import Response
+            def _fast_sse():
+                yield f"data: {json.dumps({'delta': fast_content}, ensure_ascii=False)}\n\n"
+                yield "event: done\ndata: {\"model\": \"deterministic-fast-path\", \"iterations\": 0}\n\n"
+            return Response(_fast_sse(), mimetype="text/event-stream", headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            })
+        return jsonify({"ok": True, "model": "deterministic-fast-path", "content": fast_content}), 200
+
     # Build the rich system prompt (role + action grammar + tool policy + few-shots).
     from .prompt_builder import build_system_prompt
-    client_ctx = body.get("client_context") or {}
     # Slim DATA_CONTEXT to the species the user is currently looking at when
     # the frontend tells us which tables are selected. The full catalogue is
     # still discoverable via the `list_schema` tool.
@@ -1629,6 +1926,8 @@ def assistant_chat():
                 last_err = ev.get("error")
         if last_err and not text_parts:
             return jsonify({"error": last_err}), 502
+        if not text_parts:
+            return jsonify({"error": "Assistant returned no content"}), 502
         return jsonify({"ok": True, "model": model_used, "content": "".join(text_parts)}), 200
 
     # -- Legacy path (tool calling disabled) --------------------------------
@@ -1779,6 +2078,15 @@ def assistant_deeplink():
 
     if view != "catalog" and not resolved:
         return jsonify({"error": "'tables' must contain at least one known dataset for this view"}), 400
+
+    try:
+        from . import assistant_tools as _at
+        resolved_codes = [service._normalize_table_name(tn) for tn in resolved]
+        filters = _at._normalize_deeplink_filter_columns(
+            service, current_app.config_manager, resolved_codes, filters,
+        )
+    except Exception as e:
+        logger.warning(f"display-name filter normalization failed: {e}")
 
     # SCHEMA VALIDATION: drop filter columns that don't exist in any of the
     # resolved tables, and surface them as warnings. Without this, the

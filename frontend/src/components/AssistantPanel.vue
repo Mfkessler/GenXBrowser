@@ -232,7 +232,7 @@
                 <span
                   v-else-if="action.kind === 'select_tables' && action.status === 'applied'"
                   class="inline-flex items-center gap-1 bg-primary-100 text-primary-900 text-xs font-semibold px-3 py-1.5 rounded-full"
-                >✓ Selected {{ (action.spec.tables as string[] | undefined)?.join(', ') || 'tables' }}</span>
+                >✓ Selected {{ formatSpeciesList(action.spec.tables) }}</span>
                 <button
                   v-else-if="action.kind === 'select_tables' && action.status !== 'applied'"
                   class="inline-flex items-center gap-1 bg-primary-700 hover:bg-primary-900 text-white text-xs font-semibold px-3 py-1.5 rounded-full cursor-pointer"
@@ -344,7 +344,7 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, ref, watch } from "vue";
+import { nextTick, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { marked } from "marked";
 import axios from "axios";
@@ -388,6 +388,57 @@ const FALLBACK_SUGGESTIONS = [
 
 const suggestedPrompts = ref<string[]>([...FALLBACK_SUGGESTIONS]);
 const suggestionsLoading = ref(false);
+const speciesLabelLookup = ref<Record<string, string>>({});
+let suggestionShuffleCount = 0;
+
+interface SpeciesTableEntry {
+  table_name?: string;
+  _species_code?: string;
+  code?: string;
+  full_name?: string;
+  display_name?: string;
+}
+
+function formatSpeciesLabel(raw: unknown): string {
+  const value = String(raw || "").trim();
+  if (!value) return "";
+  const mapped = speciesLabelLookup.value[value.toLowerCase()];
+  if (mapped) return mapped;
+  const cleaned = value.replace(/_/g, " ").trim();
+  const parts = cleaned.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return [
+      parts[0].charAt(0).toUpperCase() + parts[0].slice(1).toLowerCase(),
+      ...parts.slice(1).map((part) => part.toLowerCase()),
+    ].join(" ");
+  }
+  return cleaned;
+}
+
+function formatSpeciesList(raw: unknown): string {
+  const values = Array.isArray(raw) ? raw : [];
+  const labels = values.map(formatSpeciesLabel).filter(Boolean);
+  return labels.length > 0 ? labels.join(", ") : "tables";
+}
+
+async function loadSpeciesLabels() {
+  try {
+    const resp = await axios.get<SpeciesTableEntry[]>(`${API_BASE_URL}/api/tables`);
+    const lookup: Record<string, string> = {};
+    for (const entry of resp.data || []) {
+      const tableName = String(entry.table_name || entry.full_name || entry._species_code || entry.code || "").trim();
+      if (!tableName) continue;
+      const label = formatSpeciesLabel(tableName);
+      for (const key of [tableName, entry._species_code, entry.code, entry.full_name, entry.display_name]) {
+        const normalized = String(key || "").trim().toLowerCase();
+        if (normalized) lookup[normalized] = label;
+      }
+    }
+    speciesLabelLookup.value = lookup;
+  } catch {
+    speciesLabelLookup.value = {};
+  }
+}
 
 async function refreshSuggestions() {
   if (suggestionsLoading.value) return;
@@ -395,7 +446,7 @@ async function refreshSuggestions() {
   try {
     const resp = await axios.get<{ suggestions: { id: string; text: string }[] }>(
       `${API_BASE_URL}/api/assistant/suggestions`,
-      { params: { n: 4 } },
+      { params: { n: 4, seed: `${Date.now()}${++suggestionShuffleCount}` } },
     );
     const items = (resp.data?.suggestions || [])
       .map((s) => s.text)
@@ -413,10 +464,17 @@ async function refreshSuggestions() {
 watch(
   () => store.open,
   (isOpen) => {
-    if (isOpen && store.messages.length === 0) refreshSuggestions();
+    if (isOpen) {
+      if (Object.keys(speciesLabelLookup.value).length === 0) void loadSpeciesLabels();
+      if (store.messages.length === 0) refreshSuggestions();
+    }
   },
   { immediate: true },
 );
+
+onMounted(() => {
+  void loadSpeciesLabels();
+});
 
 function stripActionBlocks(content: string): string {
   let out = content

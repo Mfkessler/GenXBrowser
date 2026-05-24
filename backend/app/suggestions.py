@@ -15,9 +15,12 @@ Public surface:
 from __future__ import annotations
 
 import logging
+import os
 import random
 import time
 from typing import Any, Dict, List, Optional
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -28,56 +31,67 @@ logger = logging.getLogger(__name__)
 _TEMPLATES: List[Dict[str, Any]] = [
     {
         "id": "tf_heatmap",
+        "view": "heatmap",
         "slots": ["tf_family", "species"],
         "text": "Show {tf_family} transcription factors as a heatmap in {species}.",
     },
     {
         "id": "tf_heatmap_all",
+        "view": "heatmap",
         "slots": ["tf_family"],
         "text": "Open a heatmap of all {tf_family} transcription factors across every species.",
     },
     {
-        "id": "tf_tissue",
-        "slots": ["tf_family", "tissue"],
-        "text": "Show expression of {tf_family} in {tissue} samples as a heatmap.",
+        "id": "tf_sample_trait",
+        "view": "heatmap",
+        "slots": ["tf_family", "sample_trait"],
+        "text": "Show expression of {tf_family} in samples where {sample_trait_label} is {sample_trait_value} as a heatmap.",
     },
     {
-        "id": "tissue_heatmap",
-        "slots": ["tissue", "species"],
-        "text": "Filter {species} to {tissue} samples and open a heatmap.",
+        "id": "sample_trait_heatmap",
+        "view": "heatmap",
+        "slots": ["sample_trait", "tf_family"],
+        "text": "Show expression of {tf_family} in {sample_trait_table} samples where {sample_trait_label} is {sample_trait_value} as a heatmap.",
     },
     {
         "id": "ortho_compare",
+        "view": "compare",
         "slots": ["ortho_id"],
         "text": "Compare expression of orthogroup {ortho_id} across all species.",
     },
     {
         "id": "ortho_phylo",
-        "slots": ["ortho_id"],
+        "view": "phylo",
+        "slots": ["ortho_id_with_tree"],
         "text": "Open the gene tree for orthogroup {ortho_id}.",
     },
     {
         "id": "ora_tf",
+        "view": "ora",
         "slots": ["tf_family", "species"],
         "text": "Run a GO term ORA on {tf_family} transcription factors in {species}.",
     },
     {
         "id": "summary",
+        "view": "other",
         "slots": ["species"],
         "text": "Summarize the {species} dataset.",
     },
     {
         "id": "shared_orthogroups",
+        "view": "compare",
         "slots": [],
         "text": "Which orthogroups are shared across all loaded species?",
     },
     {
-        "id": "common_tissues",
+        "id": "common_sample_traits",
+        "view": "compare",
         "slots": [],
-        "text": "Which sample tissues are common to every species?",
+        "text": "Which sample metadata values are common to every species?",
     },
     {
         "id": "top_tf_family",
+        "view": "ora",
         "slots": ["species"],
         "text": "Which transcription factor family is most represented in {species}?",
     },
@@ -93,7 +107,11 @@ _POOL_CACHE: Dict[str, Any] = {"mtime": None, "pool": None, "built_at": 0.0}
 def _safe_mtime(service, cm) -> Optional[float]:
     try:
         from .overview import _overview_mtime
-        return float(_overview_mtime(service, cm))
+        mtime = float(_overview_mtime(service, cm))
+        overlay_path = getattr(service, "_custom_overlays_path", None)
+        if overlay_path and os.path.exists(str(overlay_path)):
+            mtime = max(mtime, os.path.getmtime(str(overlay_path)))
+        return round(mtime, 3)
     except Exception:  # pragma: no cover — defensive
         return None
 
@@ -102,7 +120,7 @@ def build_suggestion_pool(service, cm) -> Dict[str, List[str]]:
     """Collect candidate values from the live dataset.
 
     Returns a dict with these (always-present) keys, each a list of strings:
-    ``species``, ``tissue``, ``tf_family``, ``ortho_id``. Empty lists are
+    ``species``, ``sample_trait``, ``tf_family``, ``ortho_id``. Empty lists are
     fine — the generator filters templates accordingly.
     """
     mtime = _safe_mtime(service, cm)
@@ -111,9 +129,10 @@ def build_suggestion_pool(service, cm) -> Dict[str, List[str]]:
         return cached
 
     species: List[str] = []
-    tissues: List[str] = []
+    sample_traits: List[Dict[str, str]] = []
     tf_families: List[str] = []
     ortho_ids: List[str] = []
+    ortho_ids_with_tree: List[str] = []
 
     try:
         entries = service.get_tables(include_disabled=False)
@@ -121,7 +140,7 @@ def build_suggestion_pool(service, cm) -> Dict[str, List[str]]:
         logger.warning("suggestion pool: get_tables failed: %s", e)
         entries = []
 
-    seen_tissue: set = set()
+    seen_sample_trait: set = set()
     seen_tf: set = set()
     seen_ortho: set = set()
     # Generic slot harvested from any low-cardinality categorical column.
@@ -137,6 +156,32 @@ def build_suggestion_pool(service, cm) -> Dict[str, List[str]]:
         "id", "name", "path", "score", "pvalue", "p_value", "padj",
         "ensembl", "uniprot", "gene_symbol", "transcript",
     )
+
+    def _display_name(col: str) -> str:
+        try:
+            defs = cm.get_column_definitions() or {}
+            spec = defs.get(col) or {}
+            return str(spec.get("display_name") or col)
+        except Exception:
+            return col
+
+    def _has_expression_for_samples(adata, mask) -> bool:
+        try:
+            if not bool(mask.any()):
+                return False
+            x = getattr(adata, "X", None)
+            if x is None:
+                return True
+            mask_arr = mask.to_numpy() if hasattr(mask, "to_numpy") else mask
+            subset = x[mask_arr, :]
+            if hasattr(subset, "nnz"):
+                return bool(subset.nnz > 0)
+            arr = np.asarray(subset)
+            if arr.size > 200000:
+                arr = arr[:, : max(1, int(200000 / max(1, arr.shape[0])))]
+            return bool(arr.size and np.isfinite(arr).any())
+        except Exception:
+            return True
 
     def _harvest(adata, code: str, df, namespace: str):
         for col in df.columns:
@@ -177,17 +222,36 @@ def build_suggestion_pool(service, cm) -> Dict[str, List[str]]:
             adata = None
         if adata is None:
             continue
-        # Tissues from obs.
-        if "tissue" in adata.obs.columns:
-            try:
-                vals = adata.obs["tissue"].dropna().astype(str)
-                top = vals.value_counts().head(20).index.tolist()
-                for v in top:
-                    if v and v not in seen_tissue:
-                        seen_tissue.add(v)
-                        tissues.append(v)
-            except Exception:
-                pass
+        # Sample traits from any low-cardinality string/categorical obs column.
+        try:
+            for col in adata.obs.columns:
+                series = adata.obs[col].dropna()
+                if series.empty:
+                    continue
+                dtype = str(series.dtype)
+                if dtype.startswith("float") or dtype.startswith("int") or dtype.startswith("bool"):
+                    continue
+                vc = series.astype(str).value_counts()
+                if not (1 < len(vc) <= 60):
+                    continue
+                for v in vc.head(8).index.tolist():
+                    if not v or len(str(v)) > 60:
+                        continue
+                    mask = adata.obs[col].astype(str) == str(v)
+                    if not _has_expression_for_samples(adata, mask):
+                        continue
+                    key = (col, str(v))
+                    if key in seen_sample_trait:
+                        continue
+                    seen_sample_trait.add(key)
+                    sample_traits.append({
+                        "column": str(col),
+                        "display_name": _display_name(str(col)),
+                        "value": str(v),
+                        "table": str(code),
+                    })
+        except Exception:
+            pass
         # TF families from var (only TF rows, if `is_tf` exists).
         if "tf_family" in adata.var.columns:
             try:
@@ -214,20 +278,28 @@ def build_suggestion_pool(service, cm) -> Dict[str, List[str]]:
                     if v not in seen_ortho:
                         seen_ortho.add(v)
                         ortho_ids.append(v)
+                    try:
+                        tree_store = getattr(service, "gene_trees", None) or getattr(service, "gene_tree_store", None)
+                        if tree_store is not None and tree_store.get(str(v)) and v not in ortho_ids_with_tree:
+                            ortho_ids_with_tree.append(v)
+                    except Exception:
+                        pass
             except Exception:
                 pass
-        # Generic schema-driven harvest for any other low-cardinality column.
+        # Generic schema-driven harvest for sample metadata only. Scanning
+        # every gene-level .var column here is too expensive on large H5ADs
+        # and not needed for the balanced primary-view examples.
         try:
             _harvest(adata, str(code), adata.obs, "obs")
-            _harvest(adata, str(code), adata.var, "var")
         except Exception:
             pass
 
     pool = {
         "species": species,
-        "tissue": tissues,
+        "sample_trait": sample_traits,
         "tf_family": tf_families,
         "ortho_id": ortho_ids,
+        "ortho_id_with_tree": ortho_ids_with_tree,
         "discovered": discovered,
     }
     _POOL_CACHE["pool"] = pool
@@ -262,7 +334,27 @@ def _render_generic(tpl_text: str, slot: Dict[str, str]) -> Dict[str, str]:
         column=slot.get("column", ""),
         value=slot.get("value", ""),
     )
-    return {"id": f"generic_{slot.get('namespace')}_{slot.get('column')}", "text": text}
+    view = "heatmap" if slot.get("namespace") == "obs" else "ora"
+    return {"id": f"generic_{slot.get('namespace')}_{slot.get('column')}", "view": view, "text": text}
+
+
+def _fill_template(tpl: Dict[str, Any], pool: Dict[str, Any], rng: random.Random) -> Optional[Dict[str, str]]:
+    fillers: Dict[str, str] = {}
+    for slot in tpl["slots"]:
+        values = pool.get(slot) or []
+        if not values:
+            return None
+        choice = rng.choice(values)
+        if slot == "sample_trait":
+            fillers["sample_trait_column"] = choice.get("column", "")
+            fillers["sample_trait_label"] = choice.get("display_name") or choice.get("column", "")
+            fillers["sample_trait_value"] = choice.get("value", "")
+            fillers["sample_trait_table"] = choice.get("table", "")
+        elif slot == "ortho_id_with_tree":
+            fillers["ortho_id"] = str(choice)
+        else:
+            fillers[slot] = str(choice)
+    return {"id": tpl["id"], "view": tpl.get("view", "other"), "text": tpl["text"].format(**fillers)}
 
 
 def generate_suggestions(
@@ -292,22 +384,32 @@ def generate_suggestions(
     suggestions: List[Dict[str, str]] = []
     seen_text: set = set()
 
-    # Pass 1: well-known slot templates (tf_family/tissue/ortho_id…).
+    # Pass 1: balanced view round-robin across the primary analytical views.
+    preferred_views = ["ora", "heatmap", "compare", "phylo"]
+    by_view = {view: [tpl for tpl in templates if tpl.get("view") == view] for view in preferred_views}
+    for view in preferred_views:
+        if len(suggestions) >= n:
+            break
+        candidates = list(by_view.get(view) or [])
+        rng.shuffle(candidates)
+        for tpl in candidates:
+            item = _fill_template(tpl, pool, rng)
+            if not item or item["text"] in seen_text:
+                continue
+            seen_text.add(item["text"])
+            suggestions.append(item)
+            break
+
+    # Pass 2: fill any remaining slots with valid non-repeating templates.
     rounds = 0
-    while len(suggestions) < n and rounds < n * 4 and templates:
+    while len(suggestions) < n and rounds < n * 5 and templates:
         rounds += 1
-        for tpl in templates:
-            if len(suggestions) >= n:
-                break
-            try:
-                fillers = {slot: rng.choice(pool[slot]) for slot in tpl["slots"]}
-            except IndexError:
-                continue
-            text = tpl["text"].format(**fillers)
-            if text in seen_text:
-                continue
-            seen_text.add(text)
-            suggestions.append({"id": tpl["id"], "text": text})
+        tpl = rng.choice(templates)
+        item = _fill_template(tpl, pool, rng)
+        if not item or item["text"] in seen_text:
+            continue
+        seen_text.add(item["text"])
+        suggestions.append(item)
 
     # Pass 2: schema-driven generic templates so under-annotated deployments
     # still get a couple of useful prompts.

@@ -349,6 +349,8 @@ const defaultSampleColumn = computed(() => (
   columnsStore.filterableColColumns.find((column) => column.is_tissue) ?? null
 ));
 
+const defaultSampleColumnName = computed(() => defaultSampleColumn.value?.column_name ?? null);
+
 const defaultSampleColumnLabel = computed(() => (
   defaultSampleColumn.value?.display_name
   || (defaultSampleColumn.value?.column_name ? beautifyLabel(defaultSampleColumn.value.column_name) : 'Sample Metadata')
@@ -540,11 +542,18 @@ onMounted(() => {
 
 
 watch(
-  [effectiveFilters, () => filtersStore.filterChainVersion],
+  [effectiveFilters, () => filtersStore.filterChainVersion, defaultSampleColumnName],
   async ([newFilters]) => {
     console.log(`[CatalogEntry watcher] Filter change detected for ${props.tableName}:`, newFilters);
     
     if (!props.tableName) return;
+
+    if (!defaultSampleColumnName.value) {
+      hasCalculatedTissues.value = false;
+      n_tissues.value = null;
+      tissueTypes.value = null;
+      return;
+    }
 
     // Check for orthogroup filter
     isOG.value = Object.keys(newFilters).includes("ortho_id");

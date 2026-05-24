@@ -30,18 +30,20 @@ def _make_service():
         "is_tf":     [True, True, True, True, True],
     })
     cs_obs = pd.DataFrame({"tissue": ["leaf", "leaf", "root", "flower"]})
+    cs_obs["condition"] = ["Leaf", "Leaf", "Root", "Flower"]
 
     ps_var = pd.DataFrame({
         "tf_family": ["bHLH", "MIKC"],
         "ortho_id":  ["OG3", "OG1"],
         "is_tf":     [True, True],
     })
-    ps_obs = pd.DataFrame({"tissue": ["root", "leaf"]})
+    ps_obs = pd.DataFrame({"tissue": ["root", "leaf"], "condition": ["Root", "Leaf"]})
 
     class FakeAdata:
         def __init__(self, var, obs):
             self.var = var
             self.obs = obs
+            self.X = np.ones((len(obs), len(var)))
             self.n_vars = len(var)
             self.n_obs = len(obs)
 
@@ -55,11 +57,22 @@ def _make_service():
         {"_species_code": "CS"},
         {"_species_code": "PS"},
     ]
+    class FakeTrees:
+        def get(self, og_id):
+            return "(a,b);" if og_id == "OG1" else None
+
     service = SimpleNamespace(
         registry=FakeRegistry(),
         get_tables=lambda include_disabled=False: entries,
+        gene_trees=FakeTrees(),
     )
-    cm = SimpleNamespace(get_config=lambda: {})
+    cm = SimpleNamespace(
+        get_config=lambda: {},
+        get_column_definitions=lambda: {
+            "condition": {"display_name": "Condition"},
+            "tissue": {"display_name": "Tissue"},
+        },
+    )
     return service, cm
 
 
@@ -72,11 +85,12 @@ def test_pool_collects_values_from_each_species():
     pool = suggestions.build_suggestion_pool(service, cm)
 
     assert set(pool["species"]) == {"CS", "PS"}
-    assert "leaf" in pool["tissue"]
+    assert any(item["value"] == "Flower" and item["display_name"] == "Condition" for item in pool["sample_trait"])
     assert "MIKC" in pool["tf_family"]
     assert "OG1" in pool["ortho_id"]
+    assert pool["ortho_id_with_tree"] == ["OG1"]
     # No duplicates in any pool list.
-    for key in ("species", "tissue", "tf_family", "ortho_id"):
+    for key in ("species", "tf_family", "ortho_id", "ortho_id_with_tree"):
         assert len(pool[key]) == len(set(pool[key])), key
 
 
@@ -94,6 +108,34 @@ def test_generate_suggestions_returns_distinct_filled_prompts():
     # No unfilled placeholders left over.
     for t in texts:
         assert "{" not in t and "}" not in t
+
+
+def test_generate_suggestions_balances_primary_views_when_available():
+    suggestions._POOL_CACHE["pool"] = None
+    suggestions._POOL_CACHE["mtime"] = None
+
+    service, cm = _make_service()
+    items = suggestions.generate_suggestions(service, cm, n=4, seed=12)
+    assert {it.get("view") for it in items} == {"ora", "heatmap", "compare", "phylo"}
+
+
+def test_generate_suggestions_uses_display_names_for_sample_filters():
+    suggestions._POOL_CACHE["pool"] = None
+    suggestions._POOL_CACHE["mtime"] = None
+
+    service, cm = _make_service()
+    items = suggestions.generate_suggestions(service, cm, n=10, seed=3)
+    assert any(("Condition" in it["text"] or "Tissue" in it["text"]) for it in items)
+
+
+def test_generate_suggestions_skips_phylo_without_verified_tree():
+    suggestions._POOL_CACHE["pool"] = None
+    suggestions._POOL_CACHE["mtime"] = None
+
+    service, cm = _make_service()
+    service.gene_trees = SimpleNamespace(get=lambda og_id: None)
+    items = suggestions.generate_suggestions(service, cm, n=10, seed=2)
+    assert all(it.get("view") != "phylo" for it in items)
 
 
 def test_generate_suggestions_seed_is_deterministic():
@@ -114,6 +156,7 @@ def test_generate_suggestions_skips_templates_with_empty_pool():
     class FakeAdata:
         var = pd.DataFrame()
         obs = pd.DataFrame()
+        X = np.empty((0, 0))
         n_vars = 0
         n_obs = 0
 

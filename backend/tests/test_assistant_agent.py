@@ -40,6 +40,7 @@ def _make_fake_service():
     }, index=[f"CSG{i:03d}" for i in range(6)])
     cs_obs = pd.DataFrame({
         "tissue": ["leaf", "root", "leaf", "flower"],
+        "condition": ["Leaf", "Root", "Leaf", "Flower"],
         "assigned": [1000, 2000, 1500, 800],
     }, index=[f"S{i}" for i in range(4)])
 
@@ -49,7 +50,7 @@ def _make_fake_service():
         "ortho_id": ["OG1", "OG3", "OG1,OG3"],
         "is_tf": [True, True, False],
     }, index=[f"PSG{i:03d}" for i in range(3)])
-    ps_obs = pd.DataFrame({"tissue": ["leaf", "root"]}, index=["p0", "p1"])
+    ps_obs = pd.DataFrame({"tissue": ["leaf", "root"], "condition": ["Leaf", "Root"]}, index=["p0", "p1"])
 
     import numpy as np
 
@@ -95,18 +96,34 @@ def _make_fake_service():
     )
 
 
+def _make_fake_cm():
+    return SimpleNamespace(
+        get_config=lambda: {},
+        get_column_mappings=lambda: {},
+        get_column_definitions=lambda: {
+            "tf_family": {"display_name": "TF Family"},
+            "ortho_id": {"display_name": "Orthogroup"},
+            "tissue": {"display_name": "Tissue"},
+            "condition": {"display_name": "Condition"},
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # tool_list_schema
 # ---------------------------------------------------------------------------
 
 def test_list_schema_returns_both_species_with_columns():
     svc = _make_fake_service()
-    res = tools.tool_list_schema(svc, None)
+    res = tools.tool_list_schema(svc, _make_fake_cm())
     codes = sorted(t["code"] for t in res["tables"])
     assert codes == ["CS", "PS"]
     cs = next(t for t in res["tables"] if t["code"] == "CS")
     var_names = [c["name"] for c in cs["var_columns"]]
     assert "tf_family" in var_names and "ortho_id" in var_names
+    tf = next(c for c in cs["var_columns"] if c["name"] == "tf_family")
+    assert tf["display_name"] == "TF Family"
+    assert res["column_display_names"]["Condition"] == "condition"
     assert "heatmap" in res["views"]
 
 
@@ -116,7 +133,7 @@ def test_list_schema_returns_both_species_with_columns():
 
 def test_resolve_value_finds_mikc_in_tf_family():
     svc = _make_fake_service()
-    res = tools.tool_resolve_value(svc, query="MIKC", tables=["CS"])
+    res = tools.tool_resolve_value(svc, _make_fake_cm(), query="MIKC", tables=["CS"])
     assert res["hits"], res
     top = res["hits"][0]
     assert top["column"] == "tf_family"
@@ -124,6 +141,19 @@ def test_resolve_value_finds_mikc_in_tf_family():
     assert top["match"] == "exact"
     assert top["count"] == 3
     assert top["table"] == "CS"
+    assert top["display_name"] == "TF Family"
+
+
+def test_resolve_value_hunts_sample_traits_without_tissue_assumption():
+    svc = _make_fake_service()
+    res = tools.tool_resolve_value(svc, _make_fake_cm(), query="Flower", tables=["CS"])
+    assert res["hits"], res
+    top = res["hits"][0]
+    assert top["namespace"] == "obs"
+    assert any(
+        h["namespace"] == "obs" and h["column"] == "condition" and h["display_name"] == "Condition"
+        for h in res["hits"]
+    )
 
 
 def test_resolve_value_substring_is_ranked_below_exact():
@@ -142,6 +172,14 @@ def test_count_rows_respects_var_filter():
     res = tools.tool_count_rows(svc, table="CS", var_filters={"tf_family": ["MIKC"]})
     assert res["n_var_match"] == 3
     assert res["n_var_total"] == 6
+
+
+def test_count_rows_accepts_display_name_filter_column():
+    svc = _make_fake_service()
+    res = tools.tool_count_rows(
+        svc, _make_fake_cm(), table="CS", obs_filters={"Condition": ["Flower"]},
+    )
+    assert res["n_obs_match"] == 1
 
 
 def test_count_rows_unknown_table():
@@ -191,9 +229,9 @@ def test_build_deeplink_heatmap_returns_url_path():
         svc, view="heatmap", tables=["CS"],
         filters={"filters": {"tf_family": {"value": "MIKC"}}},
     )
-    assert res["url_path"].startswith("/h/CS?id=")
+    assert res["url_path"].startswith("/h/Capnoides sempervirens?id=")
     assert res["view"] == "heatmap"
-    assert res["tables"] == ["CS"]
+    assert res["tables"] == ["Capnoides sempervirens"]
 
 
 def test_build_deeplink_rejects_unknown_view():
@@ -206,8 +244,8 @@ def test_build_deeplink_expands_all_sentinel_to_every_table():
     """`tables=['all']` should expand to every enabled species."""
     svc = _make_fake_service()
     res = tools.tool_build_deeplink(svc, view="heatmap", tables=["all"])
-    # Both fake species (CS, PS) should have been resolved.
-    assert set(res["tables"]) == {"CS", "PS"}
+    # Both fake species should have been resolved to canonical table names.
+    assert set(res["tables"]) == {"Capnoides sempervirens", "Papaver somniferum"}
     assert res["url_path"].startswith("/h/")
 
 
@@ -215,7 +253,7 @@ def test_build_deeplink_expands_empty_tables_when_filters_dont_drop_all():
     """An empty table list also expands to every enabled species."""
     svc = _make_fake_service()
     res = tools.tool_build_deeplink(svc, view="ora", tables=[])
-    assert set(res["tables"]) == {"CS", "PS"}
+    assert set(res["tables"]) == {"Capnoides sempervirens", "Papaver somniferum"}
 
 
 def test_build_deeplink_all_sentinel_with_filter_drops_empty_tables():
@@ -230,7 +268,7 @@ def test_build_deeplink_all_sentinel_with_filter_drops_empty_tables():
         svc, view="heatmap", tables=["all"],
         filters={"filters": {"tf_family": {"value": "GATA"}}},
     )
-    assert res["tables"] == ["CS"]
+    assert res["tables"] == ["Capnoides sempervirens"]
 
 
 def test_build_deeplink_accepts_legacy_flat_filter_shape():
@@ -243,7 +281,7 @@ def test_build_deeplink_accepts_legacy_flat_filter_shape():
         svc, view="heatmap", tables=["all"],
         filters={"tf_family": {"value": "GATA", "match_mode": "or", "exact": True}},
     )
-    assert res["tables"] == ["CS"]
+    assert res["tables"] == ["Capnoides sempervirens"]
     stored = svc._store[res["id"]]
     assert stored["filters"]["filters"]["tf_family"]["value"] == "GATA"
 
@@ -261,9 +299,21 @@ def test_build_deeplink_obs_filter_drops_species_without_matching_samples():
         svc, view="compare", tables=["all"],
         filters={"filters": {"tissue": {"value": "flower"}}},
     )
-    assert res["tables"] == ["CS"]
+    assert res["tables"] == ["Capnoides sempervirens"]
     dropped = {d["table"] for d in res.get("dropped_tables", [])}
     assert "PS" in dropped
+
+
+def test_build_deeplink_resolves_display_name_filter_column():
+    svc = _make_fake_service()
+    res = tools.tool_build_deeplink(
+        svc, _make_fake_cm(), view="heatmap", tables=["all"],
+        filters={"filters": {"Condition": {"value": "Flower"}}},
+    )
+    assert res["tables"] == ["Capnoides sempervirens"]
+    stored = svc._store[res["id"]]
+    assert "condition" in stored["filters"]["filters"]
+    assert "Condition" not in stored["filters"]["filters"]
 
 
 def test_build_deeplink_obs_filter_no_match_anywhere_returns_error():
@@ -349,7 +399,7 @@ def test_dispatch_passes_args_through():
 
 def test_openai_schema_has_expected_tools():
     names = {t["function"]["name"] for t in tools.openai_schema()}
-    assert {"list_schema", "list_view_settings", "resolve_value",
+    assert {"state_summary", "list_schema", "list_view_settings", "resolve_value",
             "count_rows", "top_groups", "build_deeplink"} <= names
 
 
@@ -442,9 +492,9 @@ def test_agentic_loop_mikc_scenario(monkeypatch):
     assert types[-2] == "delta"
     assert types[-1] == "done"
 
-    # The second tool result must contain a valid /h/CS?id= URL.
+    # The second tool result must contain a valid canonical table-name URL.
     deeplink_result = [e for e in events if e["type"] == "tool_result" and e["name"] == "build_deeplink"][0]
-    assert deeplink_result["result"]["url_path"].startswith("/h/CS?id=")
+    assert deeplink_result["result"]["url_path"].startswith("/h/Capnoides sempervirens?id=")
 
     # Final delta must contain our scripted markdown action block.
     final = [e for e in events if e["type"] == "delta"][0]
@@ -506,6 +556,20 @@ def test_prompt_builder_contains_call_vs_action_guard():
     p = prompt_builder.build_system_prompt(base_prompt="")
     assert "NEVER print tool-call arguments" in p
     assert "tool_calls" in p
+
+
+def test_prompt_builder_contains_display_name_and_scope_rules():
+    p = prompt_builder.build_system_prompt(base_prompt="")
+    assert "DISPLAY NAMES" in p
+    assert "DYNAMIC SAMPLE METADATA" in p
+    assert "SCOPE GUARD" in p
+
+
+def test_scope_guard_deflects_out_of_scope_without_tools():
+    msg = assistant.scope_guard_response("What is the weather?")
+    assert msg is not None
+    assert "GenXBrowser" in msg
+    assert assistant.scope_guard_response("Show Flower samples") is None
 
 
 # ---------------------------------------------------------------------------
@@ -627,4 +691,48 @@ def test_agentic_loop_salvages_leaked_tool_call(monkeypatch):
     final = [e for e in events if e["type"] == "delta"][0]
     assert "add_filter" in final["delta"]
     assert types[-1] == "done"
+
+
+def test_agentic_loop_repairs_sparse_deeplink_from_build_tool(monkeypatch):
+    """A successful build_deeplink call must keep its filter state in the
+    final visible deeplink action even if the model emits only view/tables.
+    """
+    svc = _make_fake_service()
+
+    def dispatch(name, args):
+        return tools.dispatch_tool_call(name, args, service=svc, config_manager=None)
+
+    script = [
+        {
+            "role": "assistant", "content": "",
+            "tool_calls": [{
+                "id": "c1", "type": "function",
+                "function": {"name": "build_deeplink",
+                             "arguments": json.dumps({
+                                 "view": "heatmap", "tables": ["all"],
+                                 "filters": {"filters": {"tf_family": {"value": "MIKC"}}},
+                                 "visualizations": {"rowSideColors": ["tf_family"]},
+                             })},
+            }],
+        },
+        {
+            "role": "assistant",
+            "content": "Opening the heatmap.\n\n```deeplink\n{\"view\":\"heatmap\",\"tables\":[\"all\"]}\n```",
+        },
+    ]
+
+    monkeypatch.setattr(assistant, "_stream_with_fallback", _make_fake_llm(script))
+
+    events = list(assistant.run_agentic_turn(
+        cfg={"model": "fake"},
+        initial_messages=[{"role": "user", "content": "Open a MIKC heatmap across all species"}],
+        tools=tools.openai_schema(),
+        dispatch=dispatch,
+        max_iterations=4,
+    ))
+
+    final = [e for e in events if e["type"] == "delta"][-1]["delta"]
+    assert '"tf_family"' in final
+    assert '"MIKC"' in final
+    assert '"rowSideColors"' in final
 

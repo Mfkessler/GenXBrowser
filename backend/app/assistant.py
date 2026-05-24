@@ -53,6 +53,29 @@ def is_assistant_enabled(config_manager) -> bool:
     )
 
 
+_GREETING_RE = re.compile(
+    r"^\s*(hi|hello|hey|hallo|servus|moin|guten\s+(morgen|tag|abend)|good\s+(morning|afternoon|evening))\s*[!.?]*\s*$",
+    re.I,
+)
+_OUT_OF_SCOPE_RE = re.compile(
+    r"\b(weather|wetter|forecast|news|nachrichten|sports?|joke|witz|recipe|rezept|stock\s+price|translate\s+this|how\s+are\s+you|wie\s+geht|tell\s+me\s+about\s+yourself)\b",
+    re.I,
+)
+
+
+def scope_guard_response(user_text: str) -> Optional[str]:
+    """Return a no-tool response for obvious non-GenXBrowser prompts."""
+    text = str(user_text or "").strip()
+    if not text:
+        return None
+    if _GREETING_RE.match(text) or _OUT_OF_SCOPE_RE.search(text):
+        return (
+            "I can help with the loaded GenXBrowser datasets and interface: "
+            "filters, views, metadata, ORA, heatmaps, compare plots, and phylo trees."
+        )
+    return None
+
+
 def redact_llm_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     """Return a copy with ``api_key`` replaced by a placeholder when set."""
     redacted = dict(cfg or {})
@@ -681,6 +704,9 @@ def _stream_with_fallback(
             if kind == "error":
                 last_err = f"{ev[1]} (model={model})"
                 logger.warning("LLM streaming failure: %s", last_err)
+                if tools and _tool_calling_unsupported_error(ev[1]):
+                    had_error = True
+                    break
                 if emitted:
                     # Already streamed partial output to client — don't
                     # silently retry; surface the error.
@@ -694,6 +720,17 @@ def _stream_with_fallback(
         if not had_error:
             return
     yield ("error", last_err or "no usable model")
+
+
+def _tool_calling_unsupported_error(error: Any) -> bool:
+    text = str(error or "").lower()
+    return (
+        "unexpected keyword argument 'tools'" in text
+        or 'unexpected keyword argument "tools"' in text
+        or "got an unexpected keyword argument tools" in text
+        or "does not support tools" in text
+        or "tool_calls not supported" in text
+    )
 
 
 def _complete_with_fallback(
@@ -710,6 +747,8 @@ def _complete_with_fallback(
             return msg, used, None
         last_err = f"{err} (model={model})"
         logger.warning("LLM upstream failure: %s", last_err)
+        if tools and _tool_calling_unsupported_error(err):
+            continue
     return None, None, last_err or "no usable model"
 
 
@@ -920,6 +959,73 @@ def _repair_phylo_request_deeplink(content: str, user_text: str) -> str:
     )
 
 
+def _repair_deeplink_blocks_from_tool(
+    content: str,
+    deeplink_context: Optional[Dict[str, Any]],
+) -> str:
+    """Fill final deeplink action blocks from the successful tool call.
+
+    The frontend re-validates visible ``deeplink`` actions via
+    ``/api/assistant/deeplink``. If the model calls ``build_deeplink`` with
+    the correct filters but then emits a terse final action block containing
+    only ``{"view":"heatmap","tables":["all"]}``, the frontend would
+    accidentally merge stale UI filters back in. This repair keeps the final
+    action block aligned with the validated tool arguments.
+    """
+    if not content or not deeplink_context or "```" not in content:
+        return content
+
+    args = deeplink_context.get("args") if isinstance(deeplink_context, dict) else None
+    result = deeplink_context.get("result") if isinstance(deeplink_context, dict) else None
+    if not isinstance(args, dict) or not isinstance(result, dict):
+        return content
+    if result.get("error") or not result.get("url_path"):
+        return content
+
+    changed = False
+
+    def repl(match: re.Match[str]) -> str:
+        nonlocal changed
+        tag = (match.group(1) or "").lower()
+        body = match.group(2) or ""
+        if tag != "deeplink":
+            return match.group(0)
+        try:
+            spec = json.loads(body)
+        except Exception:
+            return match.group(0)
+        if not isinstance(spec, dict):
+            return match.group(0)
+
+        next_spec = dict(spec)
+        if not next_spec.get("view") and args.get("view"):
+            next_spec["view"] = args.get("view")
+        if not next_spec.get("tables") and result.get("tables"):
+            next_spec["tables"] = result.get("tables")
+        if _empty_action_state(next_spec.get("filters")) and not _empty_action_state(args.get("filters")):
+            next_spec["filters"] = args.get("filters")
+        if _empty_action_state(next_spec.get("visualizations")) and not _empty_action_state(args.get("visualizations")):
+            next_spec["visualizations"] = args.get("visualizations")
+
+        if next_spec == spec:
+            return match.group(0)
+        changed = True
+        return "```deeplink\n" + json.dumps(next_spec, ensure_ascii=False) + "\n```"
+
+    repaired = _FENCE_ANY_RE.sub(repl, content)
+    return repaired if changed else content
+
+
+def _empty_action_state(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, dict):
+        return len(value) == 0
+    if isinstance(value, list):
+        return len(value) == 0
+    return False
+
+
 def run_agentic_turn(
     cfg: Dict[str, Any],
     initial_messages: List[Dict[str, Any]],
@@ -941,6 +1047,7 @@ def run_agentic_turn(
     started = time.monotonic()
     last_model: Optional[str] = None
     coverage_facts: List[Dict[str, Any]] = []
+    last_deeplink_context: Optional[Dict[str, Any]] = None
 
     for iteration in range(int(max_iterations)):
         if time.monotonic() - started > float(tool_deadline_s):
@@ -1039,6 +1146,7 @@ def run_agentic_turn(
             cleaned = _apply_coverage_corrections(
                 retag_action_fences(content), coverage_facts,
             )
+            cleaned = _repair_deeplink_blocks_from_tool(cleaned, last_deeplink_context)
             cleaned = _repair_phylo_request_deeplink(cleaned, requested_user_text)
             if emitted_chars == 0:
                 # Some models return content only at end-of-stream (rare).
@@ -1098,14 +1206,14 @@ def run_agentic_turn(
         results: Dict[str, Dict[str, Any]] = {}
         # Per-tool wall-clock timeout: ensures one slow tool (e.g. an
         # H5AD load) cannot stall the whole agentic turn. Tunable via
-        # GENX_TOOL_TIMEOUT (seconds, default 30). The first call to a
+        # GENX_TOOL_TIMEOUT (seconds, default 15). The first call to a
         # tool that builds a per-column value-counter cache (like
         # ``resolve_value`` on a fresh boot) can legitimately take 10-15s
         # on multi-species deployments — subsequent calls hit the cache
         # in milliseconds. The default is generous enough to cover the
         # cold path while still bounding genuinely-stuck dispatches.
         try:
-            tool_timeout = float(os.environ.get("GENX_TOOL_TIMEOUT", "30"))
+            tool_timeout = float(os.environ.get("GENX_TOOL_TIMEOUT", "15"))
         except (TypeError, ValueError):
             tool_timeout = 20.0
         if len(prepared) == 1:
@@ -1159,6 +1267,9 @@ def run_agentic_turn(
                 grounding_note = _top_groups_grounding_note(result)
                 if grounding_note:
                     messages.append({"role": "user", "content": grounding_note})
+            if name == "build_deeplink" and isinstance(result, dict):
+                if result.get("url_path") and not result.get("error"):
+                    last_deeplink_context = {"args": dict(_args or {}), "result": dict(result)}
 
     # Iteration cap hit — force one more call without tools to get text.
     final, used_model, err = _complete_with_fallback(cfg, messages, tools=None)
@@ -1168,6 +1279,7 @@ def run_agentic_turn(
     final_text = _apply_coverage_corrections(
         retag_action_fences(final.get("content") or ""), coverage_facts,
     )
+    final_text = _repair_deeplink_blocks_from_tool(final_text, last_deeplink_context)
     final_text = _repair_phylo_request_deeplink(final_text, requested_user_text)
     yield {
         "type": "delta",
