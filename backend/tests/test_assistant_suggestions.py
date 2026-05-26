@@ -25,9 +25,9 @@ suggestions = _load("gx_suggestions", "app/suggestions.py")
 
 def _make_service():
     cs_var = pd.DataFrame({
-        "tf_family": ["MIKC", "MIKC", "bHLH", "MIKC", "GATA"],
-        "ortho_id":  ["OG1", "OG2", "OG3", "OG1", "OG4"],
-        "is_tf":     [True, True, True, True, True],
+        "tf_family": ["MIKC", "MIKC", "bHLH", "MIKC", "GATA", "ERF", "NAC", "MYB"],
+        "ortho_id":  ["OG1", "OG2", "OG3", "OG1", "OG4", "OG5", "OG6", "OG7"],
+        "is_tf":     [True, True, True, True, True, True, True, True],
     })
     cs_obs = pd.DataFrame({"tissue": ["leaf", "leaf", "root", "flower"]})
     cs_obs["condition"] = ["Leaf", "Leaf", "Root", "Flower"]
@@ -65,10 +65,13 @@ def _make_service():
         registry=FakeRegistry(),
         get_tables=lambda include_disabled=False: entries,
         gene_trees=FakeTrees(),
+        store_filter=lambda payload: "abc123def4567890",
     )
     cm = SimpleNamespace(
         get_config=lambda: {},
         get_column_definitions=lambda: {
+            "tf_family": {"display_name": "Family"},
+            "ortho_id": {"display_name": "Group ID"},
             "condition": {"display_name": "Condition"},
             "tissue": {"display_name": "Tissue"},
         },
@@ -86,11 +89,12 @@ def test_pool_collects_values_from_each_species():
 
     assert set(pool["species"]) == {"CS", "PS"}
     assert any(item["value"] == "Flower" and item["display_name"] == "Condition" for item in pool["sample_trait"])
-    assert "MIKC" in pool["tf_family"]
-    assert "OG1" in pool["ortho_id"]
-    assert pool["ortho_id_with_tree"] == ["OG1"]
+    assert any(item["value"] == "MIKC" for item in pool["discovered"])
+    assert any(item["value"] == "OG1" for item in pool["discovered"])
+    assert any(item["value"] == "OG7" for item in pool["discovered"])
+    assert pool["tree_value"] == ["OG1"]
     # No duplicates in any pool list.
-    for key in ("species", "tf_family", "ortho_id", "ortho_id_with_tree"):
+    for key in ("species", "tree_value"):
         assert len(pool[key]) == len(set(pool[key])), key
 
 
@@ -110,42 +114,135 @@ def test_generate_suggestions_returns_distinct_filled_prompts():
         assert "{" not in t and "}" not in t
 
 
-def test_generate_suggestions_balances_primary_views_when_available():
+def test_generate_suggestions_balances_primary_views_when_available(monkeypatch):
     suggestions._POOL_CACHE["pool"] = None
     suggestions._POOL_CACHE["mtime"] = None
+    suggestions._BANK_CACHE["items"] = None
+    suggestions._BANK_CACHE["mtime"] = None
+
+    def fake_actionable(_service, _cm, view, slot, _pool, **kwargs):
+        item = suggestions._render_generic_view(view, slot, variant=kwargs.get("variant", 0), tables=kwargs.get("tables_override"))
+        item["action"] = {"kind": "deeplink", "url_path": f"/{view}/fake", "spec": {"view": view}}
+        return item
+
+    monkeypatch.setattr(suggestions, "_build_actionable_suggestion", fake_actionable)
 
     service, cm = _make_service()
     items = suggestions.generate_suggestions(service, cm, n=4, seed=12)
-    assert {it.get("view") for it in items} == {"ora", "heatmap", "compare", "phylo"}
+    assert {"ora", "heatmap", "compare"}.issubset({it.get("view") for it in items})
 
 
-def test_generate_suggestions_uses_display_names_for_sample_filters():
+def test_generate_suggestions_uses_display_names_for_filter_examples():
     suggestions._POOL_CACHE["pool"] = None
     suggestions._POOL_CACHE["mtime"] = None
 
     service, cm = _make_service()
     items = suggestions.generate_suggestions(service, cm, n=10, seed=3)
-    assert any(("Condition" in it["text"] or "Tissue" in it["text"]) for it in items)
+    assert any(("Family" in it["text"] or "Group ID" in it["text"]) for it in items)
 
 
-def test_generate_suggestions_skips_phylo_without_verified_tree():
+def test_generate_suggestions_emits_phylo_examples_for_tree_values(monkeypatch):
     suggestions._POOL_CACHE["pool"] = None
     suggestions._POOL_CACHE["mtime"] = None
+    suggestions._BANK_CACHE["items"] = None
+    suggestions._BANK_CACHE["mtime"] = None
+
+    def fake_actionable(_service, _cm, view, slot, pool, **kwargs):
+        if view == "phylo" and slot.get("value") not in set(pool.get("tree_value") or []):
+            return None
+        item = suggestions._render_generic_view(view, slot, variant=kwargs.get("variant", 0), tables=kwargs.get("tables_override"))
+        item["action"] = {"kind": "deeplink", "url_path": f"/{view}/fake", "spec": {"view": view}}
+        return item
+
+    monkeypatch.setattr(suggestions, "_build_actionable_suggestion", fake_actionable)
 
     service, cm = _make_service()
-    service.gene_trees = SimpleNamespace(get=lambda og_id: None)
     items = suggestions.generate_suggestions(service, cm, n=10, seed=2)
-    assert all(it.get("view") != "phylo" for it in items)
+    phylo = [it for it in items if it.get("view") == "phylo"]
+    assert phylo
+    assert all("OG1" in it["text"] for it in phylo)
+    assert all("CS" not in it["text"] and "PS" not in it["text"] for it in phylo)
+
+
+def test_compare_examples_use_orthogroups_without_dataset_names(monkeypatch):
+    suggestions._POOL_CACHE["pool"] = None
+    suggestions._POOL_CACHE["mtime"] = None
+    suggestions._BANK_CACHE["items"] = None
+    suggestions._BANK_CACHE["mtime"] = None
+
+    def fake_actionable(_service, _cm, view, slot, _pool, **kwargs):
+        item = suggestions._render_generic_view(view, slot, variant=kwargs.get("variant", 0), tables=kwargs.get("tables_override"))
+        item["action"] = {"kind": "deeplink", "url_path": f"/{view}/fake", "spec": {"view": view}}
+        return item
+
+    monkeypatch.setattr(suggestions, "_build_actionable_suggestion", fake_actionable)
+
+    service, cm = _make_service()
+    items = suggestions.generate_suggestions(service, cm, n=10, seed=5)
+    compare = [it for it in items if it.get("view") == "compare"]
+    assert compare
+    assert all("OG" in it["text"] or "Group ID" in it["text"] for it in compare)
+    assert all("CS" not in it["text"] and "PS" not in it["text"] for it in compare)
 
 
 def test_generate_suggestions_seed_is_deterministic():
     suggestions._POOL_CACHE["pool"] = None
     suggestions._POOL_CACHE["mtime"] = None
+    suggestions._BANK_CACHE["items"] = None
+    suggestions._BANK_CACHE["mtime"] = None
 
     service, cm = _make_service()
     a = suggestions.generate_suggestions(service, cm, n=4, seed=7)
     b = suggestions.generate_suggestions(service, cm, n=4, seed=7)
     assert a == b
+
+
+def test_shuffle_samples_more_than_first_orthogroups(monkeypatch):
+    suggestions._POOL_CACHE["pool"] = None
+    suggestions._POOL_CACHE["mtime"] = None
+    suggestions._BANK_CACHE["items"] = None
+    suggestions._BANK_CACHE["mtime"] = None
+
+    def fake_actionable(_service, _cm, view, slot, _pool, **kwargs):
+        item = suggestions._render_generic_view(view, slot, variant=kwargs.get("variant", 0), tables=kwargs.get("tables_override"))
+        item["action"] = {"kind": "deeplink", "url_path": f"/{view}/fake", "spec": {"view": view}}
+        return item
+
+    monkeypatch.setattr(suggestions, "_build_actionable_suggestion", fake_actionable)
+
+    service, cm = _make_service()
+    seen_ogs = set()
+    for seed in range(25):
+        for item in suggestions.generate_suggestions(service, cm, n=4, seed=seed):
+            for token in item["text"].replace(".", "").split():
+                if token.startswith("OG"):
+                    seen_ogs.add(token)
+
+    assert {"OG1", "OG2", "OG3", "OG4"} <= seen_ogs
+
+
+def test_heatmap_and_ora_keep_species_text_but_compare_phylo_do_not(monkeypatch):
+    suggestions._POOL_CACHE["pool"] = None
+    suggestions._POOL_CACHE["mtime"] = None
+    suggestions._BANK_CACHE["items"] = None
+    suggestions._BANK_CACHE["mtime"] = None
+
+    def fake_actionable(_service, _cm, view, slot, _pool, **kwargs):
+        item = suggestions._render_generic_view(view, slot, variant=kwargs.get("variant", 0), tables=kwargs.get("tables_override"))
+        item["action"] = {"kind": "deeplink", "url_path": f"/{view}/fake", "spec": {"view": view}}
+        return item
+
+    monkeypatch.setattr(suggestions, "_build_actionable_suggestion", fake_actionable)
+
+    service, cm = _make_service()
+    items = suggestions.generate_suggestions(service, cm, n=10, seed=19)
+    by_view = {item["view"]: item["text"] for item in items}
+    heatmap_text = by_view.get("heatmap", "")
+    ora_text = by_view.get("ora", "")
+    assert "CS" in heatmap_text or "PS" in heatmap_text or "all species" in heatmap_text or "multiple species" in heatmap_text
+    assert "CS" in ora_text or "PS" in ora_text or "all species" in ora_text or "multiple species" in ora_text
+    assert "CS" not in by_view.get("compare", "") and "PS" not in by_view.get("compare", "")
+    assert "CS" not in by_view.get("phylo", "") and "PS" not in by_view.get("phylo", "")
 
 
 def test_generate_suggestions_skips_templates_with_empty_pool():

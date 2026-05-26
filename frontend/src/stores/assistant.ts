@@ -12,6 +12,7 @@ export type ActionKind =
   | "clear_filters"
   | "select_tables"
   | "set_expression_display"
+  | "set_filter_chain"
   | "compute";
 
 export interface AssistantAction {
@@ -78,7 +79,11 @@ export interface ClientContext {
   analysis_results?: Record<string, unknown>;
 }
 
+export type AssistantAutoApplyMode = "viz_update" | "all";
+export type AssistantActionApplier = (msg: ChatMessage, mode: AssistantAutoApplyMode) => Promise<void> | void;
+
 const AUTO_EXECUTE_STORAGE_KEY = "genx.assistant.autoExecute";
+const MAX_HISTORY_MESSAGES = 16;
 
 function readAutoExecutePref(): boolean {
   try {
@@ -127,7 +132,7 @@ export const useAssistantStore = defineStore("assistant", () => {
     streaming.value = false;
   }
 
-  async function sendMessage(text: string, clientContext?: ClientContext) {
+  async function sendMessage(text: string, clientContext?: ClientContext, actionApplier?: AssistantActionApplier) {
     const clean = text.trim();
     if (!clean || streaming.value) return;
     messages.value.push({ role: "user", content: clean });
@@ -177,8 +182,16 @@ export const useAssistantStore = defineStore("assistant", () => {
         }
       }
 
+      const recentHistory = historyForServer.slice(-MAX_HISTORY_MESSAGES);
+      if (historyForServer.length > recentHistory.length) {
+        recentHistory.unshift({
+          role: "system",
+          content: "Earlier chat turns were omitted for token efficiency. Use the current app state supplied with this request as authoritative.",
+        });
+      }
+
       const body: Record<string, unknown> = {
-        messages: historyForServer,
+        messages: recentHistory,
         stream: true,
         include_context: true,
       };
@@ -266,6 +279,9 @@ export const useAssistantStore = defineStore("assistant", () => {
       }
 
       await extractAndDispatchActions(assistantMsg, clientContext);
+      if (actionApplier) {
+        await actionApplier(assistantMsg, autoExecute.value ? "all" : "viz_update");
+      }
     } catch (e: unknown) {
       if ((e as { name?: string }).name !== "AbortError") {
         assistantMsg.error = (e as Error).message || "Network error";
@@ -277,7 +293,7 @@ export const useAssistantStore = defineStore("assistant", () => {
   }
 
   async function extractAndDispatchActions(msg: ChatMessage, clientContext?: ClientContext) {
-    const re = /```(action|deeplink|viz_update|add_filter|remove_filter|clear_filters|select_tables|set_expression_display|compute)\s*\n([\s\S]*?)\n```/gi;
+    const re = /```(action|deeplink|viz_update|add_filter|remove_filter|clear_filters|select_tables|set_expression_display|set_filter_chain|compute)\s*\n([\s\S]*?)\n```/gi;
     const blocks: Array<{ tag: string; spec: Record<string, unknown>; kind: AssistantAction["kind"] }> = [];
     let m: RegExpExecArray | null;
     while ((m = re.exec(msg.content)) !== null) {
@@ -296,6 +312,9 @@ export const useAssistantStore = defineStore("assistant", () => {
 
     msg.actions = msg.actions || [];
     for (const { spec, kind } of blocks) {
+      if (kind === "compute") {
+        continue;
+      }
       const action: AssistantAction = { kind, spec, status: "pending" };
       msg.actions.push(action);
 
@@ -324,21 +343,6 @@ export const useAssistantStore = defineStore("assistant", () => {
             msg.content = `${msg.content.trim()}\n\n${guardMessage}`;
           }
         }
-      } else if (kind === "compute") {
-        try {
-          const payload = {
-            op: spec.op,
-            args: spec.args || {},
-            tables: spec.tables || clientContext?.tables || [],
-            filters: spec.filters || clientContext?.filters || {},
-          };
-          const { data } = await axios.post(`${API_BASE_URL}/api/assistant/compute`, payload);
-          action.result = data;
-          action.status = "applied";
-        } catch (e) {
-          action.status = "error";
-          action.error = (e as Error).message || "compute failed";
-        }
       }
       // viz_update / add_filter stay "pending" and are applied from the UI via applyAction().
     }
@@ -358,11 +362,12 @@ export const useAssistantStore = defineStore("assistant", () => {
       } else if (block.kind === "add_filter") {
         const column = String(block.spec.column || block.spec.key || "").trim();
         if (!column) continue;
-        const rawSpec = block.spec as { value?: unknown; values?: unknown; match_mode?: unknown; exact?: unknown };
+        const rawSpec = block.spec as { value?: unknown; values?: unknown; match_mode?: unknown; exact?: unknown; has_value?: unknown };
         state.filters[column] = {
-          value: rawSpec.values !== undefined ? rawSpec.values : rawSpec.value,
+          value: rawSpec.has_value === true ? "" : (rawSpec.values !== undefined ? rawSpec.values : rawSpec.value),
           match_mode: rawSpec.match_mode === "and" ? "and" : "or",
           exact: rawSpec.exact === undefined ? true : rawSpec.exact === true,
+          has_value: rawSpec.has_value === true,
         };
       }
     }
@@ -551,7 +556,7 @@ export const useAssistantStore = defineStore("assistant", () => {
     }
     const reserved = new Set([
       "tags", "table_names", "filters", "datasetIdFilters", "idColumnName",
-      "filterChainColumns", "filterChainGroups", "filterChainVersion",
+      "filterChainColumns", "filterChainOperators", "filterChainGroups", "filterChainVersion",
     ]);
     return Object.fromEntries(
       Object.entries(rawFilters).filter(([key, value]) => {
@@ -568,7 +573,7 @@ export const useAssistantStore = defineStore("assistant", () => {
   function copyFilterStateMetadata(rawFilters: Record<string, unknown>): Record<string, unknown> {
     const allowed = new Set([
       "tags", "table_names", "datasetIdFilters", "idColumnName",
-      "filterChainColumns", "filterChainGroups", "filterChainVersion",
+      "filterChainColumns", "filterChainOperators", "filterChainGroups", "filterChainVersion",
     ]);
     return Object.fromEntries(Object.entries(rawFilters).filter(([key]) => allowed.has(key)));
   }

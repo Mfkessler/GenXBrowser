@@ -18,8 +18,16 @@ beforeEach(() => {
   setActivePinia(createPinia());
 });
 
-function makeDeps(): DispatcherDeps {
+type TestDeps = DispatcherDeps & {
+  __test: {
+    filterChainColumns: string[][];
+    filterChainOperators: Array<[string, string, "and" | "or"]>;
+  };
+};
+
+function makeDeps(): TestDeps {
   const state: Record<string, unknown> = {
+    expressionDisplay: { optionId: "getmm", layer: "getmm", transform: "raw" },
     rowSideColors: [],
     colSideColors: [],
     rowOrder: { name: "", order: "asc" },
@@ -33,22 +41,46 @@ function makeDeps(): DispatcherDeps {
     },
   };
 
+  const appliedFilters: Record<string, unknown> = {};
+  const filterChainColumns: string[][] = [];
+  const filterChainOperators: Array<[string, string, "and" | "or"]> = [];
+
   return {
     filtersStore: {
-      setFilter: () => undefined,
+      setFilter: (key, filter) => { appliedFilters[key] = filter; },
       removeFilter: () => undefined,
       clearFilters: () => undefined,
+      setFilterChainColumns: (columns) => { filterChainColumns.push([...columns]); },
+      setPairOperator: (left, right, operator) => { filterChainOperators.push([left, right, operator]); },
+      toObject: () => ({ filters: appliedFilters }),
     },
     visualizationStore: {
       $state: state,
       $patch: (mutator) => mutator(state),
       toObject: () => ({ ...state }),
+      setExpressionDisplay: (optionId, layer, transform) => {
+        state.expressionDisplay = { optionId, layer, transform };
+      },
     },
     columnsStore: {
-      rowColumns: [{ column_name: "ortho_id" }, { column_name: "tf_family" }],
-      colColumns: [{ column_name: "tissue_types" }, { column_name: "condition" }],
-      filterableColColumns: [{ column_name: "tissue" }, { column_name: "condition" }],
-      orderableColColumns: [{ column_name: "tissue_types" }, { column_name: "condition" }],
+      rowColumns: [
+        { column_name: "ortho_id", display_name: "Orthogroup", type: "array", array_separator: "," },
+        { column_name: "tf_family", display_name: "TF Family", type: "text" },
+        { column_name: "length", display_name: "Length", type: "bigint" },
+        { column_name: "is_tf", display_name: "Is TF", type: "boolean" },
+      ],
+      colColumns: [
+        { column_name: "tissue_types", display_name: "Tissue" },
+        { column_name: "condition", display_name: "Condition" },
+      ],
+      filterableColColumns: [
+        { column_name: "tissue", display_name: "Tissue" },
+        { column_name: "condition", display_name: "Condition" },
+      ],
+      orderableColColumns: [
+        { column_name: "tissue_types", display_name: "Tissue" },
+        { column_name: "condition", display_name: "Condition" },
+      ],
       sampleMetadata: [{ column_name: "sample_a" }, { column_name: "sample_b" }],
     },
     catalogStore: { selectedTableNames: new Set<string>() },
@@ -63,7 +95,8 @@ function makeDeps(): DispatcherDeps {
       query: {},
       name: "heatmap",
     } as unknown as DispatcherDeps["route"],
-  };
+    __test: { filterChainColumns, filterChainOperators },
+  } as TestDeps;
 }
 
 function vizAction(patch: Record<string, unknown>): AssistantAction {
@@ -103,6 +136,68 @@ describe("assistant visualization action guardrails", () => {
     expect(action.status).toBe("applied");
     expect(deps.visualizationStore.$state.rowSideColors).toEqual(["ortho_id", "tf_family"]);
     expect(deps.visualizationStore.$state.colSideColors).toEqual(["tissue_types"]);
+  });
+
+  it("resolves display names before axis validation", async () => {
+    const deps = makeDeps();
+    const action = vizAction({
+      rowSideColors: ["Orthogroup", "TF Family"],
+      colSideColors: ["Tissue", "Condition"],
+    });
+
+    const mutated = await createAssistantActionDispatcher(deps).dispatch(action);
+
+    expect(mutated).toBe(true);
+    expect(action.status).toBe("applied");
+    expect(deps.visualizationStore.$state.rowSideColors).toEqual(["ortho_id", "tf_family"]);
+    expect(deps.visualizationStore.$state.colSideColors).toEqual(["tissue_types", "condition"]);
+    expect(action.summary).toContain("Orthogroup");
+    expect(action.summary).toContain("Condition");
+  });
+
+  it("normalizes filters by sidebar datatype", async () => {
+    const deps = makeDeps();
+    const dispatcher = createAssistantActionDispatcher(deps);
+
+    await dispatcher.dispatch({ kind: "add_filter", spec: { column: "Length", value: [100, 300] }, status: "pending" });
+    await dispatcher.dispatch({ kind: "add_filter", spec: { column: "Is TF", value: true }, status: "pending" });
+    await dispatcher.dispatch({ kind: "add_filter", spec: { column: "Orthogroup", value: ["OG1", "OG2"], match_mode: "and" }, status: "pending" });
+    await dispatcher.dispatch({ kind: "add_filter", spec: { column: "Condition", has_value: true }, status: "pending" });
+
+    const filters = (deps.filtersStore.toObject?.() as { filters: Record<string, unknown> }).filters;
+    expect(filters.length).toMatchObject({ value: [100, 300] });
+    expect(filters.is_tf).toMatchObject({ value: true });
+    expect(filters.ortho_id).toMatchObject({ value: "OG1|OG2", match_mode: "and", exact: true });
+    expect(filters.condition).toMatchObject({ value: "", has_value: true, exact: true });
+  });
+
+  it("sets filter-chain operators using resolved display names", async () => {
+    const deps = makeDeps();
+    const dispatcher = createAssistantActionDispatcher(deps);
+
+    const action: AssistantAction = { kind: "set_filter_chain", spec: { columns: ["Orthogroup", "TF Family"], operator: "and" }, status: "pending" };
+    const mutated = await dispatcher.dispatch(action);
+
+    expect(mutated).toBe(true);
+    expect(action.status).toBe("applied");
+    expect(deps.__test.filterChainColumns).toEqual([["ortho_id", "tf_family"]]);
+    expect(deps.__test.filterChainOperators).toEqual([["ortho_id", "tf_family", "and"]]);
+    expect(action.summary).toContain("Orthogroup AND TF Family");
+  });
+
+  it("accepts expressionDisplay viz_update aliases", async () => {
+    const deps = makeDeps();
+    const action = vizAction({ expressionDisplay: { optionId: "zscore" } });
+
+    const mutated = await createAssistantActionDispatcher(deps).dispatch(action);
+
+    expect(mutated).toBe(true);
+    expect(action.status).toBe("applied");
+    expect(deps.visualizationStore.$state.expressionDisplay).toEqual({
+      optionId: "zscore",
+      layer: "getmm",
+      transform: "zscore",
+    });
   });
 });
 

@@ -405,7 +405,7 @@ _TOOL_KEY_SIGNATURES: List[Tuple[str, frozenset, frozenset]] = [
 # real action-block tags) before emitting text to the user.
 _ACTION_BLOCK_TAGS = {
     "deeplink", "viz_update", "add_filter", "remove_filter", "clear_filters",
-    "select_tables", "set_expression_display", "action", "compute",
+    "select_tables", "set_expression_display", "set_filter_chain", "action", "compute",
 }
 _FENCE_RE = re.compile(r"```([A-Za-z_][A-Za-z0-9_]*)\s*\n([\s\S]*?)\n```", re.MULTILINE)
 # Matches both tagged AND untagged fences. The untagged variant catches
@@ -422,6 +422,8 @@ _ACTION_KEY_SIGNATURES: List[Tuple[str, frozenset, frozenset]] = [
     ("select_tables", frozenset({"tables"}), frozenset({"tables"})),
     ("set_expression_display", frozenset({"optionId"}),
         frozenset({"optionId", "layer", "transform"})),
+    ("set_filter_chain", frozenset({"columns", "operator"}),
+        frozenset({"columns", "operator"})),
     ("viz_update", frozenset({"patch"}), frozenset({"patch"})),
     ("deeplink", frozenset({"view"}),
         frozenset({"view", "tables", "filters", "visualizations"})),

@@ -41,7 +41,19 @@ def _resolve_species_codes(service, tables: Optional[List[str]]) -> List[str]:
         code = entry.get("_species_code") or entry.get("code")
         if not code:
             continue
-        for key in (entry.get("table_name"), entry.get("full_name"), code):
+        aliases = [entry.get("table_name"), entry.get("full_name"), entry.get("display_name"), code]
+        try:
+            adata = service.registry.load(code)
+            uns = getattr(adata, "uns", {}) or {}
+            aliases.extend([uns.get("species"), uns.get("name")])
+            species = str(uns.get("species") or "").strip()
+            name = str(uns.get("name") or "").strip()
+            if species and name and species.lower() != name.lower():
+                aliases.append(f"{species} ({name})")
+                aliases.append(f"{name} ({species})")
+        except Exception:
+            pass
+        for key in aliases:
             if isinstance(key, str) and key:
                 lookup[key.lower()] = code
     if not tables:
@@ -96,6 +108,8 @@ def _column_display_maps(config_manager=None) -> Dict[str, Dict[str, str]]:
     for internal, spec in col_defs.items():
         if not isinstance(internal, str):
             continue
+        if isinstance(spec, dict) and not _column_is_visible(config_manager, internal, spec):
+            continue
         display = None
         if isinstance(spec, dict):
             display = spec.get("display_name")
@@ -122,9 +136,91 @@ def _column_display_maps(config_manager=None) -> Dict[str, Dict[str, str]]:
     }
 
 
+def _assistant_config_mtime(config_manager=None) -> float:
+    try:
+        path = getattr(config_manager, "config_path", None) if config_manager is not None else None
+        if path and os.path.exists(str(path)):
+            return round(float(os.path.getmtime(str(path))), 3)
+    except Exception:
+        pass
+    return 0.0
+
+
+def _column_definitions(config_manager=None) -> Dict[str, Any]:
+    try:
+        return dict(config_manager.get_column_definitions() or {}) if config_manager is not None else {}
+    except Exception:
+        return {}
+
+
+def _hidden_columns(config_manager=None) -> set:
+    try:
+        config = config_manager.get_config() or {}
+        frontend = config.get("frontend_settings") or {}
+        return {str(col) for col in (frontend.get("hidden_columns") or [])}
+    except Exception:
+        return set()
+
+
+def _column_is_visible(config_manager, column: str, spec: Optional[Dict[str, Any]] = None) -> bool:
+    if column in _hidden_columns(config_manager):
+        return False
+    if spec is None:
+        spec = _column_definitions(config_manager).get(column) or {}
+    if isinstance(spec, dict) and spec.get("visible") is False:
+        return False
+    return True
+
+
+def _column_is_filterable(config_manager, column: str, spec: Optional[Dict[str, Any]] = None) -> bool:
+    if not _column_is_visible(config_manager, column, spec):
+        return False
+    if spec is None:
+        spec = _column_definitions(config_manager).get(column) or {}
+    if isinstance(spec, dict) and spec.get("filterable") is False:
+        return False
+    return True
+
+
+def _column_type_from_config(config_manager, column: str, series=None) -> str:
+    spec = _column_definitions(config_manager).get(column) or {}
+    if isinstance(spec, dict):
+        raw_type = str(spec.get("type") or "").lower()
+        if spec.get("is_array") or raw_type == "array":
+            return "array"
+        if raw_type in {"text", "bigint", "double precision", "boolean"}:
+            return raw_type
+    if series is not None:
+        dtype = str(getattr(series, "dtype", "")).lower()
+        if dtype.startswith("float"):
+            return "double precision"
+        if dtype.startswith("int"):
+            return "bigint"
+        if dtype.startswith("bool"):
+            return "boolean"
+    return "text"
+
+
+def _column_separator(config_manager, column: str) -> str:
+    spec = _column_definitions(config_manager).get(column) or {}
+    if isinstance(spec, dict) and (spec.get("is_array") or spec.get("type") == "array"):
+        sep = str(spec.get("array_separator") or ",")
+        return sep if sep in {",", "|", ";"} else ","
+    return ","
+
+
 def _display_name_for(config_manager, column: str) -> str:
     maps = _column_display_maps(config_manager)
     return maps.get("internal_to_display", {}).get(column, column)
+
+
+def invalidate_runtime_cache() -> None:
+    """Clear assistant schema/value caches after config or dataset changes."""
+    _SCHEMA_CACHE.clear()
+    _VALUE_COUNTER_CACHE.clear()
+    _FILTER_COLUMN_TYPE_CACHE.clear()
+    _WARMUP_CACHE["mtime"] = None
+    _WARMUP_CACHE["summary"] = None
 
 
 def _resolve_column_name(config_manager, column: str, known_columns: Optional[set] = None) -> str:
@@ -155,6 +251,8 @@ def _normalize_filter_columns_for_df(
     out: Dict[str, Any] = {}
     for col, spec in filters.items():
         resolved = _resolve_column_name(config_manager, str(col), columns)
+        if resolved not in columns or not _column_is_filterable(config_manager, resolved):
+            continue
         out[resolved] = spec
     return out
 
@@ -169,6 +267,20 @@ def _split_array_values(series, separators: Tuple[str, ...] = (",", "|", ";")) -
             if part:
                 out.append(part)
     return out
+
+
+def _split_column_values(series, config_manager, column: str) -> List[str]:
+    if _column_type_from_config(config_manager, column, series) == "array":
+        return _split_array_values(series, (_column_separator(config_manager, column),))
+    return [str(v).strip() for v in series.dropna().astype(str) if str(v).strip()]
+
+
+def _column_separators_for(config_manager, columns: set) -> Dict[str, str]:
+    return {
+        str(col): _column_separator(config_manager, str(col))
+        for col in columns
+        if _column_type_from_config(config_manager, str(col)) == "array"
+    }
 
 
 def normalize_filter_pipe_value(value: Any) -> Optional[str]:
@@ -287,7 +399,7 @@ def _deeplink_flat_filters(filters: Dict[str, Any]) -> Dict[str, Any]:
     source = nested if isinstance(nested, dict) else filters
     reserved = {
         "tags", "table_names", "filters", "datasetIdFilters", "idColumnName",
-        "filterChainColumns", "filterChainGroups", "filterChainVersion",
+        "filterChainColumns", "filterChainOperators", "filterChainGroups", "filterChainVersion",
     }
     return {
         str(col): spec
@@ -319,10 +431,11 @@ def _normalize_deeplink_filter_columns(
         known_cols.update(adata.obs.columns)
     if not known_cols:
         return filters
-    normalized = {
-        _resolve_column_name(config_manager, str(col), known_cols): spec
-        for col, spec in nested.items()
-    }
+    normalized = {}
+    for col, spec in nested.items():
+        resolved = _resolve_column_name(config_manager, str(col), known_cols)
+        if resolved in known_cols and _column_is_filterable(config_manager, resolved):
+            normalized[resolved] = spec
     return {**filters, "filters": normalized}
 
 
@@ -390,7 +503,7 @@ def validate_analysis_request_limits(
             "limit": max_rows,
             "over_limit": over_limit,
             "counts": counts,
-            "suggestion": "Ask for a gene, orthogroup, TF family, GO term, tissue, or another sidebar filter to reduce the result size.",
+            "suggestion": "Ask for a narrower value from an available Display Name column or another sidebar filter to reduce the result size.",
         }
     return {"ok": True, "limit": max_rows, "over_limit": [], "counts": counts}
 
@@ -464,7 +577,11 @@ def apply_assistant_filters(
             allowed = var_column_types or filter_parser.infer_dataframe_column_types(var_df)
             var_query = filter_parser.parse_filter_query(var_filters, allowed)
             if var_query:
-                var_df = filter_parser.apply_filter_query(var_df, var_query)
+                var_df = filter_parser.apply_filter_query(
+                    var_df,
+                    var_query,
+                    column_separators=_column_separators_for(config_manager, set(var_df.columns)),
+                )
         except Exception as e:
             logger.warning("apply_assistant_filters(var) failed: %s", e, exc_info=True)
     if obs_filters:
@@ -472,7 +589,11 @@ def apply_assistant_filters(
             allowed = obs_column_types or filter_parser.infer_dataframe_column_types(obs_df)
             obs_query = filter_parser.parse_filter_query(obs_filters, allowed)
             if obs_query:
-                obs_df = filter_parser.apply_filter_query(obs_df, obs_query)
+                obs_df = filter_parser.apply_filter_query(
+                    obs_df,
+                    obs_query,
+                    column_separators=_column_separators_for(config_manager, set(obs_df.columns)),
+                )
         except Exception as e:
             logger.warning("apply_assistant_filters(obs) failed: %s", e, exc_info=True)
     return var_df, obs_df
@@ -485,7 +606,7 @@ def apply_assistant_filters(
 # (species_code, h5ad_mtime) → cached per-table summary block. Insertion-
 # ordered so we can evict the oldest entry when the cache grows beyond a
 # small bound.
-_SCHEMA_CACHE: Dict[Tuple[str, float], Dict[str, Any]] = {}
+_SCHEMA_CACHE: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
 
 # (species_code, h5ad_mtime, namespace) → list of (column_name, Counter).
 # Built lazily by ``_get_value_counters`` and reused across every
@@ -514,7 +635,7 @@ _RESOLVE_SKIP_COL_SUBSTR = (
 )
 
 
-def _column_value_counter(series, col: str) -> Optional["Counter"]:
+def _column_value_counter(series, col: str, config_manager=None) -> Optional["Counter"]:
     """Build a ``Counter`` over the (split) values of ``series``.
 
     Returns ``None`` for obvious numeric columns or empty series so the
@@ -522,10 +643,10 @@ def _column_value_counter(series, col: str) -> Optional["Counter"]:
     the original spelling survives for the LLM to reuse verbatim.
     """
     try:
-        dtype = str(series.dtype)
-        if dtype.startswith("float") or dtype.startswith("int"):
+        col_type = _column_type_from_config(config_manager, col, series)
+        if col_type in {"bigint", "double precision", "boolean"}:
             return None
-        values = _split_array_values(series)
+        values = _split_column_values(series, config_manager, col)
         if not values:
             return None
         return Counter(values)
@@ -533,7 +654,7 @@ def _column_value_counter(series, col: str) -> Optional["Counter"]:
         return None
 
 
-def _get_value_counters(adata, code: str, namespace: str, mtime: float
+def _get_value_counters(adata, code: str, namespace: str, mtime: float, config_manager=None
                         ) -> List[Tuple[str, "Counter"]]:
     """Cached per-column value counters for ``namespace`` ('var' or 'obs').
 
@@ -550,7 +671,7 @@ def _get_value_counters(adata, code: str, namespace: str, mtime: float
     filter ``ipr_desc`` by substring), so dropping them is a net
     improvement for resolve quality too.
     """
-    key = (code, round(float(mtime), 3), namespace)
+    key = (code, round(float(mtime), 3), _assistant_config_mtime(config_manager), namespace)
     cached = _VALUE_COUNTER_CACHE.get(key)
     if cached is not None:
         return cached
@@ -558,9 +679,11 @@ def _get_value_counters(adata, code: str, namespace: str, mtime: float
     out: List[Tuple[str, "Counter"]] = []
     for col in df.columns:
         col_l = str(col).lower()
+        if not _column_is_filterable(config_manager, str(col)):
+            continue
         if any(s in col_l for s in _RESOLVE_SKIP_COL_SUBSTR):
             continue
-        ctr = _column_value_counter(df[col], col)
+        ctr = _column_value_counter(df[col], col, config_manager)
         if ctr is not None:
             out.append((col, ctr))
     _VALUE_COUNTER_CACHE[key] = out
@@ -595,16 +718,23 @@ def _cached_filter_column_types(
     code: str,
     namespace: str,
     columns: Optional[List[str]] = None,
+    config_manager=None,
 ) -> Dict[str, str]:
     df = adata.var if namespace == "var" else adata.obs
     selected = tuple(sorted(str(c) for c in (columns or []) if str(c) in df.columns))
     if not selected:
         selected = tuple(str(c) for c in df.columns)
-    key = (code, round(float(_h5ad_mtime_for(service, code)), 3), namespace, selected)
+    key = (code, round(float(_h5ad_mtime_for(service, code)), 3), _assistant_config_mtime(config_manager), namespace, selected)
     cached = _FILTER_COLUMN_TYPE_CACHE.get(key)
     if cached is not None:
         return cached
-    inferred = _infer_anndata_column_types(df.loc[:, list(selected)])
+    inferred = {
+        col: _column_type_from_config(config_manager, col, df[col])
+        for col in selected
+        if _column_is_filterable(config_manager, col)
+    }
+    if not inferred:
+        inferred = _infer_anndata_column_types(df.loc[:, list(selected)])
     _FILTER_COLUMN_TYPE_CACHE[key] = inferred
     if len(_FILTER_COLUMN_TYPE_CACHE) > 256:
         try:
@@ -614,7 +744,7 @@ def _cached_filter_column_types(
     return inferred
 
 
-def tool_list_schema(service, cm, *, max_values_per_col: int = 0) -> Dict[str, Any]:
+def tool_list_schema(service, cm, *, max_values_per_col: int = 5) -> Dict[str, Any]:
     """High-level schema the LLM needs to pick tables/columns/filters.
 
     Returns a compact dict. Uses ``build_overview`` via the caller to stay in
@@ -644,14 +774,13 @@ def tool_list_schema(service, cm, *, max_values_per_col: int = 0) -> Dict[str, A
             info = species_map.get(code) if isinstance(species_map, dict) else None
             path = info.get("file_path") if isinstance(info, dict) else None
             if path and os.path.exists(path):
-                cache_key = (code, round(os.path.getmtime(path), 3))
+                cache_key = (code, round(os.path.getmtime(path), 3), _assistant_config_mtime(cm), int(max_values_per_col or 0))
         except Exception:
             cache_key = None
 
         if cache_key is not None and cache_key in _SCHEMA_CACHE:
             cached = _SCHEMA_CACHE[cache_key]
-            tables.append({**cached, "table_name": entry.get("table_name"),
-                           "full_name": entry.get("table_name")})
+            tables.append({**cached, "table_name": entry.get("table_name")})
             continue
 
         try:
@@ -660,35 +789,81 @@ def tool_list_schema(service, cm, *, max_values_per_col: int = 0) -> Dict[str, A
             adata = None
         if adata is None:
             continue
-        var_cols = list(adata.var.columns)
-        obs_cols = list(adata.obs.columns)
+        try:
+            uns = getattr(adata, "uns", {}) or {}
+            species_name = str(uns.get("species") or "").strip()
+            dataset_name = str(uns.get("name") or "").strip()
+        except Exception:
+            species_name = ""
+            dataset_name = ""
+        display_label = species_name or dataset_name or str(entry.get("full_name") or entry.get("display_name") or entry.get("table_name") or code)
+        if species_name and dataset_name and species_name.lower() != dataset_name.lower():
+            display_label = f"{species_name} ({dataset_name})"
+        var_cols = [str(c) for c in adata.var.columns if _column_is_filterable(cm, str(c))]
+        obs_cols = [str(c) for c in adata.obs.columns if _column_is_filterable(cm, str(c))]
 
         def _summary(df, col):
             try:
                 s = df[col]
                 dtype = str(s.dtype)
                 display_name = _display_name_for(cm, col)
-                if dtype.startswith("float") or dtype.startswith("int"):
+                configured_type = _column_type_from_config(cm, col, s)
+                spec = _column_definitions(cm).get(col) or {}
+                if configured_type in {"double precision", "bigint"} or dtype.startswith("float") or dtype.startswith("int"):
                     nonnull = s.dropna()
                     return {
                         "name": col,
                         "display_name": display_name,
                         "dtype": "numeric",
+                        "column_type": configured_type,
+                        "visible": True,
+                        "filterable": True,
+                        "filter_widget": "range",
                         "n_nonnull": int(nonnull.size),
                         "min": float(nonnull.min()) if nonnull.size else None,
                         "max": float(nonnull.max()) if nonnull.size else None,
                     }
-                if dtype.startswith("bool"):
-                    return {"name": col, "display_name": display_name, "dtype": "boolean", "n_true": int(s.sum())}
-                unique = s.dropna().astype(str).nunique()
-                return {"name": col, "display_name": display_name, "dtype": "text", "n_unique": int(unique)}
+                if configured_type == "boolean" or dtype.startswith("bool"):
+                    return {
+                        "name": col, "display_name": display_name, "dtype": "boolean",
+                        "column_type": "boolean", "visible": True, "filterable": True,
+                        "filter_widget": "checkbox", "n_true": int(s.sum()),
+                    }
+                values = _split_column_values(s, cm, col)
+                unique = len(set(values))
+                item = {
+                    "name": col,
+                    "display_name": display_name,
+                    "dtype": "array" if configured_type == "array" else "text",
+                    "column_type": configured_type,
+                    "visible": True,
+                    "filterable": True,
+                    "filter_widget": "text_pills",
+                    "match_modes": ["or", "and"],
+                    "exact_supported": True,
+                    "n_unique": int(unique),
+                }
+                if configured_type == "array":
+                    item["is_array"] = True
+                    item["array_separator"] = _column_separator(cm, col)
+                if max_values_per_col and values:
+                    item["top_values"] = [
+                        {"value": value, "count": int(count)}
+                        for value, count in Counter(values).most_common(max(1, min(int(max_values_per_col), 20)))
+                    ]
+                if isinstance(spec, dict) and spec.get("description"):
+                    item["description"] = str(spec.get("description"))
+                return item
             except Exception:
                 return {"name": col, "display_name": _display_name_for(cm, col), "dtype": "unknown"}
 
         summary_entry = {
             "table_name": entry.get("table_name"),
             "code": code,
-            "full_name": entry.get("table_name"),
+            "full_name": display_label,
+            "species_name": species_name or None,
+            "dataset_name": dataset_name or None,
+            "display_label": display_label,
             "n_samples": int(adata.n_obs),
             "n_genes": int(adata.n_vars),
             "layers": ["X"] + list(adata.layers.keys()),
@@ -723,7 +898,7 @@ def tool_list_schema(service, cm, *, max_values_per_col: int = 0) -> Dict[str, A
         "views": ["heatmap", "compare", "phylo", "ora", "catalog"],
         "action_kinds": [
             "deeplink", "add_filter", "remove_filter", "clear_filters",
-            "select_tables", "set_expression_display", "viz_update",
+            "select_tables", "set_expression_display", "set_filter_chain", "viz_update",
         ],
         "action_block_schemas": _ACTION_BLOCK_SCHEMAS,
     }
@@ -738,7 +913,7 @@ def warmup_runtime_cache(service, cm) -> Dict[str, Any]:
         mtime = None
     if _WARMUP_CACHE.get("summary") is not None and _WARMUP_CACHE.get("mtime") == mtime:
         return _WARMUP_CACHE["summary"]
-    schema = tool_list_schema(service, cm)
+    schema = tool_list_schema(service, cm, max_values_per_col=0)
     tables = schema.get("tables") or []
     summary = {
         "mtime": mtime,
@@ -929,6 +1104,7 @@ _ORA_TOOLTIP_FIELDS: List[str] = [
 
 def tool_list_view_settings(
     service,
+    config_manager=None,
     *,
     view: str,
     tables: Optional[List[str]] = None,
@@ -1029,6 +1205,14 @@ def tool_list_view_settings(
     common_var = set.intersection(*var_col_sets) if var_col_sets else set()
     common_obs = set.intersection(*obs_col_sets) if obs_col_sets else set()
 
+    display_maps = _column_display_maps(config_manager).get("internal_to_display", {})
+
+    def _option_details(columns: set) -> List[Dict[str, str]]:
+        return [
+            {"name": str(col), "display_name": display_maps.get(str(col), str(col))}
+            for col in sorted(columns)
+        ]
+
     controls_out: List[Dict[str, Any]] = []
     for ctrl in _VIEW_CONTROLS.get(v, []):
         c = dict(ctrl)
@@ -1037,12 +1221,16 @@ def tool_list_view_settings(
             c["options"] = _COLOR_SCALES
         elif ctype == "select_var_column":
             c["options"] = sorted(common_var)
+            c["option_details"] = _option_details(common_var)
         elif ctype == "select_obs_column":
             c["options"] = sorted(common_obs)
+            c["option_details"] = _option_details(common_obs)
         elif ctype in ("multi_select_var_column", "multi_select_var_column_nullable"):
             c["options"] = sorted(common_var)
+            c["option_details"] = _option_details(common_var)
         elif ctype == "multi_select_obs_column":
             c["options"] = sorted(common_obs)
+            c["option_details"] = _option_details(common_obs)
         elif ctype == "multi_select_table":
             c["options"] = codes
         if c.get("key") == "oraTooltipFields":
@@ -1057,7 +1245,7 @@ def tool_list_view_settings(
         "available_layers": sorted(common_layers),
         "common_actions": [
             "set_expression_display", "viz_update",
-            "add_filter", "remove_filter", "clear_filters",
+            "add_filter", "remove_filter", "clear_filters", "set_filter_chain",
         ],
     }
 
@@ -1113,7 +1301,7 @@ def tool_resolve_value(
     tables: Optional[List[str]] = None,
     max_hits: int = 10,
 ) -> Dict[str, Any]:
-    """Find which column(s) contain a free-form term like ``"MIKC"``.
+    """Find which column(s) contain a free-form user term.
 
     Returns ranked hits ``{table, column, value, count, match}``. Used by the
     LLM before emitting an ``add_filter`` block so it never guesses the column.
@@ -1141,7 +1329,7 @@ def tool_resolve_value(
 
         mtime = _h5ad_mtime_for(service, code)
         for ns_name in ("var", "obs"):
-            counters = _get_value_counters(adata, code, ns_name, mtime)
+            counters = _get_value_counters(adata, code, ns_name, mtime, config_manager)
             for col, counter in counters:
                 # Exact (case-insensitive) match.
                 exact = [v for v in counter if v.lower() == q_lower]
@@ -1310,8 +1498,8 @@ def tool_count_rows(
             service, adata,
             var_filters=var_filters_norm,
             obs_filters=obs_filters_norm,
-            var_column_types=_cached_filter_column_types(service, adata, code, "var", list(var_filters_norm.keys())) if var_filters_norm else None,
-            obs_column_types=_cached_filter_column_types(service, adata, code, "obs", list(obs_filters_norm.keys())) if obs_filters_norm else None,
+            var_column_types=_cached_filter_column_types(service, adata, code, "var", list(var_filters_norm.keys()), config_manager) if var_filters_norm else None,
+            obs_column_types=_cached_filter_column_types(service, adata, code, "obs", list(obs_filters_norm.keys()), config_manager) if obs_filters_norm else None,
             config_manager=config_manager,
         )
         n_var = int(len(var_f))
@@ -1374,12 +1562,10 @@ def tool_top_groups(
     Accepts EITHER ``table`` (single species code) OR ``tables`` (list).
     With a list, counts are summed across all tables and a combined
     ranking is returned under ``top`` plus per-table breakdowns under
-    ``per_table``. This lets the LLM answer cross-species questions
-    ("which orthogroup has the most MADS genes overall?") in ONE tool
-    call instead of one per species.
+    ``per_table``. This lets the LLM answer cross-species ranking questions
+    in ONE tool call instead of one per species.
 
-    Handles comma/pipe-separated multi-value cells (e.g. ``ortho_id``,
-    ``pfam_id``).
+    Handles comma/pipe-separated multi-value cells.
     """
     top_n = max(1, min(int(top_n or 10), 1000))
     raw = _coerce_tables_arg(table, tables)
@@ -1491,14 +1677,14 @@ def tool_common_values(
 ) -> Dict[str, Any]:
     """Return the set of values shared across the given tables for a column.
 
-    Use this for cross-species intersection questions like "which orthogroups
-    are present in ALL species" or "which tissues appear in every dataset".
+    Use this for cross-species intersection questions about values present in
+    all or several loaded datasets.
     Pass ``min_tables=len(tables)`` for a strict intersection; lower values
     find values present in at least N tables.
 
     ``namespace`` selects which axis of the AnnData to scan:
-      - ``"var"`` — gene-level annotations (orthogroups, TF families, ...)
-      - ``"obs"`` — sample-level annotations (tissue, condition, ...)
+    - ``"var"`` — row-level annotations from ``.var``
+    - ``"obs"`` — sample-level annotations from ``.obs``
       - ``"auto"`` — try ``var`` first, then ``obs`` (per-table).
 
     ``var_filters_per_table`` optionally narrows each table first (same shape
@@ -1725,7 +1911,7 @@ def tool_build_deeplink(
                 key: value for key, value in filters.items()
                 if key in {
                     "tags", "table_names", "datasetIdFilters", "idColumnName",
-                    "filterChainColumns", "filterChainGroups", "filterChainVersion",
+                    "filterChainColumns", "filterChainOperators", "filterChainGroups", "filterChainVersion",
                 }
             }
             filters = {**reserved, "filters": flat_from_payload}
@@ -1821,6 +2007,7 @@ def tool_build_deeplink(
                     service, table=code,
                     var_filters=var_f or None,
                     obs_filters=obs_f or None,
+                    config_manager=config_manager,
                 )
             except Exception:
                 cr = {}
@@ -1872,7 +2059,7 @@ def tool_build_deeplink(
                 {"table": item["table"], "rows": int(item["rows"]), "max_rows": limit}
                 for item in reusable_counts
             ],
-            "suggestion": "Ask for a gene, orthogroup, TF family, GO term, tissue, or another sidebar filter to reduce the result size.",
+            "suggestion": "Ask for a narrower value from an available Display Name column or another sidebar filter to reduce the result size.",
         }
         if over_limit:
             labels = ", ".join(
@@ -1945,6 +2132,7 @@ _FILTER_SPEC_SCHEMA: Dict[str, Any] = {
         "values": {"type": "array", "items": {"type": ["string", "number", "boolean"]}},
         "match_mode": {"type": "string", "enum": ["or", "and"], "default": "or"},
         "exact": {"type": "boolean", "default": True},
+        "has_value": {"type": "boolean", "default": False},
     },
     "additionalProperties": False,
 }
@@ -2086,6 +2274,9 @@ _VIEW_STATE_SCHEMA: Dict[str, Any] = {
         "table_names": {"type": "array", "items": {"type": "string"}},
         "filters": _FILTER_MAP_SCHEMA,
         "datasetIdFilters": _FILTER_MAP_SCHEMA,
+        "filterChainColumns": {"type": "array", "items": {"type": "string"}},
+        "filterChainOperators": {"type": "object", "additionalProperties": {"type": "string", "enum": ["and", "or"]}},
+        "filterChainGroups": {"type": "object", "additionalProperties": True},
     },
     "additionalProperties": False,
 }
@@ -2099,6 +2290,7 @@ _ACTION_BLOCK_SCHEMAS: Dict[str, Any] = {
             "values": {"type": "array", "items": {"type": ["string", "number", "boolean"]}},
             "match_mode": {"type": "string", "enum": ["or", "and"], "default": "or"},
             "exact": {"type": "boolean", "default": True},
+            "has_value": {"type": "boolean", "default": False},
         },
         "required": ["column"],
         "additionalProperties": False,
@@ -2124,6 +2316,15 @@ _ACTION_BLOCK_SCHEMAS: Dict[str, Any] = {
             "transform": {"type": "string", "enum": ["raw", "log2", "zscore"]},
         },
         "required": ["optionId", "transform"],
+        "additionalProperties": False,
+    },
+    "set_filter_chain": {
+        "type": "object",
+        "properties": {
+            "columns": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 2},
+            "operator": {"type": "string", "enum": ["and", "or"]},
+        },
+        "required": ["columns", "operator"],
         "additionalProperties": False,
     },
     "viz_update": {
@@ -2165,11 +2366,18 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
         "function": {
             "name": "list_schema",
             "description": (
-                "List the available species/tables with their .var and .obs "
-                "columns, dtypes, and layers. Call this first when you need "
-                "to know what data exists."
+                "List loaded tables with dynamic row/sample metadata fields, "
+                "display labels, dtypes, layers, and compact top categorical "
+                "values. Use display labels for prose and internal keys for "
+                "tool/action payloads."
             ),
-            "parameters": {"type": "object", "properties": {}, "required": []},
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "max_values_per_col": {"type": "integer", "default": 5, "minimum": 0, "maximum": 20},
+                },
+                "required": [],
+            },
         },
     },
     {
@@ -2214,9 +2422,11 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
         "function": {
             "name": "resolve_value",
             "description": (
-                "Find which column contains a free-form term (e.g. 'MIKC' → "
-                "tf_family). Returns ranked hits with table, column, value "
-                "and occurrence count. Use before proposing an add_filter."
+                "Find which dynamic metadata field contains a free-form term. "
+                "Returns ranked hits with table, namespace, internal column, "
+                "Display Name, exact value, and occurrence count. Use before "
+                "proposing an add_filter when the column/value is not already "
+                "verified."
             ),
             "parameters": {
                 "type": "object",
@@ -2244,8 +2454,8 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
                 "'cell wall biosynthesis'. The dataset's `go_terms` "
                 "column stores `GO:#######` IDs only, never process "
                 "names, so neither `resolve_value` nor "
-                "`list_distinct_values` (on tissue / condition / "
-                "description / genename) can resolve such a query. "
+                "`list_distinct_values` on ordinary metadata columns "
+                "can resolve such a query. "
                 "This tool maps the natural-language name to canonical "
                 "GO IDs via the loaded GO OBO ontology and (by default) "
                 "only returns IDs that are actually annotated in this "
@@ -2327,12 +2537,10 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
         "function": {
             "name": "top_groups",
             "description": (
-                "Rank values in a .var column by how many genes carry them, "
-                "after applying var_filters. Handles comma/pipe-separated "
-                "cells (ortho_id, pfam_id). Pass `tables` as an ARRAY to "
-                "aggregate across species in ONE call — strongly preferred "
-                "over calling this once per species. Use to answer 'which "
-                "orthogroup is most represented overall?'."
+                "Rank values in a dynamic row-metadata column after applying "
+                "row filters. Handles separator-delimited multi-value cells. "
+                "Pass `tables` as an array to aggregate across tables in one "
+                "call and use returned coverage fields for cross-table claims."
             ),
             "parameters": {
                 "type": "object",
@@ -2353,16 +2561,11 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
         "function": {
             "name": "common_values",
             "description": (
-                "Return values shared by multiple tables for a column. "
-                "Use for cross-species questions like 'which orthogroups "
-                "are present in ALL species' OR sample-level ones like "
-                "'which tissues appear in every dataset'. The column may "
-                "live in `.var` (gene annotations) or `.obs` (sample "
-                "annotations); set `namespace` accordingly or leave on "
-                "'auto'. Result includes `per_table_distinct` showing the "
-                "first 50 values per table — use it to compare coverage. "
-                "Capped at 500 returned shared values; use `n_common` for "
-                "the total count."
+                "Return values shared by multiple tables for a dynamic "
+                "metadata column. The column may live in row metadata or "
+                "sample metadata; set `namespace` or leave `auto`. Result "
+                "includes compact per-table distinct values and total shared "
+                "count."
             ),
             "parameters": {
                 "type": "object",
@@ -2444,7 +2647,7 @@ def _get_dispatch():
     return {
         "state_summary": lambda service, cm, **kw: tool_state_summary(service, cm),
         "list_schema": lambda service, cm, **kw: tool_list_schema(service, cm, **kw),
-        "list_view_settings": lambda service, cm, **kw: tool_list_view_settings(service, **kw),
+        "list_view_settings": lambda service, cm, **kw: tool_list_view_settings(service, cm, **kw),
         "resolve_value": lambda service, cm, **kw: tool_resolve_value(service, cm, **kw),
         "search_go_terms": lambda service, cm, **kw: tool_search_go_terms(service, **kw),
         "list_distinct_values": lambda service, cm, **kw: tool_list_distinct_values(service, cm, **kw),

@@ -1389,6 +1389,8 @@ def _build_assistant_context(service, cm, selected_tables: Optional[List[str]] =
     import json as _json
     try:
         overview_data = _build_overview(service, cm)
+        schema_data = assistant_tools_module.tool_list_schema(service, cm, max_values_per_col=5)
+        schema_by_code = {str(t.get("code")): t for t in (schema_data.get("tables") or [])}
         species_full = overview_data["species"]
         selected_set = None
         if selected_tables:
@@ -1410,8 +1412,7 @@ def _build_assistant_context(service, cm, selected_tables: Optional[List[str]] =
             "project": overview_data["project"],
             "global": {
                 k: v for k, v in overview_data["global"].items()
-                if k in ("n_species", "n_samples", "n_genes", "orthogroup_count",
-                         "gene_tree_count", "tf_total")
+            if k in ("n_species", "n_samples", "n_genes")
             },
             "services": {
                 # Surface which optional backend services are wired up so the
@@ -1428,30 +1429,15 @@ def _build_assistant_context(service, cm, selected_tables: Optional[List[str]] =
                     "n_samples": s["n_samples"],
                     "n_genes": s["n_genes"],
                     "layers": s["layers"],
-                    "var_columns": s["var_columns"][:40],
-                    "obs_columns": s["obs_columns"][:40],
+                    "var_columns": (schema_by_code.get(str(s["code"])) or {}).get("var_columns", [])[:40],
+                    "obs_columns": (schema_by_code.get(str(s["code"])) or {}).get("obs_columns", [])[:40],
                     "annotation_coverage": s.get("annotation_coverage", {}),
-                    "tissue_distribution": s.get("derived", {}).get("tissue_distribution", [])[:10],
-                    "tf_count": s.get("derived", {}).get("tf_count"),
-                    "orthogroup_count": s.get("derived", {}).get("orthogroup_count"),
                 }
                 for s in kept_species
             ],
         }
-        try:
-            col_defs = cm.get_column_definitions() or {}
-            internal_to_display = {
-                str(k): str((v or {}).get("display_name") or k)
-                for k, v in col_defs.items()
-                if isinstance(k, str) and isinstance(v, dict)
-            }
-            slim["column_internal_names"] = dict(list(internal_to_display.items())[:120])
-            slim["column_display_names"] = {
-                display: internal
-                for internal, display in list(internal_to_display.items())[:120]
-            }
-        except Exception:
-            pass
+        slim["column_internal_names"] = dict(list((schema_data.get("column_internal_names") or {}).items())[:120])
+        slim["column_display_names"] = dict(list((schema_data.get("column_display_names") or {}).items())[:120])
         if selected_set is not None and omitted_codes:
             slim["omitted_species"] = {
                 "count": len(omitted_codes),
@@ -1462,19 +1448,6 @@ def _build_assistant_context(service, cm, selected_tables: Optional[List[str]] =
     except Exception as e:
         logger.warning(f"Assistant context build failed: {e}")
         return "{}"
-
-
-_FAST_PHYLO_RE = re.compile(r"\b(?:open|show|zeige|öffne)?\s*(?:the\s+)?(?:gene\s+tree|phylo(?:genetic)?\s*tree|phylotree|genbaum|stammbaum)\s+(?:for\s+)?(?:orthogroup\s+)?(OG[0-9A-Za-z_.-]+)\b", re.I)
-_FAST_TF_HEATMAP_RE = re.compile(r"\b(?:open|show|zeige|öffne).*?heatmap.*?(?:all\s+)?(.+?)\s+transcription\s+factors?\s+(?:across\s+(?:every|all)\s+(?:species|datasets)|in\s+([A-Za-z0-9_.-]+))", re.I)
-_FAST_TF_HEATMAP_AS_RE = re.compile(r"\b(?:show|open|zeige|öffne)\s+(.+?)\s+transcription\s+factors?\s+as\s+a\s+heatmap\s+in\s+([A-Za-z0-9_.-]+)\b", re.I)
-_FAST_TF_ORA_RE = re.compile(r"\b(?:run|start|zeige|öffne).*?\bORA\b.*?on\s+(.+?)\s+transcription\s+factors?\s+in\s+([A-Za-z0-9_.-]+)\b", re.I)
-_FAST_SAMPLE_HEATMAP_RE = re.compile(r"\bfilter\s+([A-Za-z0-9_.-]+)\s+to\s+samples\s+where\s+(.+?)\s+is\s+(.+?)\s+and\s+open\s+a\s+heatmap\b", re.I)
-_FAST_TF_SAMPLE_HEATMAP_RE = re.compile(r"\bshow\s+expression\s+of\s+(.+?)\s+in\s+(?:(?P<table>[A-Za-z0-9_.-]+)\s+)?samples\s+where\s+(.+?)\s+is\s+(.+?)\s+as\s+a\s+heatmap\b", re.I)
-_FAST_COMPARE_ORTHO_RE = re.compile(r"\bcompare\s+expression\s+of\s+orthogroup\s+(OG[0-9A-Za-z_.-]+)\s+across\s+all\s+species\b", re.I)
-_FAST_TOP_TF_RE = re.compile(r"\bwhich\s+transcription\s+factor\s+family\s+is\s+most\s+represented\s+in\s+([A-Za-z0-9_.-]+)\b", re.I)
-_FAST_COMMON_SAMPLE_RE = re.compile(r"\bwhich\s+sample\s+metadata\s+values\s+are\s+common\s+to\s+every\s+species\b", re.I)
-_FAST_SHARED_ORTHO_RE = re.compile(r"\bwhich\s+orthogroups\s+are\s+shared\s+across\s+all\s+loaded\s+species\b", re.I)
-_FAST_SUMMARY_RE = re.compile(r"\bsummarize\s+the\s+([A-Za-z0-9_.-]+)\s+dataset\b", re.I)
 
 
 def _assistant_species_display_lookup(service) -> Dict[str, str]:
@@ -1502,220 +1475,264 @@ def _assistant_species_display_lookup(service) -> Dict[str, str]:
 
 
 def _assistant_fast_path_response(service, cm, user_text: str, client_ctx: Dict[str, Any]) -> Optional[str]:
-    """Handle generated assistant examples without needing an LLM round-trip."""
+    """Deterministic UI-intent router for short, common app commands.
+
+    These paths are schema-neutral: columns are resolved from the live Admin
+    Display Name registry and sample/row metadata in the loaded AnnData files.
+    They prevent simple UI commands from entering a multi-tool LLM repair loop.
+    """
     text = str(user_text or "").strip()
     if not text:
         return None
+    lower = text.lower()
 
-    from . import assistant_tools as _at
+    def _view_from_ctx() -> str:
+        raw = str((client_ctx or {}).get("view") or (client_ctx or {}).get("route") or "").lower()
+        if "compare" in raw or "/c/" in raw:
+            return "compare"
+        if "heatmap" in raw or "/h/" in raw:
+            return "heatmap"
+        if "phylo" in raw or "/p/" in raw:
+            return "phylo"
+        if "ora" in raw or "/o/" in raw:
+            return "ora"
+        return "catalog"
 
-    def _has_var_column(tables: List[str], column: str) -> bool:
+    def _tables_from_ctx(default_all: bool = True) -> List[str]:
+        raw = []
+        if isinstance(client_ctx, dict):
+            for key in ("tables", "selected_table_names"):
+                value = client_ctx.get(key)
+                if isinstance(value, list) and value:
+                    raw = [str(item) for item in value if str(item).strip()]
+                    break
+        return raw or (["all"] if default_all else [])
+
+    def _current_filters() -> Dict[str, Any]:
+        if isinstance(client_ctx, dict) and isinstance(client_ctx.get("filters"), dict):
+            return client_ctx.get("filters") or {}
+        return {}
+
+    def _display_to_internal(label: str) -> str:
+        try:
+            schema = assistant_tools_module.tool_state_summary(service, cm)
+            mapping = schema.get("column_display_names") or {}
+            return str(mapping.get(label) or mapping.get(label.strip()) or label)
+        except Exception:
+            return label
+
+    def _resolve_obs_column(label: str, tables: List[str]) -> Optional[Dict[str, str]]:
+        wanted = str(label or "").strip().lower()
+        if not wanted:
+            return None
+        try:
+            schema = assistant_tools_module.tool_list_schema(service, cm, max_values_per_col=0)
+        except Exception:
+            schema = {}
+        resolved_tables = set(assistant_tools_module._resolve_species_codes(service, tables)) if tables else set()
+        for table in schema.get("tables") or []:
+            code = str(table.get("code") or "")
+            if resolved_tables and code not in resolved_tables:
+                continue
+            for col in table.get("obs_columns") or []:
+                internal = str(col.get("name") or "").strip()
+                display = str(col.get("display_name") or internal).strip()
+                if wanted in {internal.lower(), display.lower()}:
+                    return {"internal": internal, "display": display}
+        return None
+
+    def _resolve_value_column(value: str, tables: List[str], *, fallback_label: str) -> str:
         try:
             sentinels = {"all", "*", "__all__", "every", "everything"}
-            raw_tables = None if any(str(t).strip().lower() in sentinels for t in tables) else tables
-            codes = _at._resolve_species_codes(service, raw_tables)
+            lookup_tables = None if any(str(item).strip().lower() in sentinels for item in (tables or [])) else (tables or None)
+            resolved = assistant_tools_module.tool_resolve_value(
+                service, cm, query=value, tables=lookup_tables, max_hits=25,
+            )
+            hits = [hit for hit in (resolved.get("hits") or []) if hit.get("namespace") == "var"]
+            preferred = next(
+                (
+                    hit for hit in hits
+                    if "ortho" in str(hit.get("column") or "").lower()
+                    or "orthogroup" in str(hit.get("display_name") or "").lower()
+                ),
+                None,
+            ) or (hits[0] if hits else None)
+            if preferred and preferred.get("column"):
+                return str(preferred.get("column"))
         except Exception:
-            codes = []
-        for code in codes:
-            try:
-                adata = service.registry.load(code)
-            except Exception:
-                adata = None
-            var_df = getattr(adata, "var", None) if adata is not None else None
-            if var_df is not None and column in var_df.columns:
-                return True
-        return False
+            pass
+        return _display_to_internal(fallback_label)
 
-    selected = []
-    if isinstance(client_ctx, dict):
-        raw = client_ctx.get("selected_table_names") or client_ctx.get("tables") or []
-        if isinstance(raw, list):
-            selected = [str(item) for item in raw if str(item).strip()]
-    selected_or_all = selected or ["all"]
+    def _json_block(tag: str, payload: Dict[str, Any]) -> str:
+        return f"```{tag}\n{json.dumps(payload, ensure_ascii=False)}\n```"
 
-    phylo_match = _FAST_PHYLO_RE.search(text)
-    if phylo_match:
-        og_id = phylo_match.group(1)
-        result = _at.tool_build_deeplink(
-            service, cm,
-            view="phylo",
-            tables=selected_or_all,
-            filters={"filters": {"ortho_id": {"value": og_id, "match_mode": "or", "exact": True}}},
-            visualizations={"phyloTree": {"selectedOrthogroup": og_id}},
-        )
-        if result.get("error"):
-            return f"I could not open that phylo view: {result.get('error')}"
+    # Rendering shortcut: "z score", "z-score", "zscore".
+    if re.search(r"\bz\s*-?\s*score\b|\bzscore\b", lower):
+        view = _view_from_ctx()
+        tables = _tables_from_ctx()
+        try:
+            settings = assistant_tools_module.tool_list_view_settings(service, view=view, tables=tables)
+            options = [o for o in settings.get("expression_options") or [] if o.get("available") and o.get("transform") == "zscore"]
+        except Exception:
+            options = []
+        preferred = next((o for o in options if o.get("id") == "zscore"), None) or (options[0] if options else None)
+        if not preferred:
+            return "I can't switch to Z score because no Z-score expression option is available for the current loaded datasets."
         return (
-            f"Opening the gene tree for {og_id}.\n\n"
-            "```deeplink\n"
-            + json.dumps({
-                "view": "phylo",
-                "tables": result.get("tables") or selected_or_all,
-                "filters": {"filters": {"ortho_id": {"value": og_id, "match_mode": "or", "exact": True}}},
-                "visualizations": {"phyloTree": {"selectedOrthogroup": og_id}},
-            }, ensure_ascii=False)
-            + "\n```"
+            "Switching expression display to Z score.\n\n"
+            + _json_block("set_expression_display", {
+                "optionId": preferred.get("id"),
+                "layer": preferred.get("layer"),
+                "transform": preferred.get("transform"),
+            })
         )
 
-    compare_match = _FAST_COMPARE_ORTHO_RE.search(text)
-    if compare_match:
-        og_id = compare_match.group(1)
-        result = _at.tool_build_deeplink(
-            service, cm,
-            view="compare",
-            tables=["all"],
-            filters={"filters": {"ortho_id": {"value": og_id, "match_mode": "or", "exact": True}}},
-            visualizations={"compare": {"selectedOrthogroup": og_id}},
-        )
-        if result.get("error"):
-            return f"I could not open that compare view: {result.get('error')}"
+    # Sample grouping shortcut: "group by Group" / "gruppiere nach ...".
+    group_match = re.search(r"\b(?:group\s+by|group\s+samples\s+by|gruppiere(?:n)?\s+nach)\s+(.+?)\s*[.!?]*$", text, re.I)
+    if group_match:
+        label = group_match.group(1).strip().strip('"\'')
+        view = _view_from_ctx()
+        tables = _tables_from_ctx()
+        col = _resolve_obs_column(label, tables)
+        if not col:
+            return f"I can't find a visible sample metadata column named '{label}' in the current datasets."
+        if view not in {"compare", "phylo"}:
+            return (
+                f"'{col['display']}' is sample metadata. Grouping by sample metadata is available in Compare and Phylo views; "
+                "switch to one of those views first."
+            )
+        patch_key = "phyloTree.groupingColumn" if view == "phylo" else "compare.groupingColumn"
         return (
-            f"Opening the compare view for {og_id}.\n\n"
-            "```deeplink\n"
-            + json.dumps({
-                "view": "compare",
-                "tables": result.get("tables") or ["all"],
-                "filters": {"filters": {"ortho_id": {"value": og_id, "match_mode": "or", "exact": True}}},
-                "visualizations": {"compare": {"selectedOrthogroup": og_id}},
-            }, ensure_ascii=False)
-            + "\n```"
+            f"Grouping samples by {col['display']}.\n\n"
+            + _json_block("viz_update", {"patch": {patch_key: col["internal"]}})
         )
 
-    sample_match = _FAST_SAMPLE_HEATMAP_RE.search(text)
-    tf_sample_match = _FAST_TF_SAMPLE_HEATMAP_RE.search(text)
-    if sample_match or tf_sample_match:
-        if sample_match:
-            tables = [sample_match.group(1)]
-            trait_label = sample_match.group(2).strip()
-            trait_value = sample_match.group(3).strip(" .")
-            filters = {trait_label: {"value": trait_value, "match_mode": "or", "exact": True}}
-        else:
-            table = tf_sample_match.group("table")
-            tables = [table] if table else selected_or_all
-            tf_family = tf_sample_match.group(1).strip(" .")
-            trait_label = tf_sample_match.group(3).strip()
-            trait_value = tf_sample_match.group(4).strip(" .")
-            filters = {
-                "tf_family": {"value": tf_family, "match_mode": "or", "exact": True},
-                trait_label: {"value": trait_value, "match_mode": "or", "exact": True},
-            }
-        result = _at.tool_build_deeplink(
-            service, cm, view="heatmap", tables=tables,
-            filters={"filters": filters}, visualizations={},
-        )
-        if result.get("error"):
-            return f"I could not open that heatmap view: {result.get('error')}"
+    # View switches: "switch to compare", "open heatmap", etc.  Prompts that
+    # also contain a concrete "where X is Y" clause are handled below so the
+    # requested filter is not lost.
+    switch_match = re.search(r"\b(?:switch|open|go|change)\s+(?:to\s+)?(?:the\s+)?(compare|heatmap|ora|phylo|catalog)\b", lower)
+    if switch_match and not re.search(r"\bwhere\b.+\b(?:is|=)\b", lower):
+        view = switch_match.group(1)
+        if view == "phylo":
+            view = "phylo"
+        tables = _tables_from_ctx(default_all=view != "catalog")
+        filters = _current_filters()
         return (
-            f"Opening the heatmap for samples where {trait_label} is {trait_value}.\n\n"
-            "```deeplink\n"
-            + json.dumps({
-                "view": "heatmap",
-                "tables": result.get("tables") or tables,
-                "filters": {"filters": filters},
-                "visualizations": {},
-            }, ensure_ascii=False)
-            + "\n```"
-        )
-
-    top_tf_match = _FAST_TOP_TF_RE.search(text)
-    if top_tf_match:
-        table = top_tf_match.group(1)
-        result = _at.tool_top_groups(service, cm, table=table, group_column="tf_family", top_n=3)
-        top = result.get("top") or []
-        if top:
-            first = top[0]
-            return f"In {table}, the most represented transcription factor family is {first.get('value')} ({first.get('count')} transcripts)."
-        return f"I could not find transcription factor family counts for {table}."
-
-    if _FAST_COMMON_SAMPLE_RE.search(text):
-        summary = _at.tool_state_summary(service, cm)
-        obs_cols = summary.get("structural_columns", {}).get("obs", [])
-        column = "condition" if "condition" in obs_cols else ("tissue" if "tissue" in obs_cols else (obs_cols[0] if obs_cols else ""))
-        if column:
-            tables = [str(d.get("code")) for d in (summary.get("datasets") or []) if d.get("code")]
-            result = _at.tool_common_values(service, cm, column=column, tables=tables, namespace="obs", limit=20)
-            values = result.get("values") or []
-            display = result.get("display_name") or column
-            if values:
-                shown = ", ".join(str(v) for v in values[:10])
-                suffix = f" ({result.get('n_common')} total)" if result.get("n_common") else ""
-                return f"Common {display} values across the loaded species: {shown}{suffix}."
-            return f"I found no common {display} values across every loaded species."
-
-    if _FAST_SHARED_ORTHO_RE.search(text):
-        summary = _at.tool_state_summary(service, cm)
-        tables = [str(d.get("code")) for d in (summary.get("datasets") or []) if d.get("code")]
-        result = _at.tool_common_values(service, cm, column="ortho_id", tables=tables, namespace="var", limit=10)
-        values = result.get("values") or []
-        if values:
-            return f"I found {result.get('n_common')} orthogroups shared across all loaded species. Examples: {', '.join(values[:10])}."
-        return "I found no orthogroups shared across every loaded species."
-
-    summary_match = _FAST_SUMMARY_RE.search(text)
-    if summary_match:
-        target = summary_match.group(1)
-        summary = _at.tool_state_summary(service, cm)
-        for dataset in summary.get("datasets") or []:
-            if str(dataset.get("code", "")).lower() == target.lower() or str(dataset.get("label", "")).lower() == target.lower():
-                return (
-                    f"{dataset.get('label') or dataset.get('code')} ({dataset.get('code')}) contains "
-                    f"{dataset.get('n_genes')} transcripts across {dataset.get('n_samples')} samples."
-                )
-        return f"I could not find a loaded dataset named {target}."
-
-    species_display = _assistant_species_display_lookup(service)
-
-    for regex, view, default_tables, visualizations in (
-        (_FAST_TF_ORA_RE, "ora", None, {"oraColumnName": "go_terms"}),
-        (_FAST_TF_HEATMAP_RE, "heatmap", ["all"], {}),
-        (_FAST_TF_HEATMAP_AS_RE, "heatmap", None, {}),
-    ):
-        match = regex.search(text)
-        if not match:
-            continue
-        family = re.sub(r"\b(?:of|all|the)\b", "", match.group(1), flags=re.I).strip(" .")
-        family = re.sub(r"\s+", " ", family)
-        if not family:
-            continue
-        explicit_table = match.group(2) if len(match.groups()) >= 2 else None
-        tables = [explicit_table] if explicit_table else (default_tables or selected_or_all)
-        if _has_var_column(tables, "tf_family"):
-            column = "tf_family"
-            value = family
-        else:
-            resolved = _at.tool_resolve_value(service, cm, query=family, tables=tables, max_hits=8)
-            hits = [h for h in (resolved.get("hits") or []) if h.get("namespace") == "var"]
-            tf_hit = hits[0] if hits else None
-            if not tf_hit:
-                return None
-            column = str(tf_hit.get("column") or "tf_family")
-            value = str(tf_hit.get("value") or family)
-        result = _at.tool_build_deeplink(
-            service, cm,
-            view=view,
-            tables=tables,
-            filters={"filters": {column: {"value": value, "match_mode": "or", "exact": True}}},
-            visualizations=visualizations,
-        )
-        if result.get("error"):
-            return f"I could not open that {view} view: {result.get('error')}"
-        label = "GO term ORA" if view == "ora" else "heatmap"
-        table_label = ""
-        if view == "ora" and tables:
-            table_label = species_display.get(str(tables[0]).lower(), str(tables[0]))
-            table_label = f" in {table_label}"
-        return (
-            f"Opening the {label} for {value} transcription factors{table_label}.\n\n"
-            "```deeplink\n"
-            + json.dumps({
+            f"Switching to {view}.\n\n"
+            + _json_block("deeplink", {
                 "view": view,
-                "tables": result.get("tables") or tables,
-                "filters": {"filters": {column: {"value": value, "match_mode": "or", "exact": True}}},
-                "visualizations": visualizations,
-            }, ensure_ascii=False)
-            + "\n```"
+                "tables": tables,
+                "filters": filters,
+                "visualizations": {},
+            })
         )
 
+    # Has-value shortcut: "only samples with Group", "Group has value".
+    has_value_match = re.search(
+        r"\b(?:only\s+)?(?:samples|rows|transcripts)?\s*(?:with|where)\s+(.+?)\s+(?:has\s+value|is\s+present|exists)\b|\bonly\s+(?:samples|rows|transcripts)\s+with\s+(?:a\s+)?value\s+in\s+(.+?)\s*[.!?]*$|\b(.+?)\s+has\s+value\b",
+        text,
+        re.I,
+    )
+    if has_value_match:
+        label = (has_value_match.group(1) or has_value_match.group(2) or has_value_match.group(3) or "").strip().strip('"\'')
+        tables = _tables_from_ctx()
+        obs_col = _resolve_obs_column(label, tables)
+        column = obs_col["internal"] if obs_col else _display_to_internal(label)
+        display = obs_col["display"] if obs_col else label
+        return (
+            f"Filtering to entries where {display} has a value.\n\n"
+            + _json_block("add_filter", {"column": column, "has_value": True, "match_mode": "or", "exact": True})
+        )
+
+    # Filter-chain shortcut: "connect both filters with and", "set filter chain to and".
+    chain_match = re.search(r"\b(?:connect|combine|set)\b.*\b(?:filter\s+chain|filters?)\b.*\b(and|or)\b|\bfilter\s+chain\s+(?:to\s+)?(and|or)\b", lower)
+    if chain_match:
+        operator = chain_match.group(1) or chain_match.group(2) or "and"
+        filters_state = _current_filters()
+        nested = filters_state.get("filters") if isinstance(filters_state.get("filters"), dict) else {}
+        active_columns = []
+        if isinstance(nested, dict):
+            for column, spec in nested.items():
+                if not isinstance(spec, dict):
+                    if str(spec or "").strip():
+                        active_columns.append(str(column))
+                    continue
+                if spec.get("has_value") is True or str(spec.get("value") or spec.get("values") or "").strip():
+                    active_columns.append(str(column))
+        if len(active_columns) < 2:
+            return "I need at least two active filters before I can set the filter chain operator."
+        return (
+            f"Setting the filter chain to {operator.upper()}.\n\n"
+            + _json_block("set_filter_chain", {"columns": active_columns, "operator": operator})
+        )
+
+    # Generated examples and equivalent user prompts: "Open heatmap ... where X is Y".
+    view = None
+    if re.search(r"\bheatmap\b", lower):
+        view = "heatmap"
+    elif re.search(r"\bora\b|over-?representation", lower):
+        view = "ora"
+    elif re.search(r"\bcompare\b", lower):
+        view = "compare"
+    elif re.search(r"\bphylo\b|phylo\s*tree|tree\b", lower):
+        view = "phylo"
+    if view:
+        where_match = re.search(r"\bwhere\s+(.+?)\s+(?:is|=)\s+(.+?)\s*[.!?]*$", text, re.I)
+        ortho_phrase_match = None
+        if view in {"compare", "phylo"} and not where_match:
+            ortho_phrase_match = re.search(
+                r"\b(?:orthogroup|group)\s+(?:is\s+)?([A-Za-z0-9_.:-]+)\s*[.!?]*$|\b(?:phylo\s*tree|phylotree|phylogenetic\s+tree)\s+for\s+([A-Za-z0-9_.:-]+)\s*[.!?]*$",
+                text,
+                re.I,
+            )
+        if where_match or ortho_phrase_match:
+            if where_match:
+                display_label = where_match.group(1).strip().strip('"\'')
+                value = where_match.group(2).strip().strip('"\'')
+            else:
+                display_label = "Orthogroup"
+                value = (ortho_phrase_match.group(1) or ortho_phrase_match.group(2) or "").strip().strip('"\'')
+            table_match = re.search(r"\b(?:on|in|for)\s+(.+?)\s+(?:for\s+rows\s+where|where)\b", text, re.I)
+            if view == "compare" and re.search(r"\bacross\s+loaded\s+species\b|\bacross\s+all\b", lower):
+                tables = ["all"]
+            elif view in {"compare", "phylo"} and not table_match:
+                tables = ["all"]
+            elif table_match:
+                table_label = table_match.group(1).strip()
+                if table_label.lower() in {"matching datasets", "matching species", "loaded datasets", "loaded species", "all datasets", "all species", "multiple datasets", "multiple species"}:
+                    tables = ["all"]
+                else:
+                    tables = [table_label]
+            else:
+                tables = _tables_from_ctx()
+            if where_match:
+                column = _display_to_internal(display_label)
+            else:
+                column = _resolve_value_column(value, tables, fallback_label=display_label)
+            filter_payload = {
+                "filters": {column: {"value": value, "match_mode": "or", "exact": True}},
+                "datasetIdFilters": {},
+            }
+            if view == "phylo":
+                visualizations = {"phyloTree": {"selectedOrthogroup": value}}
+            elif view == "compare" and str(column).lower() in {"ortho_id", "orthogroup", "orthogroup_id"}:
+                visualizations = {"compare": {"selectedOrthogroup": value}}
+            else:
+                visualizations = {}
+            # Preflight once; if too broad, stop immediately instead of using
+            # the LLM to try arbitrary repair filters.
+            check = assistant_tools_module.tool_build_deeplink(
+                service, cm, view=view, tables=tables, filters=filter_payload, visualizations=visualizations,
+            )
+            if isinstance(check, dict) and check.get("error"):
+                suggestion = check.get("suggestion") or "Please choose a narrower visible Sidebar filter value."
+                return f"I can't open that {view} yet: {check.get('error')} {suggestion}"
+            return (
+                f"Opening {view} for rows where {display_label} is {value}.\n\n"
+                + _json_block("add_filter", {"column": column, "value": value, "match_mode": "or", "exact": True})
+                + "\n\n"
+                + _json_block("deeplink", {"view": view, "tables": tables, "filters": filter_payload, "visualizations": visualizations})
+            )
     return None
 
 
@@ -2030,7 +2047,7 @@ def assistant_deeplink():
                 key: value for key, value in filters.items()
                 if key in {
                     "tags", "table_names", "datasetIdFilters", "idColumnName",
-                    "filterChainColumns", "filterChainGroups", "filterChainVersion",
+                    "filterChainColumns", "filterChainOperators", "filterChainGroups", "filterChainVersion",
                 }
             }
             filters = {**reserved, "filters": flat_filters}
@@ -2057,7 +2074,18 @@ def assistant_deeplink():
             tn = entry.get("table_name")
             fn = entry.get("full_name") or tn
             code = entry.get("_species_code") or entry.get("code")
-            for key in (tn, fn, code):
+            aliases = [tn, fn, code, entry.get("display_name")]
+            try:
+                adata = service.registry.load(code)
+                uns = getattr(adata, "uns", {}) or {}
+                species_name = str(uns.get("species") or "").strip()
+                dataset_name = str(uns.get("name") or "").strip()
+                aliases.extend([species_name, dataset_name])
+                if species_name and dataset_name and species_name.lower() != dataset_name.lower():
+                    aliases.extend([f"{species_name} ({dataset_name})", f"{dataset_name} ({species_name})"])
+            except Exception:
+                pass
+            for key in aliases:
                 if isinstance(key, str) and key:
                     lookup[key.lower()] = tn
         for t in raw_tables:
@@ -2168,6 +2196,7 @@ def assistant_deeplink():
                         service, table=tn,
                         var_filters=var_f or None,
                         obs_filters=obs_f or None,
+                        config_manager=current_app.config_manager,
                     )
                     cr = cr if isinstance(cr, dict) else {}
                     n_var = int(cr.get("n_var_match", 0))
@@ -2220,7 +2249,7 @@ def assistant_deeplink():
                         {"table": item["table"], "rows": int(item["rows"]), "max_rows": limit}
                         for item in reusable_counts
                     ],
-                    "suggestion": "Ask for a gene, orthogroup, TF family, GO term, tissue, or another sidebar filter to reduce the result size.",
+                    "suggestion": "Ask for a narrower value from an available Display Name column or another sidebar filter to reduce the result size.",
                 }
                 if over_limit:
                     labels = ", ".join(

@@ -24,6 +24,8 @@ export interface FiltersApi {
   setFilter: (key: string, filter: FilterValue) => void;
   removeFilter: (key: string) => void;
   clearFilters: () => void;
+  setPairOperator?: (left: string, right: string, operator: "and" | "or") => void;
+  setFilterChainColumns?: (columns: string[]) => void;
 }
 
 export interface VisualizationApi {
@@ -44,12 +46,20 @@ export interface VisualizationApi {
 }
 
 export interface ColumnsApi {
-  rowColumns?: Array<{ column_name: string }>;
-  colColumns?: Array<{ column_name: string }>;
-  filterableColColumns?: Array<{ column_name: string }>;
-  orderableColColumns?: Array<{ column_name: string }>;
+  rowColumns?: ColumnOption[];
+  colColumns?: ColumnOption[];
+  filterableColColumns?: ColumnOption[];
+  orderableColColumns?: ColumnOption[];
   sampleMetadata?: Array<Record<string, unknown>>;
 }
+
+type ColumnOption = {
+  column_name: string;
+  display_name?: string;
+  type?: string;
+  is_array?: boolean;
+  array_separator?: string;
+};
 
 export interface CatalogApi {
   selectedTableNames: Set<string>;
@@ -91,6 +101,7 @@ const EXPRESSION_OPTIONS: Record<string, { layer: string | null; transform: "raw
   "zscore-tpm": { layer: "tpm", transform: "zscore" },
   raw: { layer: "X", transform: "raw" },
 };
+const EXPRESSION_OPTION_IDS = new Set(Object.keys(EXPRESSION_OPTIONS));
 
 const SIGNIFICANCE_THRESHOLDS = new Set(["0.001", "0.01", "0.05"]);
 const CLUSTER_METHODS = new Set(["average", "complete", "ward"]);
@@ -147,6 +158,9 @@ const ALLOWED_PATCH_PATHS: Record<string, PatchValidator> = {
   oraTooltipFields: enumArrayValue(ORA_TOOLTIP_FIELDS, "oraTooltipFields"),
   "oraOrder.name": enumValue(ORA_ORDER_FIELDS, "oraOrder.name"),
   "oraOrder.order": enumValue(new Set(["asc", "desc"]), "oraOrder.order"),
+  "expressionDisplay.optionId": enumValue(EXPRESSION_OPTION_IDS, "expressionDisplay.optionId"),
+  "expressionDisplay.layer": nullableStringPatchValue("expressionDisplay.layer"),
+  "expressionDisplay.transform": enumValue(new Set(["raw", "log2", "zscore"]), "expressionDisplay.transform"),
 };
 
 export class ActionRegistry {
@@ -174,6 +188,7 @@ export function createAssistantActionDispatcher(deps: DispatcherDeps) {
     .register("clear_filters", applyClearFilters)
     .register("select_tables", applySelectTables)
     .register("set_expression_display", applySetExpressionDisplay)
+    .register("set_filter_chain", applySetFilterChain)
     .register("deeplink", applyDeeplink)
     .register("compute", () => ({ mutated: false }));
 
@@ -272,6 +287,8 @@ function writeAudit(action: AssistantAction, before: UndoSnapshot, after: UndoSn
 
 function applyVizUpdate(action: AssistantAction, deps: DispatcherDeps): DispatchResult {
   const patch = (action.spec.patch || action.spec) as Record<string, unknown>;
+  const expressionAction = expressionActionFromPatch(patch, deps);
+  if (expressionAction) return applySetExpressionDisplay(expressionAction, deps);
   const entries = normalizePatchEntries(patch);
   const validated = entries.map(({ path, value }) => ({
     path,
@@ -303,28 +320,66 @@ function applyVizUpdate(action: AssistantAction, deps: DispatcherDeps): Dispatch
   if (applied.length === 0) throw new Error("no patch keys matched the visualization store");
   return {
     mutated: true,
-    summary: applied.map(({ path, value }) => `${path} -> ${formatValue(value)}`).join(", "),
+    summary: applied.map(({ path, value }) => `${path} -> ${formatPatchSummaryValue(deps, value)}`).join(", "),
+  };
+}
+
+function expressionActionFromPatch(patch: Record<string, unknown>, deps: DispatcherDeps): AssistantAction | null {
+  const expression = patch.expressionDisplay;
+  const flatOption = patch["expressionDisplay.optionId"];
+  const optionIdRaw = flatOption ?? (expression && typeof expression === "object" && !Array.isArray(expression)
+    ? (expression as Record<string, unknown>).optionId
+    : undefined);
+  if (optionIdRaw === undefined) return null;
+  const optionId = enumValue(EXPRESSION_OPTION_IDS, "expressionDisplay.optionId")(optionIdRaw) as string;
+  const option = EXPRESSION_OPTIONS[optionId];
+  return {
+    kind: "set_expression_display",
+    status: "pending",
+    spec: {
+      optionId,
+      layer: option.layer,
+      transform: option.transform,
+    },
   };
 }
 
 function applyAddFilter(action: AssistantAction, deps: DispatcherDeps): DispatchResult {
   const spec = action.spec;
-  const column = nonEmptyString(spec.column || spec.key, "column");
+  const column = resolveAnyColumnName(deps, nonEmptyString(spec.column || spec.key, "column"));
+  const columnMeta = findAnyColumn(deps, column);
   const rawSpec = spec as { match_mode?: unknown; exact?: unknown };
   const matchMode = rawSpec.match_mode === "and" || rawSpec.match_mode === "or" ? rawSpec.match_mode : "or";
   const exact = rawSpec.exact === undefined ? true : booleanValue(rawSpec.exact);
+  const hasValue = spec.has_value === true;
   deps.filtersStore.setFilter(column, {
-    value: normalizeFilterValue(spec.value ?? (spec as { values?: unknown }).values),
+    value: hasValue ? "" : normalizeFilterValue(spec.value ?? (spec as { values?: unknown }).values, columnMeta),
     match_mode: matchMode,
     exact,
-  });
-  return { mutated: true, summary: `${column}=${formatValue(spec.value)}` };
+    has_value: hasValue,
+  } as FilterValue);
+  return { mutated: true, summary: hasValue ? `${columnDisplayName(deps, column)} has value` : `${columnDisplayName(deps, column)}=${formatValue(spec.value)}` };
+}
+
+function applySetFilterChain(action: AssistantAction, deps: DispatcherDeps): DispatchResult {
+  const operator = String(action.spec.operator || "and").toLowerCase() === "or" ? "or" : "and";
+  const rawColumns = Array.isArray(action.spec.columns) ? action.spec.columns : [];
+  const columns = rawColumns
+    .map((item) => resolveAnyColumnName(deps, String(item || "")))
+    .filter(Boolean);
+  if (columns.length < 2) throw new Error("set_filter_chain requires at least two columns");
+  if (!deps.filtersStore.setPairOperator) throw new Error("filter store has no setPairOperator()");
+  deps.filtersStore.setFilterChainColumns?.(columns);
+  for (let index = 0; index < columns.length - 1; index++) {
+    deps.filtersStore.setPairOperator(columns[index], columns[index + 1], operator);
+  }
+  return { mutated: true, summary: `${columns.map((column) => columnDisplayName(deps, column)).join(` ${operator.toUpperCase()} `)}` };
 }
 
 function applyRemoveFilter(action: AssistantAction, deps: DispatcherDeps): DispatchResult {
-  const column = nonEmptyString(action.spec.column || action.spec.key, "column");
+  const column = resolveAnyColumnName(deps, nonEmptyString(action.spec.column || action.spec.key, "column"));
   deps.filtersStore.removeFilter(column);
-  return { mutated: true, summary: column };
+  return { mutated: true, summary: columnDisplayName(deps, column) };
 }
 
 function applyClearFilters(_action: AssistantAction, deps: DispatcherDeps): DispatchResult {
@@ -411,8 +466,26 @@ function validatePatchValue(path: string, value: unknown, deps: DispatcherDeps):
   return validator(value, deps);
 }
 
-function normalizeFilterValue(raw: unknown): string {
+function normalizeFilterValue(raw: unknown, column?: ColumnOption): unknown {
   if (raw === null || raw === undefined) return "";
+  const type = String(column?.type || "").toLowerCase();
+  if (type === "bigint" || type === "integer" || type === "double precision") {
+    if (Array.isArray(raw) && raw.length >= 2) {
+      const lower = Number(raw[0]);
+      const upper = Number(raw[1]);
+      if (Number.isFinite(lower) && Number.isFinite(upper)) return [lower, upper];
+    }
+    const numbers = String(raw).split(/[,;|\s]+/).map((value) => Number(value)).filter(Number.isFinite);
+    if (numbers.length >= 2) return [numbers[0], numbers[1]];
+    return "";
+  }
+  if (type === "boolean") {
+    if (typeof raw === "boolean") return raw;
+    const text = String(raw).trim().toLowerCase();
+    if (["true", "t", "1", "yes", "y"].includes(text)) return true;
+    if (["false", "f", "0", "no", "n"].includes(text)) return false;
+    return "";
+  }
   const parts = Array.isArray(raw)
     ? raw.map((value) => String(value).trim())
     : String(raw).split(/[,;\n\r|]+/).map((value) => value.trim());
@@ -429,6 +502,23 @@ function formatValue(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(formatValue).join(", ")}]`;
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
+}
+
+function formatPatchSummaryValue(deps: DispatcherDeps, value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map((item) => columnDisplayName(deps, String(item))).join(", ")}]`;
+  if (typeof value === "string") return columnDisplayName(deps, value);
+  return formatValue(value);
+}
+
+function columnDisplayName(deps: DispatcherDeps, column: string): string {
+  const columns = [
+    ...(deps.columnsStore?.rowColumns || []),
+    ...(deps.columnsStore?.colColumns || []),
+    ...(deps.columnsStore?.filterableColColumns || []),
+    ...(deps.columnsStore?.orderableColColumns || []),
+  ];
+  const hit = columns.find((item) => item.column_name === column);
+  return hit?.display_name || column;
 }
 
 function nonEmptyString(value: unknown, field: string): string {
@@ -449,6 +539,10 @@ function optionalStringValue(value: unknown, field: string): string {
 function nullableStringValue(value: unknown, field: string): string | null {
   if (value === null) return null;
   return nonEmptyString(value, field);
+}
+
+function nullableStringPatchValue(field: string) {
+  return (value: unknown): string | null => nullableStringValue(value, field);
 }
 
 function stringArrayValue(field: string) {
@@ -501,6 +595,41 @@ function columnNames(columns: Array<{ column_name: string }> | undefined): Set<s
   return new Set((columns || []).map((column) => String(column.column_name || "")).filter(Boolean));
 }
 
+function normalizeColumnLookupKey(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function resolveColumnName(value: string, columns: ColumnOption[] | undefined): string {
+  const raw = String(value || "").trim();
+  if (!raw) return raw;
+  const lookup = new Map<string, string>();
+  for (const column of columns || []) {
+    const internal = String(column.column_name || "").trim();
+    if (!internal) continue;
+    lookup.set(normalizeColumnLookupKey(internal), internal);
+    const display = String(column.display_name || "").trim();
+    if (display) lookup.set(normalizeColumnLookupKey(display), internal);
+  }
+  return lookup.get(normalizeColumnLookupKey(raw)) || raw;
+}
+
+function allKnownColumns(deps: DispatcherDeps): ColumnOption[] {
+  return [
+    ...(deps.columnsStore?.rowColumns || []),
+    ...(deps.columnsStore?.filterableColColumns || []),
+    ...(deps.columnsStore?.colColumns || []),
+    ...(deps.columnsStore?.orderableColColumns || []),
+  ];
+}
+
+function findAnyColumn(deps: DispatcherDeps, columnName: string): ColumnOption | undefined {
+  return allKnownColumns(deps).find((column) => column.column_name === columnName);
+}
+
+function resolveAnyColumnName(deps: DispatcherDeps, value: string): string {
+  return resolveColumnName(value, allKnownColumns(deps));
+}
+
 function rowColumnNames(deps: DispatcherDeps): Set<string> {
   return columnNames(deps.columnsStore?.rowColumns);
 }
@@ -524,21 +653,31 @@ function ensureKnownColumn(value: string, options: Set<string>, field: string, a
 
 function rowColumnValue(field: string, allowEmpty = false) {
   return (value: unknown, deps: DispatcherDeps): string => {
-    const text = allowEmpty ? optionalStringValue(value, field) : nonEmptyString(value, field);
+    const text = resolveColumnName(
+      allowEmpty ? optionalStringValue(value, field) : nonEmptyString(value, field),
+      deps.columnsStore?.rowColumns,
+    );
     return ensureKnownColumn(text, rowColumnNames(deps), field, "row/.var", allowEmpty);
   };
 }
 
 function obsColumnValue(field: string, allowEmpty = false) {
   return (value: unknown, deps: DispatcherDeps): string => {
-    const text = allowEmpty ? optionalStringValue(value, field) : nonEmptyString(value, field);
+    const text = resolveColumnName(
+      allowEmpty ? optionalStringValue(value, field) : nonEmptyString(value, field),
+      [
+        ...(deps.columnsStore?.colColumns || []),
+        ...(deps.columnsStore?.filterableColColumns || []),
+        ...(deps.columnsStore?.orderableColColumns || []),
+      ],
+    );
     return ensureKnownColumn(text, obsColumnNames(deps), field, "sample/.obs", allowEmpty);
   };
 }
 
 function rowColumnArrayValue(field: string) {
   return (value: unknown, deps: DispatcherDeps): string[] => {
-    const values = stringArrayValue(field)(value);
+    const values = stringArrayValue(field)(value).map((item) => resolveColumnName(item, deps.columnsStore?.rowColumns));
     const options = rowColumnNames(deps);
     return values.map((item) => ensureKnownColumn(item, options, field, "row/.var"));
   };
@@ -553,7 +692,11 @@ function nullableRowColumnArrayValue(field: string) {
 
 function colColumnArrayValue(field: string) {
   return (value: unknown, deps: DispatcherDeps): string[] => {
-    const values = stringArrayValue(field)(value);
+    const values = stringArrayValue(field)(value).map((item) => resolveColumnName(item, [
+      ...(deps.columnsStore?.colColumns || []),
+      ...(deps.columnsStore?.filterableColColumns || []),
+      ...(deps.columnsStore?.orderableColColumns || []),
+    ]));
     const options = obsColumnNames(deps);
     return values.map((item) => ensureKnownColumn(item, options, field, "sample/.obs"));
   };

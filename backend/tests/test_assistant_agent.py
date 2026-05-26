@@ -35,6 +35,7 @@ def _make_fake_service():
         "genename": [f"CSG{i:03d}" for i in range(6)],
         "tf_family": ["MIKC", "MIKC", "bHLH", "MIKC", None, "GATA"],
         "ortho_id": ["OG1,OG2", "OG1", "OG3", "OG1", "OG4", "OG2,OG5"],
+        "pfam_desc": ["Kinase|Transferase", "Kinase", "Binding|Domain", "Kinase", "Domain", "Binding"],
         "is_tf": [True, True, True, True, False, True],
         "length": [100, 200, 150, 300, 250, 180],
     }, index=[f"CSG{i:03d}" for i in range(6)])
@@ -101,10 +102,11 @@ def _make_fake_cm():
         get_config=lambda: {},
         get_column_mappings=lambda: {},
         get_column_definitions=lambda: {
-            "tf_family": {"display_name": "TF Family"},
-            "ortho_id": {"display_name": "Orthogroup"},
-            "tissue": {"display_name": "Tissue"},
-            "condition": {"display_name": "Condition"},
+            "tf_family": {"display_name": "TF Family", "type": "text", "visible": True, "filterable": True},
+            "ortho_id": {"display_name": "Orthogroup", "type": "array", "is_array": True, "array_separator": ",", "visible": True, "filterable": True},
+            "pfam_desc": {"display_name": "Pfam Desc", "type": "array", "is_array": True, "array_separator": "|", "visible": True, "filterable": True},
+            "tissue": {"display_name": "Tissue", "type": "text", "visible": True, "filterable": True},
+            "condition": {"display_name": "Condition", "type": "text", "visible": True, "filterable": True},
         },
     )
 
@@ -125,6 +127,31 @@ def test_list_schema_returns_both_species_with_columns():
     assert tf["display_name"] == "TF Family"
     assert res["column_display_names"]["Condition"] == "condition"
     assert "heatmap" in res["views"]
+
+
+def test_list_schema_uses_admin_visibility_types_and_separators():
+    svc = _make_fake_service()
+    cm = SimpleNamespace(
+        get_config=lambda: {"frontend_settings": {"hidden_columns": ["tf_family"]}},
+        get_column_mappings=lambda: {},
+        get_column_definitions=lambda: {
+            "tf_family": {"display_name": "Hidden Family", "type": "text", "visible": True, "filterable": True},
+            "ortho_id": {"display_name": "Group", "type": "array", "is_array": True, "array_separator": ",", "visible": True, "filterable": True},
+            "pfam_desc": {"display_name": "Pfam Desc", "type": "array", "is_array": True, "array_separator": "|", "visible": True, "filterable": True},
+        },
+    )
+    res = tools.tool_list_schema(svc, cm, max_values_per_col=5)
+    cs = next(t for t in res["tables"] if t["code"] == "CS")
+    var_names = [c["name"] for c in cs["var_columns"]]
+    assert "tf_family" not in var_names
+    group = next(c for c in cs["var_columns"] if c["name"] == "ortho_id")
+    assert group["dtype"] == "array"
+    assert group["array_separator"] == ","
+    assert any(item["value"] == "OG1" and item["count"] == 3 for item in group["top_values"])
+    pfam = next(c for c in cs["var_columns"] if c["name"] == "pfam_desc")
+    assert pfam["array_separator"] == "|"
+    assert any(item["value"] == "Kinase" and item["count"] == 3 for item in pfam["top_values"])
+    assert "Hidden Family" not in res["column_display_names"]
 
 
 # ---------------------------------------------------------------------------
@@ -563,6 +590,13 @@ def test_prompt_builder_contains_display_name_and_scope_rules():
     assert "DISPLAY NAMES" in p
     assert "DYNAMIC SAMPLE METADATA" in p
     assert "SCOPE GUARD" in p
+
+
+def test_prompt_builder_contains_filter_chain_and_has_value_actions():
+    p = prompt_builder.build_system_prompt(base_prompt="")
+    assert "set_filter_chain" in p
+    assert "has_value" in p
+    assert "filter-chain" in p
 
 
 def test_scope_guard_deflects_out_of_scope_without_tools():

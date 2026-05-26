@@ -79,10 +79,10 @@
             </div>
             <button
               v-for="p in suggestedPrompts"
-              :key="p"
+              :key="p.id || p.text"
               class="block w-full text-left text-xs bg-white border border-gray-200 hover:border-primary-400 hover:bg-primary-50 rounded-lg px-3 py-2 cursor-pointer"
-              @click="send(p)"
-            >{{ p }}</button>
+              @click="sendSuggestion(p)"
+            >{{ p.text }}</button>
           </div>
         </div>
 
@@ -175,16 +175,8 @@
                   {{ action.url_path === route.fullPath ? '✓' : '↗' }} Open {{ action.view || "view" }}
                 </button>
 
-                <button
-                  v-else-if="action.kind === 'viz_update' && action.status !== 'applied'"
-                  class="inline-flex items-center gap-1 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-3 py-1.5 rounded-full cursor-pointer"
-                  @click="applyVizUpdate(action)"
-                >
-                  <AiSparkleIcon class="w-3.5 h-3.5" />
-                  Apply view update
-                </button>
                 <span
-                  v-else-if="action.kind === 'viz_update' && action.status === 'applied'"
+                  v-else-if="action.kind === 'viz_update' && action.status !== 'error'"
                   class="inline-flex items-center gap-1 bg-primary-100 text-primary-800 text-xs font-semibold px-3 py-1.5 rounded-full max-w-full"
                   :title="action.summary || 'View updated'"
                 >
@@ -248,6 +240,16 @@
                   class="inline-flex items-center gap-1 bg-primary-700 hover:bg-primary-900 text-white text-xs font-semibold px-3 py-1.5 rounded-full cursor-pointer"
                   @click="applySetExpressionDisplay(action)"
                 >Set expression: {{ String(action.spec.optionId || '') }}</button>
+
+                <span
+                  v-else-if="action.kind === 'set_filter_chain' && action.status === 'applied'"
+                  class="inline-flex items-center gap-1 bg-primary-100 text-primary-900 text-xs font-semibold px-3 py-1.5 rounded-full"
+                >✓ Filter chain: {{ action.summary || String(action.spec.operator || '') }}</span>
+                <button
+                  v-else-if="action.kind === 'set_filter_chain' && action.status !== 'applied'"
+                  class="inline-flex items-center gap-1 bg-primary-700 hover:bg-primary-900 text-white text-xs font-semibold px-3 py-1.5 rounded-full cursor-pointer"
+                  @click="applySetFilterChain(action)"
+                >Set filter chain</button>
 
                 <span
                   v-else-if="action.kind === 'compute' && action.status === 'applied'"
@@ -352,6 +354,7 @@ import { API_BASE_URL } from "@/shared/Config";
 import {
   useAssistantStore,
   type AssistantAction,
+  type AssistantAutoApplyMode,
   type ChatMessage,
   type ClientContext,
 } from "@/stores/assistant";
@@ -380,15 +383,22 @@ marked.setOptions({ gfm: true, breaks: true });
 
 // Static fallbacks used when the backend suggestions endpoint is unreachable
 // or returns an empty pool (e.g. a brand-new dataset with no annotations).
-const FALLBACK_SUGGESTIONS = [
-  "Summarize the loaded datasets.",
-  "Which orthogroup is the most represented?",
-  "Open a heatmap comparing all species.",
+interface SuggestionItem {
+  id?: string;
+  text: string;
+  action?: AssistantAction;
+}
+
+const FALLBACK_SUGGESTIONS: SuggestionItem[] = [
+  { text: "Summarize the loaded datasets." },
+  { text: "Which visible row metadata values are shared across all loaded datasets?" },
+  { text: "Show the available Sidebar filters for the loaded datasets." },
 ];
 
-const suggestedPrompts = ref<string[]>([...FALLBACK_SUGGESTIONS]);
+const suggestedPrompts = ref<SuggestionItem[]>([...FALLBACK_SUGGESTIONS]);
 const suggestionsLoading = ref(false);
 const speciesLabelLookup = ref<Record<string, string>>({});
+const suggestionCache = ref<SuggestionItem[]>([]);
 let suggestionShuffleCount = 0;
 
 interface SpeciesTableEntry {
@@ -444,19 +454,29 @@ async function refreshSuggestions() {
   if (suggestionsLoading.value) return;
   suggestionsLoading.value = true;
   try {
-    const resp = await axios.get<{ suggestions: { id: string; text: string }[] }>(
+    const resp = await axios.get<{ suggestions: SuggestionItem[] }>(
       `${API_BASE_URL}/api/assistant/suggestions`,
-      { params: { n: 4, seed: `${Date.now()}${++suggestionShuffleCount}` } },
+      { params: { n: 24, seed: `${Date.now()}${++suggestionShuffleCount}` } },
     );
     const items = (resp.data?.suggestions || [])
-      .map((s) => s.text)
-      .filter((t) => typeof t === "string" && t.trim().length > 0);
-    suggestedPrompts.value = items.length > 0 ? items : [...FALLBACK_SUGGESTIONS];
+      .filter((s) => typeof s?.text === "string" && s.text.trim().length > 0);
+    suggestionCache.value = items;
+    suggestedPrompts.value = items.length > 0 ? pickSuggestions(items, 4) : [...FALLBACK_SUGGESTIONS];
   } catch {
     suggestedPrompts.value = [...FALLBACK_SUGGESTIONS];
   } finally {
     suggestionsLoading.value = false;
   }
+}
+
+function pickSuggestions(items: SuggestionItem[], count: number): SuggestionItem[] {
+  const pool = [...items];
+  const out: SuggestionItem[] = [];
+  while (pool.length && out.length < count) {
+    const index = Math.floor(Math.random() * pool.length);
+    out.push(pool.splice(index, 1)[0]);
+  }
+  return out;
 }
 
 // Initial load: fire as soon as the panel opens for the first time, and any
@@ -480,7 +500,7 @@ function stripActionBlocks(content: string): string {
   let out = content
     // Known action blocks (the frontend applies them via chips).
     .replace(
-      /```(?:action|deeplink|viz_update|add_filter|remove_filter|clear_filters|select_tables|set_expression_display|compute)\s*\n[\s\S]*?\n```/gi,
+      /```(?:action|deeplink|viz_update|add_filter|remove_filter|clear_filters|select_tables|set_expression_display|set_filter_chain|compute)\s*\n[\s\S]*?\n```/gi,
       "",
     )
     // Leaked tool-argument JSON that the backend salvaged.
@@ -608,6 +628,7 @@ function buildClientContext(): ClientContext {
   } catch {
     filters = {};
   }
+  filters = mergeRouteFilters(filters, route.query.filters);
   let visualizations: Record<string, unknown> = {};
   try {
     visualizations = visualizationStore.toObject ? visualizationStore.toObject() : {};
@@ -627,9 +648,30 @@ function buildClientContext(): ClientContext {
   };
 }
 
+function mergeRouteFilters(filters: Record<string, unknown>, routeFilters: unknown): Record<string, unknown> {
+  if (typeof routeFilters !== "string" || !routeFilters.trim()) return filters;
+  try {
+    const parsed = JSON.parse(routeFilters) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return filters;
+    const nested = filters.filters && typeof filters.filters === "object" && !Array.isArray(filters.filters)
+      ? filters.filters as Record<string, unknown>
+      : {};
+    return {
+      ...filters,
+      filters: { ...parsed, ...nested },
+    };
+  } catch {
+    return filters;
+  }
+}
+
 function send(prompt: string) {
   draft.value = prompt;
   submit();
+}
+
+function sendSuggestion(item: SuggestionItem) {
+  send(item.text);
 }
 
 const autoExecuteTooltip =
@@ -644,7 +686,7 @@ function submit() {
   const text = draft.value.trim();
   if (!text || store.streaming) return;
   draft.value = "";
-  store.sendMessage(text, buildClientContext());
+  store.sendMessage(text, buildClientContext(), applyImmediateActions);
 }
 
 function openDeeplink(urlPath: string) {
@@ -699,6 +741,10 @@ function applySetExpressionDisplay(action: AssistantAction) {
   void executeAssistantAction(action);
 }
 
+function applySetFilterChain(action: AssistantAction) {
+  void executeAssistantAction(action);
+}
+
 function shortActionError(action: AssistantAction): string {
   if (action.kind === "deeplink") return "Cannot open view";
   if (action.kind === "compute") return "Compute failed";
@@ -708,11 +754,27 @@ function shortActionError(action: AssistantAction): string {
   if (action.kind === "clear_filters") return "Clear failed";
   if (action.kind === "select_tables") return "Selection failed";
   if (action.kind === "set_expression_display") return "Expression failed";
+  if (action.kind === "set_filter_chain") return "Update failed";
   return "Action failed";
 }
 
-async function autoApplyActions(msg: ChatMessage): Promise<boolean> {
-  return createAssistantActionDispatcher(dispatcherDeps()).autoApplyActions(msg);
+async function autoApplyActions(msg: ChatMessage, mode: AssistantAutoApplyMode = "all"): Promise<boolean> {
+  if (mode === "all") return createAssistantActionDispatcher(dispatcherDeps()).autoApplyActions(msg);
+  let mutated = false;
+  const dispatcher = createAssistantActionDispatcher(dispatcherDeps());
+  for (const action of msg.actions || []) {
+    if (action.kind !== "viz_update") continue;
+    if (action.status && action.status !== "pending") continue;
+    mutated = (await dispatcher.dispatch(action)) || mutated;
+  }
+  return mutated;
+}
+
+async function applyImmediateActions(msg: ChatMessage, mode: AssistantAutoApplyMode) {
+  if (!msg || msg.role !== "assistant" || msg.undo) return;
+  const pre = captureAssistantSnapshot(dispatcherDeps());
+  const mutated = await autoApplyActions(msg, mode);
+  if (mutated) msg.undo = pre;
 }
 
 interface ResultTable {
@@ -766,7 +828,8 @@ watch(
     if (wasStreaming && !isStreaming) {
       const last = store.messages[store.messages.length - 1];
       if (!last || last.role !== "assistant" || last.undo) return;
-      // Manual mode: leave actions pending so users get explicit chips.
+      // Manual mode leaves filters/navigation pending, but visualization
+      // updates are already applied by the sendMessage post-extraction hook.
       if (!store.autoExecute) return;
       // Allow the store's post-stream action extraction to finish first.
       nextTick(async () => {

@@ -72,7 +72,5 @@ const baseUrl = import.meta.env.BASE_URL || "/";
 const licenseText = "MIT License";
 const licenseLink = `${baseUrl}LICENSE.txt`;
 
-const startedAt = new Date();
-const pad = (n: number) => n.toString().padStart(2, "0");
-const lastUpdate = `${startedAt.getFullYear()}-${pad(startedAt.getMonth() + 1)}-${pad(startedAt.getDate())}`;
+const lastUpdate = import.meta.env.VITE_BUILD_DATE || "unknown";
 </script>

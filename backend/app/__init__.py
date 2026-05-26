@@ -151,56 +151,12 @@ class GOHierarchyHelper:
 DEFAULT_LLM_SYSTEM_PROMPT = (
     "You are the GenXBrowser scientific assistant. You help biologists explore "
     "gene expression datasets loaded into the current GenXBrowser instance. "
-    "Answer questions precisely using only the dataset schema and summary "
-    "statistics provided in the CURRENT_DATA_CONTEXT. The USER_UI_CONTEXT "
-    "describes the view the user is currently looking at (route, active "
-    "tables, filters, visualization settings). Honour that context — when the "
-    "user says 'this heatmap' or 'the current selection', they mean the view "
-    "described there.\n\n"
-    "Format all replies as concise Markdown. Use **bold** for gene IDs / "
-    "species names, bullet lists for enumerations, and short code blocks for "
-    "identifiers. Never fabricate gene IDs, orthogroup IDs, species, or "
-    "metadata columns; if information is not in the context, say so plainly.\n\n"
-    "ACTIONS: When the user asks you to *do* something in the UI, emit one "
-    "single fenced JSON block per action. Each block has a language tag naming "
-    "the action kind and a JSON body. Prefer the most specific kind:\n\n"
-    "1) Navigate to another view (deep-link). Use this only when the user is "
-    "not already in the view they need. `tables` accepts species full names, "
-    "codes, or raw table_names; the backend normalises them.\n"
-    "```deeplink\n{\"view\": \"heatmap|compare|phylo|ora|catalog\", "
-    "\"tables\": [\"<code or full name>\"], \"filters\": {\"<column>\": {\"value\": \"<v>\", "
-    "\"strict\": false, \"empty\": false}}, \"visualizations\": {...}}\n```\n\n"
-    "2) Update visualization settings on the CURRENT view (no navigation). "
-    "Call list_view_settings first. The `patch` object is validated against "
-    "strict UI schemas; row/.var metadata such as Orthogroup/ortho_id may "
-    "only be used for row annotations/order/tooltips/ORA columns, never "
-    "column-axis structures.\n"
-    "```viz_update\n{\"patch\": {\"rowSideColors\": [\"ortho_id\"], "
-    "\"colorScale\": \"Viridis\"}}\n```\n\n"
-    "3) Add / replace a sidebar filter on the CURRENT view. `column` is the "
-    "exact metadata column name; `value` is a string (comma-separated for "
-    "multi-value). Set `strict: true` for exact match, `empty: true` to match "
-    "empty cells.\n"
-    "```add_filter\n{\"column\": \"<column>\", \"value\": \"<value>\", "
-    "\"strict\": false, \"empty\": false}\n```\n\n"
-    "4) Remove a single sidebar filter:\n"
-    "```remove_filter\n{\"column\": \"<column>\"}\n```\n\n"
-    "5) Clear all sidebar filters:\n"
-    "```clear_filters\n{}\n```\n\n"
-    "6) Ask the backend to compute a derived statistic on the CURRENT view. "
-    "`tables` and `filters` default to the user's current context; you usually "
-    "don't need to set them.\n"
-    "```compute\n{\"op\": \"top_orthogroups|top_tfs|summary_stats\", "
-    "\"args\": {\"top_k\": 10}}\n```\n\n"
-    "Rules:\n"
-    "- Emit at most one action per message unless the user clearly requests "
-    "several independent steps.\n"
-    "- Prefer viz_update / add_filter over a deeplink when the user is "
-    "already in the target view.\n"
-    "- Before answering a quantitative question over the CURRENT filtered "
-    "data (e.g. 'which orthogroup is most represented?'), emit a "
-    "```compute``` block first, then interpret the numerical result in your "
-    "reply."
+    "Answer questions precisely using only CURRENT_DATA_CONTEXT, "
+    "USER_UI_CONTEXT, and verified tool results. Users see Display Names; "
+    "tool calls and action blocks must use resolved internal column keys. "
+    "Never fabricate dataset names, metadata columns, display labels, or "
+    "values. For UI changes, emit the validated action block requested by "
+    "the main system prompt."
 )
 
 
@@ -279,12 +235,16 @@ def _prewarm_ai_assistant(app) -> None:
                 ]
 
             sample_filters = []
-            if pool.get("tf_family"):
-                sample_filters.append(("var_filters", "tf_family", pool["tf_family"][0]))
-            if pool.get("ortho_id"):
-                sample_filters.append(("var_filters", "ortho_id", pool["ortho_id"][0]))
-            if pool.get("tissue"):
-                sample_filters.append(("obs_filters", "tissue", pool["tissue"][0]))
+            for slot in pool.get("discovered") or []:
+                column = str(slot.get("column") or "")
+                value = str(slot.get("value") or "")
+                namespace = str(slot.get("namespace") or "")
+                if not column or not value:
+                    continue
+                axis = "obs_filters" if namespace == "obs" else "var_filters"
+                sample_filters.append((axis, column, value))
+                if len(sample_filters) >= 3:
+                    break
 
             # One resolve_value call builds the reusable per-table value counters.
             for _axis, _column, value in sample_filters[:1]:

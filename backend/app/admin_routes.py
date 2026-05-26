@@ -245,6 +245,12 @@ def update_config():
                 _overview.invalidate_cache()
             except Exception:
                 pass
+            try:
+                from . import assistant_tools as _assistant_tools
+                _assistant_tools.invalidate_runtime_cache()
+                _assistant_tools.warmup_runtime_cache(get_service(), config_mgr)
+            except Exception:
+                pass
 
             # Redact api_key in the echo response.
             response_config = dict(new_config)
@@ -286,6 +292,12 @@ def reload_config():
         
         # Reload service with new config
         get_service().reload_config()
+        try:
+            from . import assistant_tools as _assistant_tools
+            _assistant_tools.invalidate_runtime_cache()
+            _assistant_tools.warmup_runtime_cache(get_service(), config_mgr)
+        except Exception:
+            pass
         
         config = config_mgr.get_config()
         
@@ -454,6 +466,13 @@ def update_column(column_name: str):
         
         config['column_definitions'][column_name] = column_data
         config_mgr.update_config(config)
+        get_service().reload_config()
+        try:
+            from . import assistant_tools as _assistant_tools
+            _assistant_tools.invalidate_runtime_cache()
+            _assistant_tools.warmup_runtime_cache(get_service(), config_mgr)
+        except Exception:
+            pass
         
         return jsonify({
             "success": True,
@@ -1049,6 +1068,12 @@ def confirm_metadata_import():
         
         config_mgr.update_config(config)
         service.reload_config()
+        try:
+            from . import assistant_tools as _assistant_tools
+            _assistant_tools.invalidate_runtime_cache()
+            _assistant_tools.warmup_runtime_cache(service, config_mgr)
+        except Exception:
+            pass
         
         return jsonify({
             "success": True,

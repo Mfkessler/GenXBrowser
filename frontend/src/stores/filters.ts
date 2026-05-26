@@ -261,6 +261,7 @@ export const useFiltersStore = defineStore("filters", {
     },
     setFilter(key: string, filter: FilterValue) {
       this.filters[key] = filter;
+      this.syncFilterChainColumns(this.activeFilterKeys);
     },
     setFilters(newFilters: Record<string, FilterValue>) {
       this.filters = { ...newFilters };
@@ -350,6 +351,7 @@ export const useFiltersStore = defineStore("filters", {
         datasetIdFilters: { ...this.datasetIdFilters },
         idColumnName: this.idColumnName,
         filterChainColumns: [...this.filterChainColumns],
+        filterChainOperators: { ...this.filterChainOperators },
         filterChainGroups: { ...this.filterChainGroups },
         filterChainVersion: this.filterChainVersion,
       };
