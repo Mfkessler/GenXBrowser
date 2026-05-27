@@ -44,7 +44,7 @@
       <!-- Main content area -->
       <div
         ref="mainScroll"
-        class="transition-all duration-300 flex-1 min-w-0 overflow-visible relative z-0"
+        class="transition-all duration-300 flex-1 min-w-0 overflow-visible relative"
       >
         <div class="p-4 min-h-full flex items-center flex-col overflow-visible">
           <RouterView class="mx-auto w-full" />

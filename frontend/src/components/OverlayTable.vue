@@ -1,5 +1,6 @@
 <template>
-  <div class="fixed inset-0 z-50 items-center align-top p-6" :style="managerOverlayStyle">
+  <Teleport to="body">
+    <div class="fixed inset-0 z-[60] items-center align-top p-6">
     <!-- Background overlay -->
     <div class="absolute inset-0 bg-black opacity-50" @click="$emit('close')"></div>
 
@@ -299,24 +300,25 @@
     </div>
 
     <!-- Export Modal -->
-    <ExportModal
-      v-if="showExportModal"
-      :data="exportData"
-      :columns="exportColumns"
-      :columnDisplayNames="exportColumnDisplayNames"
-      :metaColumns="visibleColumns"
-      :sampleColumns="[]"
-      :filename="`${tableName}_metadata`"
-      :hasFilters="parsedSampleIds.length > 0 || hasActiveSampleFilters"
-      :totalCount="filteredRows.length"
-      row-label="samples"
-      @close="showExportModal = false"
-    />
-  </div>
+      <ExportModal
+        v-if="showExportModal"
+        :data="exportData"
+        :columns="exportColumns"
+        :columnDisplayNames="exportColumnDisplayNames"
+        :metaColumns="visibleColumns"
+        :sampleColumns="[]"
+        :filename="`${tableName}_metadata`"
+        :hasFilters="parsedSampleIds.length > 0 || hasActiveSampleFilters"
+        :totalCount="filteredRows.length"
+        row-label="samples"
+        @close="showExportModal = false"
+      />
+    </div>
+  </Teleport>
 </template>
 <script setup lang="ts">
 import axios from "axios";
-import { computed, inject, onMounted, onUnmounted, ref, watch, nextTick, type Ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch, nextTick } from "vue";
 import type { RowType } from "@/shared/RowType";
 import { beautifyLabel, formatSpeciesValue, isCellEmpty } from "@/shared/utils";
 import { useFiltersStore } from "@/stores/filters";
@@ -375,18 +377,6 @@ const showExportModal = ref(false);
 const exporting = ref(false);
 const resetting = ref(false);
 const totalSamplesWithoutFilters = ref<number>(0); // Track total before filtering
-const sidebarOpen = inject<Ref<boolean> | undefined>("sidebarOpen", undefined);
-const viewportWidth = ref(typeof window !== "undefined" ? window.innerWidth : 1024);
-
-function updateViewportWidth() {
-  if (typeof window === "undefined") return;
-  viewportWidth.value = window.innerWidth;
-}
-
-const managerOverlayStyle = computed(() => {
-  const sidebarWidth = sidebarOpen?.value && viewportWidth.value >= 768 ? 320 : 0;
-  return { left: `${sidebarWidth}px` };
-});
 
 // Compute sample filters (sample metadata columns only)
 // For metadata tables (_meta), samples are ROWS and we filter them using sample_filters
@@ -780,14 +770,11 @@ watch(
 );
 
 onMounted(() => {
-  updateViewportWidth();
-  window.addEventListener("resize", updateViewportWidth);
   document.addEventListener("click", handleClickOutside);
   fetchData();
 });
 
 onUnmounted(() => {
-  window.removeEventListener("resize", updateViewportWidth);
   document.removeEventListener("click", handleClickOutside);
 });
 </script>

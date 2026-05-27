@@ -1,6 +1,7 @@
 <template>
-  <div v-if="visible" class="modal-overlay" @click.self="close">
-    <div class="modal-container">
+  <Teleport to="body">
+    <div v-if="visible" class="modal-overlay" @click.self="close">
+      <div class="modal-container">
       <div class="modal-header">
         <h2>
           {{ modalTitle }}
@@ -316,8 +317,9 @@
           Done
         </button>
       </div>
+      </div>
     </div>
-  </div>
+  </Teleport>
 </template>
 
 <script lang="ts">

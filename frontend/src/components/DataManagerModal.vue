@@ -1,5 +1,6 @@
 <template>
-  <div class="fixed inset-0 z-50 items-center align-top p-6" :style="managerOverlayStyle">
+  <Teleport to="body">
+    <div class="fixed inset-0 z-[60] items-center align-top p-6">
     <!-- Background overlay -->
     <div class="absolute inset-0 bg-black opacity-50" @click="$emit('close')"></div>
 
@@ -390,19 +391,20 @@
     </div>
 
     <!-- Export Modal -->
-    <ExportModal
-      v-if="showExportModal"
-      :data="allExportData"
-      :columns="exportColumns"
-      :columnDisplayNames="exportColumnDisplayNames"
-      :metaColumns="selectedMetaColumns"
-      :sampleColumns="filteredSampleColumns"
-      :filename="props.tableName + '_export'"
-      :hasFilters="hasActiveFilters || parsedGeneIds.length > 0"
-      :totalCount="totalCount"
-      @close="showExportModal = false"
-    />
-  </div>
+      <ExportModal
+        v-if="showExportModal"
+        :data="allExportData"
+        :columns="exportColumns"
+        :columnDisplayNames="exportColumnDisplayNames"
+        :metaColumns="selectedMetaColumns"
+        :sampleColumns="filteredSampleColumns"
+        :filename="props.tableName + '_export'"
+        :hasFilters="hasActiveFilters || parsedGeneIds.length > 0"
+        :totalCount="totalCount"
+        @close="showExportModal = false"
+      />
+    </div>
+  </Teleport>
   
   <!-- BLAST Warning Modal (teleported to body for proper positioning) -->
   <Teleport to="body">
@@ -417,7 +419,7 @@
 
 <script setup lang="ts">
 import axios from "axios";
-import { ref, computed, watch, onMounted, onUnmounted, inject, nextTick, type Ref } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
 
 import { API_BASE_URL } from "@/shared/Config";
 import {
@@ -517,18 +519,6 @@ const hasMoreData = computed(() => rows.value.length < totalCount.value);
 
 // Refs
 const tableContainer = ref<HTMLElement | null>(null);
-const sidebarOpen = inject<Ref<boolean> | undefined>("sidebarOpen", undefined);
-const viewportWidth = ref(typeof window !== "undefined" ? window.innerWidth : 1024);
-
-function updateViewportWidth() {
-  if (typeof window === "undefined") return;
-  viewportWidth.value = window.innerWidth;
-}
-
-const managerOverlayStyle = computed(() => {
-  const sidebarWidth = sidebarOpen?.value && viewportWidth.value >= 768 ? 320 : 0;
-  return { left: `${sidebarWidth}px` };
-});
 
 // Compute gene filters (transcript/gene metadata columns)
 const geneFilters = computed(() => {
@@ -1064,8 +1054,6 @@ watch([geneFilters, sampleFilters], () => {
 onMounted(async () => {
   initialLoading.value = true;
   suppressAutoReload.value = true;
-  updateViewportWidth();
-  window.addEventListener("resize", updateViewportWidth);
   document.addEventListener("click", handleClickOutside);
   try {
     await fetchColumnInfo();
@@ -1080,7 +1068,6 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
-  window.removeEventListener("resize", updateViewportWidth);
   exportAbortController.value?.abort();
   document.removeEventListener("click", handleClickOutside);
   if (reloadTimeout) clearTimeout(reloadTimeout);

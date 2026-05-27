@@ -1,12 +1,13 @@
 <template>
-  <div
-    v-if="show"
-    class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[9999]"
-    @click.self="handleCancel"
-  >
-    <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4 p-6">
-      <!-- Step 1: Warning -->
-      <div v-if="currentStep === 'warning'">
+  <Teleport to="body">
+    <div
+      v-if="show"
+      class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[9999]"
+      @click.self="handleCancel"
+    >
+      <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4 p-6">
+        <!-- Step 1: Warning -->
+        <div v-if="currentStep === 'warning'">
         <div class="flex items-center gap-3 mb-4">
           <div class="text-3xl">⚠️</div>
           <h2 class="text-xl font-bold text-gray-900">Data Upload Warning</h2>
@@ -94,8 +95,9 @@
           </button>
         </div>
       </div>
+      </div>
     </div>
-  </div>
+  </Teleport>
 </template>
 
 <script setup lang="ts">

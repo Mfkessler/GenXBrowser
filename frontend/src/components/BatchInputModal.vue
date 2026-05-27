@@ -1,5 +1,6 @@
 <template>
-  <div v-if="isOpen" class="fixed inset-0 z-[60] flex items-center justify-center p-6">
+  <Teleport to="body">
+    <div v-if="isOpen" class="fixed inset-0 z-[60] flex items-center justify-center p-6">
     <!-- Background overlay -->
     <div class="absolute inset-0 bg-black opacity-50" @click="$emit('close')"></div>
 
@@ -211,6 +212,7 @@
       </div>
     </div>
   </div>
+  </Teleport>
 </template>
 
 <script setup lang="ts">

@@ -177,15 +177,16 @@ const additionalMetrics = computed(() => {
 </script>
 
 <template>
-  <div
-    v-if="show && data"
-    class="fixed inset-0 flex justify-center items-center z-50"
-    style="background-color: rgba(0, 0, 0, 0.5)"
-    @click.self="closeOverlay"
-  >
+  <Teleport to="body">
     <div
-      class="bg-white p-6 rounded-lg shadow-lg w-[50%] max-h-[90vh] flex flex-col"
+      v-if="show && data"
+      class="fixed inset-0 flex justify-center items-center z-[60]"
+      style="background-color: rgba(0, 0, 0, 0.5)"
+      @click.self="closeOverlay"
     >
+      <div
+        class="bg-white p-6 rounded-lg shadow-lg w-[50%] max-h-[90vh] flex flex-col"
+      >
       <!-- Header -->
       <div class="flex justify-between items-center mb-4">
         <h1 class="text-xl font-bold cursor-default">ORA Term Details</h1>
@@ -381,17 +382,18 @@ const additionalMetrics = computed(() => {
         </div>
       </div>
 
-      <!-- Footer -->
-      <div class="mt-4 flex justify-end">
-        <button
-          @click="closeOverlay"
-          class="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors"
-        >
-          Close
-        </button>
+        <!-- Footer -->
+        <div class="mt-4 flex justify-end">
+          <button
+            @click="closeOverlay"
+            class="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors"
+          >
+            Close
+          </button>
+        </div>
       </div>
     </div>
-  </div>
+  </Teleport>
 </template>
 
 <style scoped>

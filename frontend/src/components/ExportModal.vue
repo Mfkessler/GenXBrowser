@@ -1,10 +1,11 @@
 <template>
-  <div class="fixed inset-0 z-[60] flex items-center justify-center p-6">
-    <!-- Background overlay -->
-    <div class="absolute inset-0 bg-black opacity-50" @click="$emit('close')"></div>
+  <Teleport to="body">
+    <div class="fixed inset-0 z-[60] flex items-center justify-center p-6">
+      <!-- Background overlay -->
+      <div class="absolute inset-0 bg-black opacity-50" @click="$emit('close')"></div>
 
-    <!-- Modal content -->
-    <div class="relative bg-white rounded-lg border border-gray-300 w-full max-w-md p-6 z-10 overflow-hidden">
+      <!-- Modal content -->
+      <div class="relative bg-white rounded-lg border border-gray-300 w-full max-w-md p-6 z-10 overflow-hidden">
       <!-- Header -->
       <div class="flex items-center justify-between mb-6">
         <h3 class="text-lg font-bold text-gray-700">Export Data</h3>
@@ -116,8 +117,9 @@
           </div>
         </div>
       </div>
+      </div>
     </div>
-  </div>
+  </Teleport>
 </template>
 
 <script setup lang="ts">
