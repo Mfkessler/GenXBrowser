@@ -111,7 +111,7 @@
       :id-column="config.visualization.id_column"
       :heatmap-cols="heatmapCols"
       :column-label="groupingColumnLabel"
-      :value-label="getExpressionOption(visualizationStore.expressionDisplay.optionId) ? `Mean ${getExpressionOption(visualizationStore.expressionDisplay.optionId)!.label}` : 'Mean'"
+      :value-label="expressionValueLabel"
       :sample-data="selectedSampleData"
       @close="closeTooltipModal"
     />
@@ -167,6 +167,7 @@ import DropdownMenu from "@/components/DropdownMenu.vue";
 import { getDisplayName } from "@/shared/metadataDisplayNames";
 import { beautifyLabel } from "@/shared/utils";
 import { getEntityIdLabel } from "@/shared/dataTypeLabels";
+import { mean, median } from "@/shared/aggregation";
 import {
   omitFilterKey,
   buildOrthogroupOnlyFilters,
@@ -402,6 +403,12 @@ const selectedGroupingColumn = computed(() => {
 const groupingColumnLabel = computed(() => {
   const column = columnStore.filterableColColumns.find((col) => col.column_name === selectedGroupingColumn.value);
   return (column?.display_name || selectedGroupingColumn.value || 'sample group').toString();
+});
+
+const expressionValueLabel = computed(() => {
+  const exprOption = getExpressionOption(visualizationStore.expressionDisplay.optionId);
+  const metricLabel = exprOption?.label ?? 'value';
+  return `Mean ${metricLabel} across samples in ${groupingColumnLabel.value}`;
 });
 
 // Selected orthogroup - computed property linked to store
@@ -1038,25 +1045,6 @@ async function fetchFullNewickForSelectedOG(signal?: AbortSignal): Promise<strin
   }
 }
 
-function mean(arr: number[]): number {
-  if (arr.length > 2) {
-    const sum = arr.reduce((acc, val) => acc + val, 0);
-    return sum / arr.length;
-  } else {
-    return arr[0];
-  }
-}
-
-function median(values: number[]): number {
-  values = [...values].sort((a, b) => a - b);
-  const half = Math.floor(values.length / 2);
-  return (values.length % 2
-      ? values[half]
-      : (values[half - 1] + values[half]) / 2
-  );
-}
-
-
 function resetContainer() {
   if (!phylotreeContainer.value) return;
   d3.select(phylotreeContainer.value).selectAll("*").remove();
@@ -1655,18 +1643,16 @@ async function initPhylotree(
           d3.select(this).attr('stroke', 'white').style('stroke-width', 2)
           const entityLabel = getEntityIdLabel()
           const selectedFields = visualizationStore.tooltipFields
-          const exprOption = getExpressionOption(visualizationStore.expressionDisplay.optionId)
-          const valueLabel = exprOption ? `Mean ${exprOption.label}` : 'Mean'
           const formattedSpecies = d.species.replace(/_/g, ' ').replace(/^\w/, (c: string) => c.toUpperCase())
           let tooltipHtml = `
             <b>${entityLabel}:</b> ${d.geneId}<br>
             <b>Species:</b> <i>${formattedSpecies}</i><br>
             <b>${groupingColumnLabel.value}:</b> ${d.tissue}<br>
-            <b>${valueLabel}:</b> ${typeof d.value === 'number' ? d.value.toFixed(3) : d.value}<br>
+            <b>${expressionValueLabel.value}:</b> ${typeof d.value === 'number' ? d.value.toFixed(3) : d.value}<br>
           `
           const samples = (d.geneObj as any).sampleData?.[d.tissue] as Array<{ sampleName: string; value: number }> | undefined
           if (samples && samples.length > 0) {
-            tooltipHtml += `<br><b>Samples (n=${samples.length}):</b><br>`
+            tooltipHtml += `<br><b>Samples contributing to mean (n=${samples.length}):</b><br>`
             samples.forEach((s) => {
               tooltipHtml += `&nbsp;&nbsp;${s.sampleName}: ${s.value.toFixed(3)}<br>`
             })

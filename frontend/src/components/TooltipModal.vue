@@ -333,7 +333,7 @@ watch(() => props.show, (isShown) => {
             <!-- Sample Values -->
             <div v-if="sampleData && sampleData.length > 0" class="flex flex-col">
               <div class="flex justify-between items-center mb-1">
-                <span class="font-medium text-gray-600 text-sm">Samples (n={{ sampleData.length }})</span>
+                <span class="font-medium text-gray-600 text-sm">Samples contributing to mean (n={{ sampleData.length }})</span>
                 <button
                   @click="copyToClipboard(sampleData.map(s => `${s.sampleName}: ${s.value.toFixed(3)}`).join('\n'), 'samples_all')"
                   class="px-2 py-1 text-xs bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors"
