@@ -11,6 +11,7 @@ export type ActionKind =
   | "remove_filter"
   | "clear_filters"
   | "select_tables"
+  | "dataset_visibility"
   | "set_expression_display"
   | "set_filter_chain"
   | "compute";
@@ -77,6 +78,20 @@ export interface ClientContext {
    *  the assistant can answer questions like "do you see a pattern?"
    *  about what the user is currently looking at. */
   analysis_results?: Record<string, unknown>;
+  active_view_state?: DatasetViewState;
+}
+
+export interface DatasetViewState {
+  view?: string;
+  route?: string;
+  loaded_datasets: Array<{
+    id: string;
+    label: string;
+    code?: string;
+    aliases?: string[];
+  }>;
+  visible_dataset_ids: string[];
+  hidden_dataset_ids: string[];
 }
 
 export type AssistantAutoApplyMode = "viz_update" | "all";
@@ -293,7 +308,7 @@ export const useAssistantStore = defineStore("assistant", () => {
   }
 
   async function extractAndDispatchActions(msg: ChatMessage, clientContext?: ClientContext) {
-    const re = /```(action|deeplink|viz_update|add_filter|remove_filter|clear_filters|select_tables|set_expression_display|set_filter_chain|compute)\s*\n([\s\S]*?)\n```/gi;
+    const re = /```(action|deeplink|viz_update|add_filter|remove_filter|clear_filters|select_tables|dataset_visibility|set_expression_display|set_filter_chain|compute)\s*\n([\s\S]*?)\n```/gi;
     const blocks: Array<{ tag: string; spec: Record<string, unknown>; kind: AssistantAction["kind"] }> = [];
     let m: RegExpExecArray | null;
     while ((m = re.exec(msg.content)) !== null) {

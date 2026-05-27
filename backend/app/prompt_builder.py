@@ -50,6 +50,13 @@ Rules:
 - Current app state is authoritative. Use `USER_UI_CONTEXT` for the active
   view, selected tables, filters, visualizations, and analysis digests. Do
   not reconstruct state from older chat turns.
+- Dataset card visibility is view state, not a metadata filter. For commands
+  like "don't show X", "remove X", "show only X", "add X", or "show all
+  datasets", first call `get_active_view_state`, resolve X only against the
+  returned live dataset IDs/labels/aliases, then call
+  `update_dataset_visibility` and emit its matching `dataset_visibility`
+  action block. Never use `list_schema`, `add_filter`, or `table_names`
+  filters to hide or show dataset cards.
 - Older history may be incomplete. The high-priority current state in
   `USER_UI_CONTEXT` and `CURRENT_DATA_CONTEXT` overrides prior messages.
 - For broad scope requests, use `tables=["all"]`; backend tools expand and
@@ -80,7 +87,8 @@ A. TOOL CALLS (internal): use the OpenAI `tool_calls` protocol.
 B. ACTION BLOCKS (visible, applied by frontend): fenced code blocks with
    one of these language tags ONLY: `add_filter`, `remove_filter`,
    `clear_filters`, `select_tables`, `set_expression_display`,
-   `viz_update`, `deeplink`. No untagged or other-tagged blocks.
+  `viz_update`, `deeplink`, `dataset_visibility`. No untagged or
+  other-tagged blocks.
 """
 
 
@@ -102,6 +110,10 @@ Use verified internal column keys inside blocks; use Display Names in prose.
 
 ```select_tables
 {"tables":["<table_code_or_label>"]}
+```
+
+```dataset_visibility
+{"action":"SHOW_ONLY"|"HIDE"|"SHOW_ALL"|"ADD","dataset_ids":["<id_from_get_active_view_state>"],"visible_dataset_ids":["<validated_visible_id>"]}
 ```
 
 ```set_expression_display
@@ -132,6 +144,8 @@ Rules:
 - `list_view_settings` is the source of truth for visualization paths, enums,
   valid row/sample metadata columns, and expression options.
 - `deeplink` is for opening or switching views; never fabricate URLs.
+- `dataset_visibility` is for changing which loaded dataset cards are mounted
+  in the current view. It must use IDs validated by `update_dataset_visibility`.
 """
 
 
@@ -145,6 +159,13 @@ Tool policy:
   or top categorical values are needed. The schema lists only visible,
   filterable Sidebar columns and includes datatype, filter widget, array
   separator, and top values.
+2a. Dataset visibility commands are controlled by live view state. Always call
+  `get_active_view_state` before hiding, adding, showing only, or showing all
+  datasets. Then call `update_dataset_visibility(action, dataset_ids)` and
+  emit a `dataset_visibility` block using the returned `action_block`.
+  Map "don't show X"/"remove X" to HIDE, "show only X" to SHOW_ONLY,
+  "show all datasets" to SHOW_ALL, and "add/show X" to ADD when X is hidden.
+  Resolve shortcuts and synonyms only from the returned runtime aliases.
 3. Resolve before acting. If the user names a value or a display label that is
   not already mapped in `CURRENT_DATA_CONTEXT`, call `resolve_value` or
   `list_distinct_values` instead of guessing.

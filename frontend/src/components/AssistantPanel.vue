@@ -232,6 +232,16 @@
                 >Select tables</button>
 
                 <span
+                  v-else-if="action.kind === 'dataset_visibility' && action.status === 'applied'"
+                  class="inline-flex items-center gap-1 bg-primary-100 text-primary-900 text-xs font-semibold px-3 py-1.5 rounded-full"
+                >✓ Datasets shown: {{ formatSpeciesList(action.spec.visible_dataset_ids || action.spec.dataset_ids) }}</span>
+                <button
+                  v-else-if="action.kind === 'dataset_visibility' && action.status !== 'applied'"
+                  class="inline-flex items-center gap-1 bg-primary-700 hover:bg-primary-900 text-white text-xs font-semibold px-3 py-1.5 rounded-full cursor-pointer"
+                  @click="applyDatasetVisibility(action)"
+                >Update datasets</button>
+
+                <span
                   v-else-if="action.kind === 'set_expression_display' && action.status === 'applied'"
                   class="inline-flex items-center gap-1 bg-primary-100 text-primary-900 text-xs font-semibold px-3 py-1.5 rounded-full"
                 >✓ Expression: {{ String(action.spec.optionId || '') }}</span>
@@ -398,6 +408,7 @@ const FALLBACK_SUGGESTIONS: SuggestionItem[] = [
 const suggestedPrompts = ref<SuggestionItem[]>([...FALLBACK_SUGGESTIONS]);
 const suggestionsLoading = ref(false);
 const speciesLabelLookup = ref<Record<string, string>>({});
+const speciesEntries = ref<SpeciesTableEntry[]>([]);
 const suggestionCache = ref<SuggestionItem[]>([]);
 let suggestionShuffleCount = 0;
 
@@ -435,6 +446,7 @@ async function loadSpeciesLabels() {
   try {
     const resp = await axios.get<SpeciesTableEntry[]>(`${API_BASE_URL}/api/tables`);
     const lookup: Record<string, string> = {};
+    speciesEntries.value = resp.data || [];
     for (const entry of resp.data || []) {
       const tableName = String(entry.table_name || entry.full_name || entry._species_code || entry.code || "").trim();
       if (!tableName) continue;
@@ -447,6 +459,7 @@ async function loadSpeciesLabels() {
     speciesLabelLookup.value = lookup;
   } catch {
     speciesLabelLookup.value = {};
+    speciesEntries.value = [];
   }
 }
 
@@ -500,7 +513,7 @@ function stripActionBlocks(content: string): string {
   let out = content
     // Known action blocks (the frontend applies them via chips).
     .replace(
-      /```(?:action|deeplink|viz_update|add_filter|remove_filter|clear_filters|select_tables|set_expression_display|set_filter_chain|compute)\s*\n[\s\S]*?\n```/gi,
+      /```(?:action|deeplink|viz_update|add_filter|remove_filter|clear_filters|select_tables|dataset_visibility|set_expression_display|set_filter_chain|compute)\s*\n[\s\S]*?\n```/gi,
       "",
     )
     // Leaked tool-argument JSON that the backend salvaged.
@@ -645,6 +658,33 @@ function buildClientContext(): ClientContext {
     analysis_results: store.analysisContext && Object.keys(store.analysisContext).length
       ? store.analysisContext
       : undefined,
+    active_view_state: buildActiveViewState(tables),
+  };
+}
+
+function buildActiveViewState(routeTables: string[]) {
+  const loaded = speciesEntries.value
+    .map((entry) => {
+      const id = String(entry.table_name || entry.full_name || entry._species_code || entry.code || "").trim();
+      if (!id) return null;
+      const label = formatSpeciesLabel(id);
+      const aliases = [entry.table_name, entry._species_code, entry.code, entry.full_name, entry.display_name]
+        .map((item) => String(item || "").trim())
+        .filter(Boolean);
+      return { id, label, code: String(entry._species_code || entry.code || id), aliases };
+    })
+    .filter((item): item is { id: string; label: string; code: string; aliases: string[] } => item !== null);
+  const availableIds = new Set(loaded.map((item) => item.id));
+  const visible = routeTables.length > 0
+    ? routeTables.filter((item) => availableIds.has(item))
+    : Array.from(catalogStore.selectedTableNames || []).filter((item) => availableIds.has(item));
+  const visibleSet = new Set(visible);
+  return {
+    view: String(route.name || ""),
+    route: route.fullPath,
+    loaded_datasets: loaded,
+    visible_dataset_ids: visible,
+    hidden_dataset_ids: loaded.map((item) => item.id).filter((id) => !visibleSet.has(id)),
   };
 }
 
@@ -737,6 +777,10 @@ function applySelectTables(action: AssistantAction) {
   void executeAssistantAction(action);
 }
 
+function applyDatasetVisibility(action: AssistantAction) {
+  void executeAssistantAction(action);
+}
+
 function applySetExpressionDisplay(action: AssistantAction) {
   void executeAssistantAction(action);
 }
@@ -753,6 +797,7 @@ function shortActionError(action: AssistantAction): string {
   if (action.kind === "remove_filter") return "Remove failed";
   if (action.kind === "clear_filters") return "Clear failed";
   if (action.kind === "select_tables") return "Selection failed";
+  if (action.kind === "dataset_visibility") return "Dataset update failed";
   if (action.kind === "set_expression_display") return "Expression failed";
   if (action.kind === "set_filter_chain") return "Update failed";
   return "Action failed";

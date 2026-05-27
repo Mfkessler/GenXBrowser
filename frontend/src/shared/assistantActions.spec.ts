@@ -83,7 +83,12 @@ function makeDeps(): TestDeps {
       ],
       sampleMetadata: [{ column_name: "sample_a" }, { column_name: "sample_b" }],
     },
-    catalogStore: { selectedTableNames: new Set<string>() },
+    catalogStore: {
+      selectedTableNames: new Set<string>(),
+      selectAll(tableNames: string[]) {
+        this.selectedTableNames = new Set(tableNames);
+      },
+    },
     router: {
       push: () => Promise.resolve(),
       replace: () => Promise.resolve(),
@@ -183,6 +188,37 @@ describe("assistant visualization action guardrails", () => {
     expect(deps.__test.filterChainColumns).toEqual([["ortho_id", "tf_family"]]);
     expect(deps.__test.filterChainOperators).toEqual([["ortho_id", "tf_family", "and"]]);
     expect(action.summary).toContain("Orthogroup AND TF Family");
+  });
+
+  it("updates visible dataset cards through route table_names", async () => {
+    const deps = makeDeps();
+    const replace = vi.fn(() => Promise.resolve());
+    deps.router = { ...deps.router, replace } as unknown as DispatcherDeps["router"];
+    deps.route = {
+      ...deps.route,
+      fullPath: "/o/arabidopsis_thaliana,solanum_lycopersicum,oryza_sativa",
+      path: "/o/arabidopsis_thaliana,solanum_lycopersicum,oryza_sativa",
+      params: { table_names: "arabidopsis_thaliana,solanum_lycopersicum,oryza_sativa" },
+      name: "ora",
+    } as unknown as DispatcherDeps["route"];
+    const action: AssistantAction = {
+      kind: "dataset_visibility",
+      spec: {
+        action: "HIDE",
+        dataset_ids: ["arabidopsis_thaliana"],
+        visible_dataset_ids: ["solanum_lycopersicum", "oryza_sativa"],
+      },
+      status: "pending",
+    };
+
+    const mutated = await createAssistantActionDispatcher(deps).dispatch(action);
+
+    expect(mutated).toBe(true);
+    expect(action.status).toBe("applied");
+    expect(Array.from(deps.catalogStore.selectedTableNames)).toEqual(["solanum_lycopersicum", "oryza_sativa"]);
+    expect(replace).toHaveBeenCalledWith(expect.objectContaining({
+      params: expect.objectContaining({ table_names: "solanum_lycopersicum,oryza_sativa" }),
+    }));
   });
 
   it("accepts expressionDisplay viz_update aliases", async () => {

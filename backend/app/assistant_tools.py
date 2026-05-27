@@ -8,7 +8,7 @@ Gemini (via the OpenAI-compatible endpoint) and GPT-4o understand this shape.
 
 The LLM uses these tools to *introspect* the data and *compose* a final
 answer that contains zero or more markdown action blocks
-(``deeplink`` / ``add_filter`` / …). Tool calls do not themselves mutate UI
+(``deeplink`` / ``add_filter`` / ``dataset_visibility`` / …). Tool calls do not themselves mutate UI
 state — the frontend is responsible for that, based on the final action
 blocks. This keeps the trust boundary crisp: the backend validates and
 inspects, the frontend applies.
@@ -82,6 +82,79 @@ def _species_table_lookup(service) -> Dict[str, str]:
         if isinstance(code, str) and code and isinstance(table_name, str) and table_name:
             out[code] = table_name
     return out
+
+
+def _dataset_entries_from_service(service) -> List[Dict[str, Any]]:
+    """Return loaded dataset IDs, labels, and aliases without assuming names."""
+    try:
+        entries = service.get_tables(include_disabled=False)
+    except Exception:
+        entries = []
+    out: List[Dict[str, Any]] = []
+    for entry in entries or []:
+        table_name = str(entry.get("table_name") or entry.get("full_name") or entry.get("_species_code") or entry.get("code") or "").strip()
+        code = str(entry.get("_species_code") or entry.get("code") or "").strip()
+        if not table_name:
+            continue
+        label = str(entry.get("display_name") or entry.get("full_name") or table_name).strip() or table_name
+        aliases: List[str] = []
+        for value in (table_name, code, entry.get("full_name"), entry.get("display_name")):
+            if isinstance(value, str) and value.strip() and value.strip() not in aliases:
+                aliases.append(value.strip())
+        out.append({"id": table_name, "label": label, "code": code or table_name, "aliases": aliases})
+    return out
+
+
+def _active_view_state_from_context(service, client_context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Normalize live frontend dataset visibility from the request context."""
+    client_context = client_context if isinstance(client_context, dict) else {}
+    supplied = client_context.get("active_view_state")
+    if isinstance(supplied, dict):
+        datasets = supplied.get("loaded_datasets") or supplied.get("datasets") or []
+        visible_ids = supplied.get("visible_dataset_ids") or []
+        if isinstance(datasets, list) and isinstance(visible_ids, list):
+            loaded = []
+            for item in datasets:
+                if not isinstance(item, dict):
+                    continue
+                dataset_id = str(item.get("id") or item.get("table_name") or "").strip()
+                if not dataset_id:
+                    continue
+                aliases = item.get("aliases") if isinstance(item.get("aliases"), list) else []
+                loaded.append({
+                    "id": dataset_id,
+                    "label": str(item.get("label") or item.get("display_name") or dataset_id).strip() or dataset_id,
+                    "code": str(item.get("code") or item.get("_species_code") or dataset_id).strip() or dataset_id,
+                    "aliases": [str(alias).strip() for alias in aliases if str(alias).strip()],
+                })
+            available_ids = [item["id"] for item in loaded]
+            visible = [str(item).strip() for item in visible_ids if str(item).strip() in set(available_ids)]
+            hidden = [dataset_id for dataset_id in available_ids if dataset_id not in set(visible)]
+            return {
+                "view": supplied.get("view") or client_context.get("view"),
+                "route": supplied.get("route") or client_context.get("route"),
+                "loaded_datasets": loaded,
+                "visible_dataset_ids": visible,
+                "hidden_dataset_ids": hidden,
+            }
+
+    loaded = _dataset_entries_from_service(service)
+    available_ids = [item["id"] for item in loaded]
+    raw_visible = []
+    for key in ("tables", "selected_table_names"):
+        value = client_context.get(key)
+        if isinstance(value, list) and value:
+            raw_visible = [str(item).strip() for item in value if str(item).strip()]
+            break
+    visible = [dataset_id for dataset_id in raw_visible if dataset_id in set(available_ids)] or raw_visible
+    hidden = [dataset_id for dataset_id in available_ids if dataset_id not in set(visible)]
+    return {
+        "view": client_context.get("view"),
+        "route": client_context.get("route"),
+        "loaded_datasets": loaded,
+        "visible_dataset_ids": visible,
+        "hidden_dataset_ids": hidden,
+    }
 
 
 def _column_series(adata, column: str):
@@ -1293,6 +1366,76 @@ def tool_list_distinct_values(
     return {"column": column, "display_name": _display_name_for(config_manager, column), "values": values, "truncated": len(values) >= int(limit)}
 
 
+def tool_get_active_view_state(service, *, client_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return live dataset visibility captured by the frontend for this turn."""
+    state = _active_view_state_from_context(service, client_context)
+    return {
+        **state,
+        "available_dataset_ids": [item["id"] for item in state.get("loaded_datasets", [])],
+    }
+
+
+def tool_update_dataset_visibility(
+    service,
+    *,
+    action: str,
+    dataset_ids: Optional[List[str]] = None,
+    client_context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Validate a requested dataset-card visibility mutation."""
+    state = _active_view_state_from_context(service, client_context)
+    action_norm = str(action or "").strip().upper()
+    if action_norm not in {"SHOW_ONLY", "HIDE", "SHOW_ALL", "ADD"}:
+        return {"ok": False, "error": "action must be SHOW_ONLY, HIDE, SHOW_ALL, or ADD", "active_view_state": state}
+
+    available_ids = [item["id"] for item in state.get("loaded_datasets", [])]
+    available = set(available_ids)
+    visible_ids = [str(item) for item in state.get("visible_dataset_ids", []) if str(item) in available]
+    requested_ids = [str(item).strip() for item in (dataset_ids or []) if str(item).strip()]
+    unknown = [item for item in requested_ids if item not in available]
+    if unknown:
+        return {
+            "ok": False,
+            "error": "dataset_ids must come from get_active_view_state().available_dataset_ids",
+            "unknown_dataset_ids": unknown,
+            "active_view_state": state,
+        }
+
+    if action_norm == "SHOW_ALL":
+        next_ids = available_ids
+        requested_ids = available_ids
+    elif action_norm == "SHOW_ONLY":
+        if not requested_ids:
+            return {"ok": False, "error": "SHOW_ONLY requires at least one dataset_id", "active_view_state": state}
+        next_ids = [item for item in available_ids if item in set(requested_ids)]
+    elif action_norm == "HIDE":
+        if not requested_ids:
+            return {"ok": False, "error": "HIDE requires at least one dataset_id", "active_view_state": state}
+        next_ids = [item for item in visible_ids if item not in set(requested_ids)]
+    else:
+        if not requested_ids:
+            return {"ok": False, "error": "ADD requires at least one dataset_id", "active_view_state": state}
+        next_ids = [item for item in visible_ids if item in available]
+        for item in available_ids:
+            if item in requested_ids and item not in next_ids:
+                next_ids.append(item)
+
+    labels = {item["id"]: item.get("label") or item["id"] for item in state.get("loaded_datasets", [])}
+    return {
+        "ok": True,
+        "action": action_norm,
+        "dataset_ids": requested_ids,
+        "visible_dataset_ids_before": visible_ids,
+        "visible_dataset_ids_after": next_ids,
+        "labels_after": [labels.get(item, item) for item in next_ids],
+        "action_block": {
+            "action": action_norm,
+            "dataset_ids": requested_ids,
+            "visible_dataset_ids": next_ids,
+        },
+    }
+
+
 def tool_resolve_value(
     service,
     config_manager=None,
@@ -2383,6 +2526,43 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "get_active_view_state",
+            "description": (
+                "Return the live frontend dataset-card state for this turn: "
+                "all loaded dataset IDs/labels/aliases, which dataset cards "
+                "are currently visible, and which loaded datasets are hidden. "
+                "Call this before any add/remove/show-only/show-all dataset "
+                "visibility command. Resolve user shortcuts only against the "
+                "returned runtime labels and aliases."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_dataset_visibility",
+            "description": (
+                "Validate and compose a frontend dataset_visibility action. "
+                "Use only dataset_ids returned by get_active_view_state. "
+                "HIDE removes visible dataset cards, SHOW_ONLY keeps only "
+                "the specified cards, SHOW_ALL renders all loaded datasets, "
+                "and ADD appends hidden loaded datasets back into the view."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["SHOW_ONLY", "HIDE", "SHOW_ALL", "ADD"]},
+                    "dataset_ids": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["action", "dataset_ids"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_view_settings",
             "description": (
                 "List the visualization settings available for a view on "
@@ -2644,18 +2824,23 @@ def openai_schema() -> List[Dict[str, Any]]:
 
 
 def _get_dispatch():
+    def _tool_args(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        return {k: v for k, v in kwargs.items() if k != "client_context"}
+
     return {
         "state_summary": lambda service, cm, **kw: tool_state_summary(service, cm),
-        "list_schema": lambda service, cm, **kw: tool_list_schema(service, cm, **kw),
-        "list_view_settings": lambda service, cm, **kw: tool_list_view_settings(service, cm, **kw),
-        "resolve_value": lambda service, cm, **kw: tool_resolve_value(service, cm, **kw),
-        "search_go_terms": lambda service, cm, **kw: tool_search_go_terms(service, **kw),
-        "list_distinct_values": lambda service, cm, **kw: tool_list_distinct_values(service, cm, **kw),
-        "count_rows": lambda service, cm, **kw: tool_count_rows(service, cm, **kw),
-        "top_groups": lambda service, cm, **kw: tool_top_groups(service, cm, **kw),
-        "summary_stats": lambda service, cm, **kw: tool_summary_stats(service, cm, **kw),
-        "common_values": lambda service, cm, **kw: tool_common_values(service, cm, **kw),
-        "build_deeplink": lambda service, cm, **kw: tool_build_deeplink(service, cm, **kw),
+        "list_schema": lambda service, cm, **kw: tool_list_schema(service, cm, **_tool_args(kw)),
+        "get_active_view_state": lambda service, cm, **kw: tool_get_active_view_state(service, client_context=kw.get("client_context")),
+        "update_dataset_visibility": lambda service, cm, **kw: tool_update_dataset_visibility(service, **_tool_args(kw), client_context=kw.get("client_context")),
+        "list_view_settings": lambda service, cm, **kw: tool_list_view_settings(service, cm, **_tool_args(kw)),
+        "resolve_value": lambda service, cm, **kw: tool_resolve_value(service, cm, **_tool_args(kw)),
+        "search_go_terms": lambda service, cm, **kw: tool_search_go_terms(service, **_tool_args(kw)),
+        "list_distinct_values": lambda service, cm, **kw: tool_list_distinct_values(service, cm, **_tool_args(kw)),
+        "count_rows": lambda service, cm, **kw: tool_count_rows(service, cm, **_tool_args(kw)),
+        "top_groups": lambda service, cm, **kw: tool_top_groups(service, cm, **_tool_args(kw)),
+        "summary_stats": lambda service, cm, **kw: tool_summary_stats(service, cm, **_tool_args(kw)),
+        "common_values": lambda service, cm, **kw: tool_common_values(service, cm, **_tool_args(kw)),
+        "build_deeplink": lambda service, cm, **kw: tool_build_deeplink(service, cm, **_tool_args(kw)),
     }
 
 
@@ -2665,6 +2850,7 @@ def dispatch_tool_call(
     *,
     service,
     config_manager,
+    client_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Dispatch a single tool call; never raises."""
     dispatch = _get_dispatch()
@@ -2673,7 +2859,9 @@ def dispatch_tool_call(
         return {"error": f"unknown tool '{name}'", "available": sorted(dispatch.keys())}
     logger.info("assistant tool dispatch: %s args=%s", name, arguments)
     try:
-        result = fn(service, config_manager, **(arguments or {}))
+        call_args = dict(arguments or {})
+        call_args["client_context"] = client_context if isinstance(client_context, dict) else {}
+        result = fn(service, config_manager, **call_args)
     except TypeError as e:
         return {"error": f"bad arguments: {e}"}
     except Exception as e:  # noqa: BLE001 — the LLM gets the error and can retry.

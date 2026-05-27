@@ -19,14 +19,14 @@ GenXBrowser turns AnnData (`.h5ad`) gene-expression matrices into an interactive
 
 ```mermaid
 flowchart LR
-    A[Raw count matrices<br/>+ annotations] --> B[prepare/<br/>GenXPrep CLI]
+    A[Count matrices + pre-normalised values<br/>TPM / TMM / geTMM + annotations] --> B[prepare/<br/>GenXPrep CLI]
     B --> C[(H5AD files<br/>data/&lt;SPECIES&gt;/*.h5ad)]
     C --> D[backend/<br/>Flask REST API :5000]
     D --> E[frontend/<br/>Vue 3 + Vite :5173]
     E --> U((User))
 ```
 
-Each stage is independent: raw inputs are normalised once by [GenXPrep](prepare/README.md), the backend serves the resulting H5AD files read-only, and the frontend is a static SPA that talks to the backend over `/api/*`.
+Each stage is independent: [GenXPrep](prepare/README.md) validates and packages the provided expression matrices (raw counts and, where available, pre-computed normalised values such as TPM, TMM or geTMM) together with all supplied metadata (sample mappings, GO terms, etc.) into H5AD files, embedding them in `.obs` and `.var` accordingly. The backend serves the resulting H5AD files read-only, and the frontend is a static SPA that talks to the backend over `/api/*`.
 
 ## ⚡ Quick Start
 

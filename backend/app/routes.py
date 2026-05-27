@@ -9,7 +9,7 @@ import logging
 import os
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import filter_parser
 
@@ -1589,6 +1589,79 @@ def _assistant_fast_path_response(service, cm, user_text: str, client_ctx: Dict[
                 seen.add(table_name)
         return resolved
 
+    def _active_dataset_state() -> Dict[str, Any]:
+        try:
+            return assistant_tools_module.tool_get_active_view_state(
+                service,
+                client_context=client_ctx if isinstance(client_ctx, dict) else {},
+            )
+        except Exception:
+            return {"loaded_datasets": [], "visible_dataset_ids": [], "hidden_dataset_ids": []}
+
+    def _resolve_active_dataset_ids(label_text: str) -> List[str]:
+        state = _active_dataset_state()
+        lookup: Dict[str, str] = {}
+        candidates: List[Tuple[str, List[str]]] = []
+        for dataset in state.get("loaded_datasets") or []:
+            if not isinstance(dataset, dict):
+                continue
+            dataset_id = str(dataset.get("id") or "").strip()
+            if not dataset_id:
+                continue
+            aliases = [dataset_id, dataset.get("label"), dataset.get("code"), *(dataset.get("aliases") or [])]
+            normalized_aliases: List[str] = []
+            for alias in aliases:
+                if isinstance(alias, str) and alias.strip():
+                    normalized = alias.strip().lower()
+                    lookup[normalized] = dataset_id
+                    if normalized not in normalized_aliases:
+                        normalized_aliases.append(normalized)
+            candidates.append((dataset_id, normalized_aliases))
+        wanted = str(label_text or "").strip().strip('"\'')
+        if not wanted:
+            return []
+        wanted_lower = wanted.lower()
+        exact = lookup.get(wanted_lower)
+        if exact:
+            return [exact]
+        parts = re.split(r"\s*(?:,|\band\b|&|\+)\s*", wanted, flags=re.I)
+        resolved: List[str] = []
+        for part in parts:
+            part_lower = str(part or "").strip().lower()
+            hit = lookup.get(part_lower)
+            if not hit and part_lower:
+                fuzzy_hits = [
+                    dataset_id for dataset_id, aliases in candidates
+                    if any(alias.startswith(part_lower) or part_lower in alias.replace("_", " ") for alias in aliases)
+                ]
+                if len(set(fuzzy_hits)) == 1:
+                    hit = fuzzy_hits[0]
+            if hit and hit not in resolved:
+                resolved.append(hit)
+        return resolved
+
+    def _dataset_visibility_response(action: str, dataset_ids: List[str]) -> Optional[str]:
+        result = assistant_tools_module.tool_update_dataset_visibility(
+            service,
+            action=action,
+            dataset_ids=dataset_ids,
+            client_context=client_ctx if isinstance(client_ctx, dict) else {},
+        )
+        if not result.get("ok"):
+            return None
+        block = result.get("action_block") if isinstance(result.get("action_block"), dict) else {}
+        after = result.get("labels_after") if isinstance(result.get("labels_after"), list) else []
+        labels = ", ".join(str(item) for item in after if str(item).strip()) or "the selected datasets"
+        if action == "HIDE":
+            prose = f"Hiding the requested dataset. Showing {labels}."
+        elif action == "SHOW_ONLY":
+            prose = f"Showing only {labels}."
+        elif action == "SHOW_ALL":
+            prose = f"Showing all loaded datasets: {labels}."
+        else:
+            prose = f"Showing {labels}."
+        return prose + "\n\n" + _json_block("dataset_visibility", block)
+
     def _resolve_value_column(value: str, tables: List[str], *, fallback_label: str) -> str:
         try:
             sentinels = {"all", "*", "__all__", "every", "everything"}
@@ -1656,6 +1729,36 @@ def _assistant_fast_path_response(service, cm, user_text: str, client_ctx: Dict[
         )
 
     # Dataset-focus shortcut: "show only AT dataset", "use Arabidopsis and Oryza".
+    show_all_match = re.search(r"\bshow\s+all\s+(?:loaded\s+)?(?:datasets|species|views|cards)\b", text, re.I)
+    if show_all_match:
+        response = _dataset_visibility_response("SHOW_ALL", [])
+        if response:
+            return response
+
+    hide_dataset_match = re.search(
+        r"\b(?:don'?t|do\s+not)\s+show\s+(.+?)\s*(?:dataset|datasets|species|view|views|card|cards)?\s*[.!?]*$|\b(?:hide|remove)\s+(.+?)\s*(?:dataset|datasets|species|view|views|card|cards)?\s*[.!?]*$",
+        text,
+        re.I,
+    )
+    if hide_dataset_match:
+        requested_ids = _resolve_active_dataset_ids(hide_dataset_match.group(1) or hide_dataset_match.group(2) or "")
+        if requested_ids:
+            response = _dataset_visibility_response("HIDE", requested_ids)
+            if response:
+                return response
+
+    show_only_dataset_match = re.search(
+        r"\bshow\s+only\s+(.+?)\s*(?:dataset|datasets|species|view|views|card|cards)?\s*[.!?]*$|\bonly\s+(.+?)\s*(?:dataset|datasets|species|view|views|card|cards)\b",
+        text,
+        re.I,
+    )
+    if show_only_dataset_match:
+        requested_ids = _resolve_active_dataset_ids(show_only_dataset_match.group(1) or show_only_dataset_match.group(2) or "")
+        if requested_ids:
+            response = _dataset_visibility_response("SHOW_ONLY", requested_ids)
+            if response:
+                return response
+
     dataset_match = re.search(
         r"\b(?:show|use|display|keep|limit|focus(?:\s+on)?)\s+(?:only\s+)?(.+?)\s+(?:dataset|datasets|species)\b",
         text,
@@ -1901,7 +2004,7 @@ def assistant_chat():
             k: client_ctx.get(k)
             for k in ("view", "route", "tables", "filters", "visualizations",
                       "selection", "visible_genes", "selected_table_names",
-                      "analysis_results")
+                      "analysis_results", "active_view_state")
             if client_ctx.get(k) is not None
         }
 
@@ -1927,6 +2030,7 @@ def assistant_chat():
             with flask_app.app_context():
                 return assistant_tools.dispatch_tool_call(
                     name, args, service=service, config_manager=cm,
+                    client_context=client_ctx if isinstance(client_ctx, dict) else {},
                 )
 
         tools_schema = assistant_tools.openai_schema()

@@ -187,6 +187,7 @@ export function createAssistantActionDispatcher(deps: DispatcherDeps) {
     .register("remove_filter", applyRemoveFilter)
     .register("clear_filters", applyClearFilters)
     .register("select_tables", applySelectTables)
+    .register("dataset_visibility", applyDatasetVisibility)
     .register("set_expression_display", applySetExpressionDisplay)
     .register("set_filter_chain", applySetFilterChain)
     .register("deeplink", applyDeeplink)
@@ -391,6 +392,21 @@ async function applySelectTables(action: AssistantAction, deps: DispatcherDeps):
   const tables = action.spec.tables;
   if (!Array.isArray(tables)) throw new Error("spec.tables must be an array");
   const values = tables.map((value) => nonEmptyString(value, "table"));
+  return applyVisibleDatasetIds(values, deps);
+}
+
+async function applyDatasetVisibility(action: AssistantAction, deps: DispatcherDeps): Promise<DispatchResult> {
+  const mode = String(action.spec.action || "").trim().toUpperCase();
+  if (!new Set(["SHOW_ONLY", "HIDE", "SHOW_ALL", "ADD"]).has(mode)) {
+    throw new Error("dataset_visibility action must be SHOW_ONLY, HIDE, SHOW_ALL, or ADD");
+  }
+  const targetRaw = action.spec.visible_dataset_ids ?? action.spec.tables ?? action.spec.dataset_ids;
+  if (!Array.isArray(targetRaw)) throw new Error("dataset_visibility requires visible_dataset_ids or dataset_ids");
+  const values = targetRaw.map((value) => nonEmptyString(value, "dataset_id"));
+  return applyVisibleDatasetIds(values, deps);
+}
+
+async function applyVisibleDatasetIds(values: string[], deps: DispatcherDeps): Promise<DispatchResult> {
   deps.catalogStore.selectAll?.(values);
   const activeAnalysisRoute = activeDatasetRoutePrefix(deps.route.path);
 
@@ -409,6 +425,15 @@ async function applySelectTables(action: AssistantAction, deps: DispatcherDeps):
         table_names: values.join(","),
       },
       query,
+    }).catch(() => { /* ignore nav rejection */ });
+  } else if (activeAnalysisRoute === "p") {
+    await deps.router.replace({
+      name: deps.route.name ?? undefined,
+      params: {
+        ...deps.route.params,
+        table_names: values.join(","),
+      },
+      query: { ...deps.route.query },
     }).catch(() => { /* ignore nav rejection */ });
   }
 
