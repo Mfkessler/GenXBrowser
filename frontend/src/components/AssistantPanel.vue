@@ -2,7 +2,7 @@
   <Transition name="assistant-slide">
     <aside
       v-if="store.open"
-      class="fixed top-0 right-0 h-full w-full sm:w-[440px] bg-white border-l border-gray-200 shadow-2xl z-50 flex flex-col"
+      class="fixed top-0 right-0 h-full w-full sm:w-[440px] bg-white/50 hover:bg-white focus-within:bg-white border-l border-gray-200 shadow-2xl z-50 flex flex-col opacity-50 hover:opacity-100 focus-within:opacity-100 transition-[opacity,background-color] duration-300"
       role="dialog"
       aria-label="AI Assistant"
     >

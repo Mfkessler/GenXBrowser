@@ -61,7 +61,7 @@
       <AssistantPanel />
       <button
         v-show="!assistantStore.open"
-        class="fixed right-6 z-40 cursor-pointer rounded-full bg-blue-600/70 hover:bg-blue-600 text-white shadow-xl p-4 flex items-center justify-center transition-colors"
+        class="fixed right-4 z-40 cursor-pointer rounded-full bg-blue-600/70 hover:bg-blue-600 text-white shadow-xl p-4 flex items-center justify-center transition-colors"
         :style="{ bottom: assistantBottomOffset }"
         :aria-label="`Open ${assistantStore.displayName}`"
         v-tooltip:left="`Ask ${assistantStore.displayName}`"
@@ -94,8 +94,18 @@ const assistantBottomOffset = ref("1rem");
 let footerResizeObserver: ResizeObserver | null = null;
 
 function updateAssistantBottomOffset() {
-  const footerHeight = footerShell.value?.offsetHeight ?? 0;
-  assistantBottomOffset.value = `${footerHeight + 16}px`;
+  if (typeof window === "undefined") return;
+
+  const baseOffset = 16;
+  const footerTop = footerShell.value?.getBoundingClientRect().top;
+
+  if (footerTop === undefined) {
+    assistantBottomOffset.value = `${baseOffset}px`;
+    return;
+  }
+
+  const footerOverlap = Math.max(0, window.innerHeight - footerTop);
+  assistantBottomOffset.value = `${baseOffset + footerOverlap}px`;
 }
 
 provide("sidebarOpen", sidebarOpen);
@@ -110,6 +120,7 @@ onMounted(() => {
   }
 
   window.addEventListener("resize", updateAssistantBottomOffset);
+  window.addEventListener("scroll", updateAssistantBottomOffset, { passive: true });
 
   // Check if user has seen the sidebar hint before
   const hasSeenHint = localStorage.getItem('sidebar-hint-seen');
@@ -126,6 +137,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   footerResizeObserver?.disconnect();
   window.removeEventListener("resize", updateAssistantBottomOffset);
+  window.removeEventListener("scroll", updateAssistantBottomOffset);
 });
 </script>
 
