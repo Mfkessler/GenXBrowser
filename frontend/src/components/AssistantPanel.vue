@@ -639,7 +639,7 @@ function buildClientContext(): ClientContext {
     view: String(route.name || ""),
     route: route.fullPath,
     tables,
-    selected_table_names: Array.from(catalogStore.selectedTableNames || []),
+    selected_table_names: tables.length > 0 ? [...tables] : Array.from(catalogStore.selectedTableNames || []),
     filters,
     visualizations,
     analysis_results: store.analysisContext && Object.keys(store.analysisContext).length

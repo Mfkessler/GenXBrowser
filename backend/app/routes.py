@@ -1,8 +1,5 @@
 """
 Routes for the H5AD Backend API
-===============================
-Compatible with the existing GenXBrowser frontend (butterfly API).
-Matches the exact parameter names and response formats expected by the frontend.
 """
 
 from flask import Blueprint, jsonify, request, current_app, send_from_directory
@@ -1541,6 +1538,57 @@ def _assistant_fast_path_response(service, cm, user_text: str, client_ctx: Dict[
                     return {"internal": internal, "display": display}
         return None
 
+    def _dataset_alias_lookup() -> Dict[str, Dict[str, str]]:
+        lookup: Dict[str, Dict[str, str]] = {}
+        try:
+            entries = service.get_tables(include_disabled=False)
+        except Exception:
+            entries = []
+        for entry in entries:
+            table_name = str(entry.get("table_name") or entry.get("full_name") or entry.get("_species_code") or entry.get("code") or "").strip()
+            code = str(entry.get("_species_code") or entry.get("code") or "").strip()
+            if not table_name:
+                continue
+            display = str(entry.get("full_name") or entry.get("display_name") or table_name).strip()
+            aliases: List[str] = [table_name, code, entry.get("full_name"), entry.get("display_name")]
+            try:
+                adata = service.registry.load(code)
+                uns = getattr(adata, "uns", {}) or {}
+                species_name = str(uns.get("species") or "").strip()
+                dataset_name = str(uns.get("name") or "").strip()
+                aliases.extend([species_name, dataset_name])
+                if species_name and dataset_name and species_name.lower() != dataset_name.lower():
+                    aliases.extend([f"{species_name} ({dataset_name})", f"{dataset_name} ({species_name})"])
+                if species_name:
+                    display = species_name if not dataset_name or species_name.lower() == dataset_name.lower() else f"{species_name} ({dataset_name})"
+            except Exception:
+                pass
+            for alias in aliases:
+                if isinstance(alias, str) and alias.strip():
+                    lookup[alias.strip().lower()] = {"table": table_name, "display": display or table_name}
+        return lookup
+
+    def _resolve_requested_tables(label_text: str) -> List[Dict[str, str]]:
+        wanted = str(label_text or "").strip().strip('"\'')
+        if not wanted:
+            return []
+        lookup = _dataset_alias_lookup()
+        exact = lookup.get(wanted.lower())
+        if exact:
+            return [exact]
+        parts = re.split(r"\s*(?:,|\band\b|&|\+)\s*", wanted, flags=re.I)
+        resolved: List[Dict[str, str]] = []
+        seen: set = set()
+        for part in parts:
+            hit = lookup.get(str(part or "").strip().lower())
+            if not hit:
+                continue
+            table_name = str(hit.get("table") or "")
+            if table_name and table_name not in seen:
+                resolved.append(hit)
+                seen.add(table_name)
+        return resolved
+
     def _resolve_value_column(value: str, tables: List[str], *, fallback_label: str) -> str:
         try:
             sentinels = {"all", "*", "__all__", "every", "everything"}
@@ -1606,6 +1654,33 @@ def _assistant_fast_path_response(service, cm, user_text: str, client_ctx: Dict[
             f"Grouping samples by {col['display']}.\n\n"
             + _json_block("viz_update", {"patch": {patch_key: col["internal"]}})
         )
+
+    # Dataset-focus shortcut: "show only AT dataset", "use Arabidopsis and Oryza".
+    dataset_match = re.search(
+        r"\b(?:show|use|display|keep|limit|focus(?:\s+on)?)\s+(?:only\s+)?(.+?)\s+(?:dataset|datasets|species)\b",
+        text,
+        re.I,
+    ) or re.search(r"\bonly\s+(.+?)\s+(?:dataset|datasets|species)\b", text, re.I)
+    if dataset_match:
+        requested = _resolve_requested_tables(dataset_match.group(1) or "")
+        if requested:
+            view = _view_from_ctx()
+            tables = [str(item.get("table") or "") for item in requested if str(item.get("table") or "").strip()]
+            labels = [str(item.get("display") or item.get("table") or "") for item in requested if str(item.get("table") or "").strip()]
+            if view == "catalog":
+                return (
+                    f"Selecting {', '.join(labels)}.\n\n"
+                    + _json_block("select_tables", {"tables": tables})
+                )
+            return (
+                f"Focusing the current {view} view on {', '.join(labels)}.\n\n"
+                + _json_block("deeplink", {
+                    "view": view,
+                    "tables": tables,
+                    "filters": _current_filters(),
+                    "visualizations": (client_ctx.get("visualizations") if isinstance(client_ctx.get("visualizations"), dict) else {}),
+                })
+            )
 
     # View switches: "switch to compare", "open heatmap", etc.  Prompts that
     # also contain a concrete "where X is Y" clause are handled below so the
