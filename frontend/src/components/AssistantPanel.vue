@@ -2,7 +2,8 @@
   <Transition name="assistant-slide">
     <aside
       v-if="store.open"
-      class="fixed top-0 right-0 h-full w-full sm:w-[440px] bg-white/50 hover:bg-white focus-within:bg-white border-l border-gray-200 shadow-2xl z-50 flex flex-col opacity-50 hover:opacity-100 focus-within:opacity-100 transition-[opacity,background-color] duration-300"
+      ref="panelEl"
+      class="assistant-panel fixed top-0 right-0 h-full w-full sm:w-[440px] bg-white/50 hover:bg-white focus-within:bg-white border-l border-gray-200 shadow-2xl z-50 flex flex-col opacity-50 hover:opacity-100 focus-within:opacity-100 transition-[opacity,background-color,width] duration-300"
       role="dialog"
       aria-label="AI Assistant"
     >
@@ -356,7 +357,7 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from "vue";
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { marked } from "marked";
 import axios from "axios";
@@ -388,6 +389,7 @@ const router = useRouter();
 const route = useRoute();
 const draft = ref("");
 const scrollEl = ref<HTMLElement | null>(null);
+const panelEl = ref<HTMLElement | null>(null);
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -507,7 +509,27 @@ watch(
 
 onMounted(() => {
   void loadSpeciesLabels();
+
+  if (typeof document !== "undefined") {
+    document.addEventListener("pointerdown", handleDocumentPointerDown, true);
+  }
 });
+
+onBeforeUnmount(() => {
+  if (typeof document !== "undefined") {
+    document.removeEventListener("pointerdown", handleDocumentPointerDown, true);
+  }
+});
+
+function handleDocumentPointerDown(event: PointerEvent) {
+  if (!store.open) return;
+
+  const target = event.target;
+  if (!(target instanceof Node)) return;
+  if (panelEl.value?.contains(target)) return;
+
+  store.open = false;
+}
 
 function stripActionBlocks(content: string): string {
   let out = content
@@ -895,6 +917,21 @@ watch(
 .assistant-slide-enter-from,
 .assistant-slide-leave-to {
   transform: translateX(100%);
+}
+
+@media (max-width: 768px) {
+  .assistant-panel {
+    width: min(26rem, calc(100vw - 2rem));
+    max-width: calc(100vw - 2rem);
+    background-color: #ffffff;
+    opacity: 1;
+  }
+
+  .assistant-panel:hover,
+  .assistant-panel:focus-within {
+    background-color: #ffffff;
+    opacity: 1;
+  }
 }
 </style>
 
