@@ -129,6 +129,22 @@
       :orthogroupOptions="commonOGs_options"
       @update:show-overlay="showSettingsModal = false"
     />
+
+    <!-- Transcript Metadata Modal (right-click / long-press on line traces) -->
+    <TooltipModal
+      v-if="selectedRowData"
+      :show="showTooltipModal"
+      :row-data="selectedRowData"
+      :table-name="selectedTableName"
+      :column-value="selectedColumnValue"
+      :cell-value="selectedCellValue"
+      :id-column="filtersStore.idColumnName"
+      :heatmap-cols="tooltipHeatmapCols"
+      :column-label="groupingColumnLabel"
+      :value-label="`Mean ${expressionValueLabel} across samples in ${groupingColumnLabel}`"
+      :sample-data="selectedSampleData"
+      @close="closeTooltipModal"
+    />
   </main>
 </template>
 
@@ -167,6 +183,7 @@ import ShareOverlay from "@/components/ShareOverlay.vue";
 import ExportModal from "@/components/ExportModal.vue";
 import VisualizationSettings from "@/components/VisualizationSettings.vue";
 import DropdownMenu from "@/components/DropdownMenu.vue";
+import TooltipModal from "@/components/TooltipModal.vue";
 import { getDisplayName } from "@/shared/metadataDisplayNames";
 
 import { useRoute, useRouter } from "vue-router";
@@ -226,6 +243,97 @@ const initialUrlParsing = ref(true); // Guard against watchers during URL parsin
 const showShareOverlay = ref(false);
 const showExportModal = ref(false);
 const showSettingsModal = ref(false);
+
+// --- Transcript Metadata Modal (right-click / long-press on line traces) ---
+const showTooltipModal = ref(false);
+const selectedRowData = ref<RowType | null>(null);
+const selectedTableName = ref("");
+const selectedColumnValue = ref("");
+const selectedCellValue = ref<string | number>("");
+const selectedSampleData = ref<Array<{ sampleName: string; value: number }>>([]); 
+const tooltipHeatmapCols = ref<string[]>([]);
+
+function closeTooltipModal() {
+  showTooltipModal.value = false;
+  selectedRowData.value = null;
+}
+
+// Per-render trace metadata (rebuilt in renderPlot, non-reactive for perf)
+let traceToTranscript: Array<{ species: string; geneId: string; isMean: boolean }> = [];
+let transcriptToRowData: Map<string, Record<string, unknown>> = new Map();
+let sampleColumnsByTable: Map<string, Set<string>> = new Map();
+
+// Last hovered Plotly point
+interface HoveredPoint { traceIndex: number; tissue: string; meanValue: number | null }
+let hoveredPoint: HoveredPoint | null = null;
+
+function openModalForHoveredPoint() {
+  if (!hoveredPoint || !processedData.value) return;
+  const meta = traceToTranscript[hoveredPoint.traceIndex];
+  if (!meta || meta.isMean || !meta.geneId) return;
+
+  const key = `${meta.species}::${meta.geneId}`;
+  const rowData = transcriptToRowData.get(key);
+  if (!rowData) return;
+
+  const transcript = processedData.value.transcripts.find(
+    (t) => t.species === meta.species && t.geneId === meta.geneId
+  );
+  const sampleData =
+    transcript?.values[hoveredPoint.tissue]?.map((sv) => ({
+      sampleName: sv.sampleName,
+      value: sv.value,
+    })) ?? [];
+
+  const sampleCols = sampleColumnsByTable.get(meta.species);
+  selectedRowData.value = rowData as RowType;
+  selectedTableName.value = meta.species;
+  selectedColumnValue.value = hoveredPoint.tissue;
+  selectedCellValue.value =
+    hoveredPoint.meanValue !== null ? parseFloat(hoveredPoint.meanValue.toFixed(3)) : 'N/A';
+  selectedSampleData.value = sampleData;
+  tooltipHeatmapCols.value = sampleCols ? [...sampleCols] : [];
+  showTooltipModal.value = true;
+}
+
+// DOM event handlers for contextmenu / long-press (attached after each Plotly.react)
+let _contextMenuHandler: ((e: MouseEvent) => void) | null = null;
+let _longPressTimer: ReturnType<typeof setTimeout> | null = null;
+let _touchStartHandler: ((e: TouchEvent) => void) | null = null;
+let _touchEndHandler: ((e: TouchEvent) => void) | null = null;
+
+function attachPlotInteractionHandlers() {
+  const el = plotContainer.value;
+  if (!el) return;
+
+  // Clean up previous listeners
+  if (_contextMenuHandler) el.removeEventListener('contextmenu', _contextMenuHandler);
+  if (_touchStartHandler) el.removeEventListener('touchstart', _touchStartHandler);
+  if (_touchEndHandler) {
+    el.removeEventListener('touchend', _touchEndHandler);
+    el.removeEventListener('touchcancel', _touchEndHandler);
+  }
+
+  _contextMenuHandler = (event: MouseEvent) => {
+    event.preventDefault();
+    openModalForHoveredPoint();
+  };
+  el.addEventListener('contextmenu', _contextMenuHandler);
+
+  _touchStartHandler = (_e: TouchEvent) => {
+    if (_longPressTimer) clearTimeout(_longPressTimer);
+    _longPressTimer = setTimeout(() => {
+      openModalForHoveredPoint();
+      _longPressTimer = null;
+    }, 600);
+  };
+  _touchEndHandler = (_e: TouchEvent) => {
+    if (_longPressTimer) { clearTimeout(_longPressTimer); _longPressTimer = null; }
+  };
+  el.addEventListener('touchstart', _touchStartHandler, { passive: true });
+  el.addEventListener('touchend', _touchEndHandler);
+  el.addEventListener('touchcancel', _touchEndHandler);
+}
 
 // Plot type dropdown UI state
 const showPlotTypeDropdown = ref(false);
@@ -311,6 +419,19 @@ const selectedGroupingColumn = computed(() => {
 const groupingColumnLabel = computed(() => {
   const column = columnsStore.filterableColColumns.find((col) => col.column_name === selectedGroupingColumn.value);
   return (column?.display_name || selectedGroupingColumn.value || 'sample group').toString();
+});
+
+const expressionValueLabel = computed(() => {
+  const yAxisTitles: Record<string, string> = {
+    tpm: 'TPM (within-sample)',
+    tmm: 'TMM (between-sample)',
+    getmm: 'GeTMM',
+    log2: 'Log₂(TPM + 1)',
+    zscore: 'Z-Score (on GeTMM)',
+    'zscore-tpm': 'Z-Score (on TPM)',
+    raw: 'Raw Counts',
+  };
+  return yAxisTitles[expressionDisplayOption.value] || 'Expression Value';
 });
 
 // Species visibility is controlled by Plotly's built-in legend click functionality
@@ -1039,6 +1160,33 @@ async function renderPlot() {
   }
 
   const traces: Plotly.Data[] = [];
+  // Parallel array: one entry per trace, for contextmenu lookup
+  const newTraceToTranscript: Array<{ species: string; geneId: string; isMean: boolean }> = [];
+
+  // Build row-data & sample-column lookup maps from raw tableData
+  const newTranscriptToRowData = new Map<string, Record<string, unknown>>();
+  const newSampleColumnsByTable = new Map<string, Set<string>>();
+  const ogNeedle = selectedOrthogroupLabel.value.toLowerCase();
+  const rawTableData = toRaw(tableData.value);
+  Object.entries(rawTableData).forEach(([tblName, tableInfo]: [string, any]) => {
+    if (!tableInfo?.items) return;
+    const items: any[] = Array.isArray(tableInfo.items) ? tableInfo.items : Object.values(tableInfo.items);
+    const sampleCols = new Set<string>();
+    items.forEach((item: any) => {
+      Object.entries(item).forEach(([k, v]) => { if (typeof v === 'number') sampleCols.add(k); });
+    });
+    newSampleColumnsByTable.set(tblName, sampleCols);
+    items
+      .filter((item: any) => {
+        const ogVal = item?.ortho_id;
+        return ogVal != null && String(ogVal).trim().toLowerCase() === ogNeedle;
+      })
+      .forEach((item: any) => {
+        const geneId = item[filtersStore.idColumnName] || item.gene_id;
+        newTranscriptToRowData.set(`${tblName}::${geneId}`, item as Record<string, unknown>);
+      });
+  });
+
   const colors = speciesColors.value;
 
   // Group transcripts by species
@@ -1063,6 +1211,7 @@ async function renderPlot() {
     if (plotType.value === 'line') {
       // LINE PLOT: Individual transcript traces (thin lines) — filtered transcripts
       matchedTranscripts.forEach((transcript, idx) => {
+        newTraceToTranscript.push({ species, geneId: transcript.geneId, isMean: false });
         // Build customdata with sample details for each tissue
         const customData = filteredTissues.map((tissue) => {
           const vals = transcript.values[tissue];
@@ -1151,6 +1300,7 @@ async function renderPlot() {
         return allVals.reduce((a, b) => a + b, 0) / allVals.length;
       });
 
+      newTraceToTranscript.push({ species, geneId: '', isMean: true });
       traces.push({
         x: filteredTissues,
         y: meanYValues,
@@ -1172,6 +1322,7 @@ async function renderPlot() {
         const unfilteredLegendGroup = `${species}_unfiltered`;
 
         unmatchedTranscripts.forEach((transcript, idx) => {
+          newTraceToTranscript.push({ species, geneId: transcript.geneId, isMean: false });
           const yValues = filteredTissues.map((tissue) => {
             const vals = transcript.values[tissue];
             if (!vals || vals.length === 0) return null;
@@ -1220,6 +1371,8 @@ async function renderPlot() {
         });
       }
     } else if (plotType.value === 'box' || plotType.value === 'violin') {
+      // Box/violin: one trace per species, no individual transcript mapping
+      newTraceToTranscript.push({ species, geneId: '', isMean: false });
       // BOX/VIOLIN PLOT: One trace per species, grouped by selected sample metadata
       // Collect values from filtered transcripts
       const xValues: string[] = [];
@@ -1284,6 +1437,7 @@ async function renderPlot() {
 
       // Unfiltered transcripts as separate overlay traces (box/violin)
       if (showAll && unmatchedTranscripts.length > 0) {
+        newTraceToTranscript.push({ species, geneId: '', isMean: false }); // unfiltered box/violin trace
         const uxValues: string[] = [];
         const uyValues: number[] = [];
         const uHoverTexts: string[] = [];
@@ -1425,6 +1579,31 @@ async function renderPlot() {
   };
 
   await Plotly.react(plotContainer.value, traces, layout, config);
+
+  // Commit lookup maps for contextmenu handler
+  traceToTranscript = newTraceToTranscript;
+  transcriptToRowData = newTranscriptToRowData;
+  sampleColumnsByTable = newSampleColumnsByTable;
+
+  // Attach Plotly hover tracking
+  const plotEl = plotContainer.value as any;
+  plotEl.removeAllListeners?.('plotly_hover');
+  plotEl.removeAllListeners?.('plotly_unhover');
+  plotEl.on('plotly_hover', (eventData: any) => {
+    const pt = eventData?.points?.[0];
+    if (!pt) { hoveredPoint = null; return; }
+    hoveredPoint = {
+      traceIndex: pt.curveNumber,
+      tissue: String(pt.x ?? ''),
+      meanValue: typeof pt.y === 'number' ? pt.y : null,
+    };
+  });
+  plotEl.on('plotly_unhover', () => {
+    // Intentionally keep last hovered point so contextmenu fires right after mouseout
+  });
+
+  // Attach native contextmenu + long-press
+  attachPlotInteractionHandlers();
 }
 
 // ============================================================================
@@ -1720,6 +1899,12 @@ onUnmounted(() => {
     resizeObserver.disconnect();
   }
   if (plotContainer.value) {
+    if (_contextMenuHandler) plotContainer.value.removeEventListener('contextmenu', _contextMenuHandler);
+    if (_touchStartHandler) plotContainer.value.removeEventListener('touchstart', _touchStartHandler);
+    if (_touchEndHandler) {
+      plotContainer.value.removeEventListener('touchend', _touchEndHandler);
+      plotContainer.value.removeEventListener('touchcancel', _touchEndHandler);
+    }
     Plotly.purge(plotContainer.value);
   }
 });
