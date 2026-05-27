@@ -239,6 +239,8 @@
       :heatmapCols="heatmapCols"
       :columnValue="selectedColumnValue"
       :cellValue="selectedCellValue"
+      :columnLabel="'Sample'"
+      :valueLabel="getExpressionOption(visualizationStore.expressionDisplay.optionId)?.label ?? 'Value'"
       @close="closeTooltipModal"
     />
   </main>
@@ -663,22 +665,6 @@ async function fetchAndPrepareData() {
       processedRows.value = calculateProcessedRows();
       setLoadingProgress(5, totalSteps);
 
-      // Initialize tooltip fields with all available metadata fields except sequences and verbose fields
-      if (visualizationStore.tooltipFields === null && rows.value.length > 0) {
-        const firstRow = rows.value[0];
-        const allFields = Object.keys(firstRow).filter(
-          (key) => !dataColumnNames.value.includes(key) && key !== idColumn.value
-        );
-        
-        // Exclude sequence fields and verbose fields by default
-        const excludedFields = [...sequenceFields, ...verboseFields];
-        const defaultFields = allFields.filter(
-          (field) => !excludedFields.includes(field)
-        );
-        
-        visualizationStore.setTooltipFields(defaultFields);
-      }
-      
       // Initialize default SideColors if not already set
       const rowColumnNames = columnNames.value.filter((c) => !dataColumnNames.value.includes(c));
       // Use columnsStore.colColumns which includes 'tissue_types'
@@ -1953,20 +1939,18 @@ async function renderHeatmap(): Promise<boolean> {
       d3.select(this).attr("stroke", "white").style("stroke-width", 2);
 
       const row = data[d.rowIndex];
-      
-      // Get metadata columns excluding heatmap columns and id column
+      const formattedSpecies = props.tableName.replace(/_/g, ' ').replace(/^\w/, (c: string) => c.toUpperCase());
+      const tissueColName = columnStore.tissueColumnName;
+      const sampleMeta = columns.value.find(c => String(c.column_name) === d.col);
+      const tissueValue = tissueColName && sampleMeta ? String(sampleMeta[tissueColName] ?? '') : null;
       const allMetaCols = Object.keys(row).filter(
         (c) => !heatmapCols.includes(c) && c !== currentIdColumn
       );
       
-      // Filter based on user's tooltip field preferences
-      // null = uninitialized / show all; [] = user deselected all / show none
-      let visibleMetaCols = allMetaCols;
-      if (visualizationStore.tooltipFields !== null) {
-        visibleMetaCols = allMetaCols.filter(c => 
-          visualizationStore.tooltipFields!.includes(c)
-        );
-      }
+      // Filter based on user's tooltip field preferences ([] = show none by default)
+      const visibleMetaCols = allMetaCols.filter(c =>
+        visualizationStore.tooltipFields.includes(c)
+      );
       
       // Generate metadata HTML with display names
       const metaHtml = visibleMetaCols
@@ -2001,7 +1985,9 @@ async function renderHeatmap(): Promise<boolean> {
 
       tooltip.html(`
       <b>${getDisplayName(currentIdColumn)}:</b> ${row[currentIdColumn]}<br>
-      <b>Column:</b> ${d.col}<br>
+      <b>Species:</b> <i>${formattedSpecies}</i><br>
+      <b>Sample:</b> ${d.col}<br>
+      ${tissueValue ? `<b>${columnStore.filterableColColumns.find(c => c.is_tissue)?.display_name ?? (tissueColName ? getDisplayName(tissueColName) : 'Group')}:</b> ${tissueValue}<br>` : ''}
       <b>Value:</b> ${d.value}<br>
       ${metaHtml ? `<hr style="margin:4px 0; border-color:#888"/><div>${metaHtml}</div>` : ''}
       <hr style="margin:4px 0; border-color:#888"/>

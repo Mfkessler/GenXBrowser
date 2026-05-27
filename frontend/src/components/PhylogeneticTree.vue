@@ -110,6 +110,9 @@
       :cell-value="selectedCellValue"
       :id-column="config.visualization.id_column"
       :heatmap-cols="heatmapCols"
+      :column-label="groupingColumnLabel"
+      :value-label="getExpressionOption(visualizationStore.expressionDisplay.optionId) ? `Mean ${getExpressionOption(visualizationStore.expressionDisplay.optionId)!.label}` : 'Mean'"
+      :sample-data="selectedSampleData"
       @close="closeTooltipModal"
     />
 
@@ -242,6 +245,7 @@ const selectedRowData = ref<RowType | null>(null);
 const selectedTableName = ref("");
 const selectedColumnValue = ref("");
 const selectedCellValue = ref<string | number>("");
+const selectedSampleData = ref<Array<{ sampleName: string; value: number }>>([]);
 const heatmapCols = ref<string[]>([]);
 
 // Hidden nodes/species tracking - now managed via visualizationStore.phyloTree
@@ -264,6 +268,7 @@ const closeTooltipModal = () => {
   selectedTableName.value = "";
   selectedColumnValue.value = "";
   selectedCellValue.value = "";
+  selectedSampleData.value = [];
 };
 
 const emit = defineEmits(['openSettingsOverlay', 'update:tableName', 'update:orthogroupOptions', 'update:loadingState', 'load-cancel']);
@@ -871,6 +876,7 @@ function computeMetrics(dataRef: any, calcOption: string, codeMap?: Record<strin
         const perGene = Object.fromEntries(genes.flatMap((gene) => {
           const tissueExpression: Record<string, number[]> = {}
           const normalizationTissue: Record<string, number[]> = {}
+          const sampleData: Record<string, Array<{ sampleName: string; value: number }>> = {}
 
           const sampleKeys = Object.keys(gene).filter(
             k => /\d+$/.test(k) && typeof gene[k] === "number"
@@ -882,6 +888,9 @@ function computeMetrics(dataRef: any, calcOption: string, codeMap?: Record<strin
 
             if (!tissueExpression[tissue]) tissueExpression[tissue] = []
             tissueExpression[tissue].push(Number(value))
+
+            if (!sampleData[tissue]) sampleData[tissue] = []
+            sampleData[tissue].push({ sampleName: k, value: Number(value) })
           }
 
           Object.entries(tissueExpression as Record<string, number[]>).map(([key, value]) => {
@@ -896,7 +905,7 @@ function computeMetrics(dataRef: any, calcOption: string, codeMap?: Record<strin
               }
             }
           )
-          const data = { tissueExpression, normalizationTissue }
+          const data = { tissueExpression, normalizationTissue, sampleData }
 
           const entries = buildPhyloMetricKeys(groupName, String(gene.gene_id), speciesCode)
             .map((key): [string, typeof data] => [key, data])
@@ -1646,12 +1655,22 @@ async function initPhylotree(
           d3.select(this).attr('stroke', 'white').style('stroke-width', 2)
           const entityLabel = getEntityIdLabel()
           const selectedFields = visualizationStore.tooltipFields
+          const exprOption = getExpressionOption(visualizationStore.expressionDisplay.optionId)
+          const valueLabel = exprOption ? `Mean ${exprOption.label}` : 'Mean'
+          const formattedSpecies = d.species.replace(/_/g, ' ').replace(/^\w/, (c: string) => c.toUpperCase())
           let tooltipHtml = `
             <b>${entityLabel}:</b> ${d.geneId}<br>
+            <b>Species:</b> <i>${formattedSpecies}</i><br>
             <b>${groupingColumnLabel.value}:</b> ${d.tissue}<br>
-            <b>Value:</b> ${typeof d.value === 'number' ? d.value.toFixed(3) : d.value}<br>
-            <b>Species:</b> ${d.species}<br>
+            <b>${valueLabel}:</b> ${typeof d.value === 'number' ? d.value.toFixed(3) : d.value}<br>
           `
+          const samples = (d.geneObj as any).sampleData?.[d.tissue] as Array<{ sampleName: string; value: number }> | undefined
+          if (samples && samples.length > 0) {
+            tooltipHtml += `<br><b>Samples (n=${samples.length}):</b><br>`
+            samples.forEach((s) => {
+              tooltipHtml += `&nbsp;&nbsp;${s.sampleName}: ${s.value.toFixed(3)}<br>`
+            })
+          }
           if (d.rowData && selectedFields !== null && selectedFields.length > 0) {
             const metaLines = selectedFields
               .filter(field => field !== config.visualization.id_column && d.rowData![field] !== undefined)
@@ -1699,7 +1718,8 @@ async function initPhylotree(
             selectedRowData.value = d.rowData
             selectedTableName.value = d.tableName
             selectedColumnValue.value = d.tissue
-            selectedCellValue.value = d.value
+            selectedCellValue.value = typeof d.value === 'number' ? d.value.toFixed(3) : d.value
+            selectedSampleData.value = (d.geneObj as any).sampleData?.[d.tissue] ?? []
             heatmapCols.value = Array.from(tissueSet)
             showTooltipModal.value = true
           }

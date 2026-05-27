@@ -153,7 +153,7 @@ function getDefaultState(): VisualizationState {
     oraGoDepthFilter: "",
     oraAvailableGoDepths: [],
     oraTooltipFields: ["attribute_name", "go_name", "subset_count", "expected_count", "background_count", "fold_enrichment"],  // Default: attribute + GO name + core enrichment metrics
-    tooltipFields: null, // null = uninitialized (show all); [] = user deselected all (show none)
+    tooltipFields: [] as string[], // [] = show no optional metadata in hover tooltip by default
     showSequencesInTooltip: false,
     sequencePreviewLength: 100,
     // Clustering defaults

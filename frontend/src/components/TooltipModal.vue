@@ -20,6 +20,9 @@ export interface TooltipModalProps {
   heatmapCols: string[];
   columnValue: string;
   cellValue: string | number;
+  columnLabel?: string;
+  valueLabel?: string;
+  sampleData?: Array<{ sampleName: string; value: number }>;
 }
 
 const props = defineProps<TooltipModalProps>();
@@ -297,7 +300,7 @@ watch(() => props.show, (isShown) => {
             <!-- Column -->
             <div class="flex flex-col">
               <div class="flex justify-between items-center mb-1">
-                <span class="font-medium text-gray-600 text-sm">Column</span>
+                <span class="font-medium text-gray-600 text-sm">{{ columnLabel ?? 'Column' }}</span>
                 <button
                   @click="copyToClipboard(columnValue, 'column')"
                   class="px-2 py-1 text-xs bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors"
@@ -313,7 +316,7 @@ watch(() => props.show, (isShown) => {
             <!-- Value -->
             <div class="flex flex-col">
               <div class="flex justify-between items-center mb-1">
-                <span class="font-medium text-gray-600 text-sm">Value</span>
+                <span class="font-medium text-gray-600 text-sm">{{ valueLabel ?? 'Value' }}</span>
                 <button
                   @click="copyToClipboard(String(cellValue), 'value')"
                   class="px-2 py-1 text-xs bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors"
@@ -323,6 +326,29 @@ watch(() => props.show, (isShown) => {
               </div>
               <div class="bg-white p-2 rounded border border-gray-300 text-sm">
                 {{ cellValue }}
+              </div>
+            </div>
+
+            <!-- Sample Values -->
+            <div v-if="sampleData && sampleData.length > 0" class="flex flex-col">
+              <div class="flex justify-between items-center mb-1">
+                <span class="font-medium text-gray-600 text-sm">Samples (n={{ sampleData.length }})</span>
+                <button
+                  @click="copyToClipboard(sampleData.map(s => `${s.sampleName}: ${s.value.toFixed(3)}`).join('\n'), 'samples_all')"
+                  class="px-2 py-1 text-xs bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors"
+                >
+                  {{ copiedField === 'samples_all' ? '✓ Copied!' : '📋 Copy All' }}
+                </button>
+              </div>
+              <div class="bg-white rounded border border-gray-300 text-sm divide-y divide-gray-100">
+                <div
+                  v-for="s in sampleData"
+                  :key="s.sampleName"
+                  class="flex justify-between items-center px-2 py-1"
+                >
+                  <span class="font-mono text-gray-700">{{ s.sampleName }}</span>
+                  <span class="font-mono text-gray-800">{{ s.value.toFixed(3) }}</span>
+                </div>
               </div>
             </div>
           </div>
@@ -344,6 +370,7 @@ watch(() => props.show, (isShown) => {
                   getDisplayName(key)
                 }}</span>
                 <button
+                  v-if="getFieldValue(key) && getFieldValue(key) !== '—'"
                   @click="copyToClipboard(getFieldValue(key), key)"
                   class="px-2 py-1 text-xs bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors"
                 >
@@ -351,7 +378,8 @@ watch(() => props.show, (isShown) => {
                 </button>
               </div>
               <div class="bg-white p-2 rounded border border-gray-300 text-sm break-all">
-                {{ getFieldValue(key) }}
+                <span v-if="getFieldValue(key) && getFieldValue(key) !== '—'">{{ getFieldValue(key) }}</span>
+                <span v-else class="text-gray-400 italic">Empty</span>
               </div>
             </div>
           </div>
@@ -366,7 +394,7 @@ watch(() => props.show, (isShown) => {
                 <span class="font-medium text-gray-600 text-sm">{{
                   getDisplayName(key)
                 }}</span>
-                <div class="flex items-center gap-1">
+                <div v-if="getFieldValue(key) && getFieldValue(key) !== '—'" class="flex items-center gap-1">
                   <button
                     v-if="canOpenPhyloTree(key)"
                     @click="openPhyloTree()"
@@ -383,7 +411,8 @@ watch(() => props.show, (isShown) => {
                 </div>
               </div>
               <div class="bg-white p-2 rounded border border-gray-300 text-sm break-all">
-                {{ getFieldValue(key) }}
+                <span v-if="getFieldValue(key) && getFieldValue(key) !== '—'">{{ getFieldValue(key) }}</span>
+                <span v-else class="text-gray-400 italic">Empty</span>
               </div>
             </div>
           </div>
