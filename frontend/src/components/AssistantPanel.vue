@@ -263,6 +263,16 @@
                 >Set filter chain</button>
 
                 <span
+                  v-else-if="action.kind === 'phylo_action' && action.status === 'applied'"
+                  class="inline-flex items-center gap-1 bg-primary-100 text-primary-900 text-xs font-semibold px-3 py-1.5 rounded-full"
+                >✓ PhyloTree: {{ action.summary || String(action.spec.command || '') }}</span>
+                <button
+                  v-else-if="action.kind === 'phylo_action' && action.status !== 'applied'"
+                  class="inline-flex items-center gap-1 bg-primary-700 hover:bg-primary-900 text-white text-xs font-semibold px-3 py-1.5 rounded-full cursor-pointer"
+                  @click="applyPhyloAction(action)"
+                >PhyloTree: {{ String(action.spec.command || '') }}</button>
+
+                <span
                   v-else-if="action.kind === 'compute' && action.status === 'applied'"
                   class="inline-flex items-center gap-1 bg-gray-100 text-gray-700 text-xs font-semibold px-3 py-1.5 rounded-full"
                 >✓ Computed {{ String(action.spec.op || '') }}</span>
@@ -535,7 +545,7 @@ function stripActionBlocks(content: string): string {
   let out = content
     // Known action blocks (the frontend applies them via chips).
     .replace(
-      /```(?:action|deeplink|viz_update|add_filter|remove_filter|clear_filters|select_tables|dataset_visibility|set_expression_display|set_filter_chain|compute)\s*\n[\s\S]*?\n```/gi,
+      /```(?:action|deeplink|viz_update|add_filter|remove_filter|clear_filters|select_tables|dataset_visibility|set_expression_display|set_filter_chain|phylo_action|compute)\s*\n[\s\S]*?\n```/gi,
       "",
     )
     // Leaked tool-argument JSON that the backend salvaged.
@@ -811,6 +821,10 @@ function applySetFilterChain(action: AssistantAction) {
   void executeAssistantAction(action);
 }
 
+function applyPhyloAction(action: AssistantAction) {
+  void executeAssistantAction(action);
+}
+
 function shortActionError(action: AssistantAction): string {
   if (action.kind === "deeplink") return "Cannot open view";
   if (action.kind === "compute") return "Compute failed";
@@ -822,6 +836,7 @@ function shortActionError(action: AssistantAction): string {
   if (action.kind === "dataset_visibility") return "Dataset update failed";
   if (action.kind === "set_expression_display") return "Expression failed";
   if (action.kind === "set_filter_chain") return "Update failed";
+  if (action.kind === "phylo_action") return "PhyloTree command failed";
   return "Action failed";
 }
 

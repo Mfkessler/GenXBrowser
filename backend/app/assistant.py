@@ -406,6 +406,19 @@ _TOOL_KEY_SIGNATURES: List[Tuple[str, frozenset, frozenset]] = [
 _ACTION_BLOCK_TAGS = {
     "deeplink", "viz_update", "add_filter", "remove_filter", "clear_filters",
     "select_tables", "set_expression_display", "set_filter_chain", "action", "compute",
+    "dataset_visibility", "phylo_action",
+}
+
+# Action-block tags that the model sometimes mis-emits as OpenAI tool_calls
+# instead of fenced markdown blocks. When we see a tool_call with one of
+# these names we DO NOT dispatch - there is no backend tool - and instead
+# convert the arguments into an action-block fence appended to the final
+# assistant content. This is data-agnostic: it relies only on the tag set,
+# never on column names or values.
+_ACTION_BLOCK_TOOL_NAMES = {
+    "add_filter", "remove_filter", "clear_filters", "select_tables",
+    "set_expression_display", "set_filter_chain", "viz_update",
+    "dataset_visibility", "deeplink", "phylo_action",
 }
 _FENCE_RE = re.compile(r"```([A-Za-z_][A-Za-z0-9_]*)\s*\n([\s\S]*?)\n```", re.MULTILINE)
 # Matches both tagged AND untagged fences. The untagged variant catches
@@ -427,6 +440,10 @@ _ACTION_KEY_SIGNATURES: List[Tuple[str, frozenset, frozenset]] = [
     ("viz_update", frozenset({"patch"}), frozenset({"patch"})),
     ("deeplink", frozenset({"view"}),
         frozenset({"view", "tables", "filters", "visualizations"})),
+    ("dataset_visibility", frozenset({"action"}),
+        frozenset({"action", "dataset_ids", "visible_dataset_ids"})),
+    ("phylo_action", frozenset({"command"}),
+        frozenset({"command"})),
 ]
 
 
@@ -1050,6 +1067,9 @@ def run_agentic_turn(
     last_model: Optional[str] = None
     coverage_facts: List[Dict[str, Any]] = []
     last_deeplink_context: Optional[Dict[str, Any]] = None
+    # Action blocks rescued from mis-emitted tool_calls. Appended to the
+    # final assistant content so the frontend extractor picks them up.
+    intercepted_action_blocks: List[str] = []
 
     for iteration in range(int(max_iterations)):
         if time.monotonic() - started > float(tool_deadline_s):
@@ -1150,6 +1170,8 @@ def run_agentic_turn(
             )
             cleaned = _repair_deeplink_blocks_from_tool(cleaned, last_deeplink_context)
             cleaned = _repair_phylo_request_deeplink(cleaned, requested_user_text)
+            if intercepted_action_blocks:
+                cleaned = (cleaned or "").rstrip() + "\n\n" + "\n\n".join(intercepted_action_blocks)
             if emitted_chars == 0:
                 # Some models return content only at end-of-stream (rare).
                 yield {"type": "delta", "delta": cleaned}
@@ -1200,9 +1222,58 @@ def run_agentic_turn(
                 args = {}
             prepared.append((call_id, name, args))
 
+        # Intercept action-block-named tool_calls. The model occasionally
+        # invokes `add_filter` / `dataset_visibility` / `viz_update` etc.
+        # as OpenAI tool_calls instead of fenced action blocks. There is no
+        # backend tool by those names, so dispatch would fail and the model
+        # would either fabricate success ("I've filtered…") with no real
+        # action, or loop until the iteration cap. We materialise the call
+        # as a proper action-block fence (appended to the final assistant
+        # content) and feed a synthetic success result back, so the next
+        # iteration terminates with a clean answer. This stays fully
+        # data-agnostic: only the tag set is hard-coded, never any column
+        # name or value.
+        real_prepared: List[Tuple[str, str, Dict[str, Any]]] = []
+        for call_id, name, args in prepared:
+            if name in _ACTION_BLOCK_TOOL_NAMES:
+                try:
+                    spec_payload = json.dumps(args or {}, ensure_ascii=False)
+                except Exception:
+                    spec_payload = "{}"
+                intercepted_action_blocks.append(
+                    f"```{name}\n{spec_payload}\n```"
+                )
+                yield {"type": "tool_start", "id": call_id, "name": name, "args": args}
+                synth = {
+                    "ok": True,
+                    "applied": (
+                        f"emitted as `{name}` action block; the frontend will "
+                        "apply it. Do not call this name as a tool again."
+                    ),
+                }
+                yield {"type": "tool_result", "id": call_id, "name": name, "result": synth}
+                try:
+                    payload = json.dumps(synth, ensure_ascii=False)
+                except Exception:
+                    payload = "{}"
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "name": name,
+                    "content": payload,
+                })
+            else:
+                real_prepared.append((call_id, name, args))
+
+        # If every tool_call was an action-block intercept there is no
+        # real dispatch work for this iteration. Loop back so the model
+        # can emit its final natural-language answer.
+        if not real_prepared:
+            continue
+
         # Surface "running" markers up front so the UI shows every tool
         # call concurrently rather than serially.
-        for call_id, name, args in prepared:
+        for call_id, name, args in real_prepared:
             yield {"type": "tool_start", "id": call_id, "name": name, "args": args}
 
         results: Dict[str, Dict[str, Any]] = {}
@@ -1218,8 +1289,8 @@ def run_agentic_turn(
             tool_timeout = float(os.environ.get("GENX_TOOL_TIMEOUT", "15"))
         except (TypeError, ValueError):
             tool_timeout = 20.0
-        if len(prepared) == 1:
-            call_id, name, args = prepared[0]
+        if len(real_prepared) == 1:
+            call_id, name, args = real_prepared[0]
             with ThreadPoolExecutor(max_workers=1) as pool:
                 fut = pool.submit(dispatch, name, args)
                 try:
@@ -1231,10 +1302,10 @@ def run_agentic_turn(
                     logger.warning("dispatch(%s) failed: %s", name, e, exc_info=True)
                     results[call_id] = {"error": f"{type(e).__name__}: {e}"}
         else:
-            with ThreadPoolExecutor(max_workers=min(4, len(prepared))) as pool:
+            with ThreadPoolExecutor(max_workers=min(4, len(real_prepared))) as pool:
                 future_map = {
                     pool.submit(dispatch, name, args): (call_id, name)
-                    for call_id, name, args in prepared
+                    for call_id, name, args in real_prepared
                 }
                 for future in future_map:
                     call_id, name = future_map[future]
@@ -1247,7 +1318,7 @@ def run_agentic_turn(
                         logger.warning("dispatch(%s) failed: %s", name, e, exc_info=True)
                         results[call_id] = {"error": f"{type(e).__name__}: {e}"}
 
-        for call_id, name, _args in prepared:
+        for call_id, name, _args in real_prepared:
             result = results.get(call_id, {})
             yield {"type": "tool_result", "id": call_id, "name": name, "result": result}
 
@@ -1283,6 +1354,8 @@ def run_agentic_turn(
     )
     final_text = _repair_deeplink_blocks_from_tool(final_text, last_deeplink_context)
     final_text = _repair_phylo_request_deeplink(final_text, requested_user_text)
+    if intercepted_action_blocks:
+        final_text = (final_text or "").rstrip() + "\n\n" + "\n\n".join(intercepted_action_blocks)
     yield {
         "type": "delta",
         "delta": final_text + "\n\n_(Note: tool iteration cap reached.)_",

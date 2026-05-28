@@ -191,6 +191,7 @@ export function createAssistantActionDispatcher(deps: DispatcherDeps) {
     .register("set_expression_display", applySetExpressionDisplay)
     .register("set_filter_chain", applySetFilterChain)
     .register("deeplink", applyDeeplink)
+    .register("phylo_action", applyPhyloAction)
     .register("compute", () => ({ mutated: false }));
 
   async function dispatch(action: AssistantAction): Promise<boolean> {
@@ -347,8 +348,23 @@ function expressionActionFromPatch(patch: Record<string, unknown>, deps: Dispatc
 
 function applyAddFilter(action: AssistantAction, deps: DispatcherDeps): DispatchResult {
   const spec = action.spec;
-  const column = resolveAnyColumnName(deps, nonEmptyString(spec.column || spec.key, "column"));
+  const requested = nonEmptyString(spec.column || spec.key, "column");
+  const column = resolveAnyColumnName(deps, requested);
   const columnMeta = findAnyColumn(deps, column);
+  // Reject hallucinated columns: the model occasionally invents column names
+  // that don't exist in the loaded registry (e.g. "Check" / "ungültig"). The
+  // backend prompt forbids this, but we still validate at the boundary so
+  // the user never sees a fake filter chip appear. The column lookup is
+  // case-insensitive and matches both internal keys and Display Names — if
+  // it still misses, the column does not exist in the current schema.
+  if (!columnMeta) {
+    const known = allKnownColumns(deps);
+    if (known.length > 0) {
+      throw new Error(
+        `column "${requested}" is not a known Sidebar metadata column for the loaded datasets`,
+      );
+    }
+  }
   const rawSpec = spec as { match_mode?: unknown; exact?: unknown };
   const matchMode = rawSpec.match_mode === "and" || rawSpec.match_mode === "or" ? rawSpec.match_mode : "or";
   const exact = rawSpec.exact === undefined ? true : booleanValue(rawSpec.exact);
@@ -365,8 +381,18 @@ function applyAddFilter(action: AssistantAction, deps: DispatcherDeps): Dispatch
 function applySetFilterChain(action: AssistantAction, deps: DispatcherDeps): DispatchResult {
   const operator = String(action.spec.operator || "and").toLowerCase() === "or" ? "or" : "and";
   const rawColumns = Array.isArray(action.spec.columns) ? action.spec.columns : [];
+  const known = allKnownColumns(deps);
   const columns = rawColumns
-    .map((item) => resolveAnyColumnName(deps, String(item || "")))
+    .map((item) => {
+      const requested = String(item || "");
+      const resolved = resolveAnyColumnName(deps, requested);
+      if (!findAnyColumn(deps, resolved) && known.length > 0) {
+        throw new Error(
+          `column "${requested}" is not a known Sidebar metadata column for the loaded datasets`,
+        );
+      }
+      return resolved;
+    })
     .filter(Boolean);
   if (columns.length < 2) throw new Error("set_filter_chain requires at least two columns");
   if (!deps.filtersStore.setPairOperator) throw new Error("filter store has no setPairOperator()");
@@ -378,7 +404,13 @@ function applySetFilterChain(action: AssistantAction, deps: DispatcherDeps): Dis
 }
 
 function applyRemoveFilter(action: AssistantAction, deps: DispatcherDeps): DispatchResult {
-  const column = resolveAnyColumnName(deps, nonEmptyString(action.spec.column || action.spec.key, "column"));
+  const requested = nonEmptyString(action.spec.column || action.spec.key, "column");
+  const column = resolveAnyColumnName(deps, requested);
+  if (!findAnyColumn(deps, column) && allKnownColumns(deps).length > 0) {
+    throw new Error(
+      `column "${requested}" is not a known Sidebar metadata column for the loaded datasets`,
+    );
+  }
   deps.filtersStore.removeFilter(column);
   return { mutated: true, summary: columnDisplayName(deps, column) };
 }
@@ -386,6 +418,39 @@ function applyRemoveFilter(action: AssistantAction, deps: DispatcherDeps): Dispa
 function applyClearFilters(_action: AssistantAction, deps: DispatcherDeps): DispatchResult {
   deps.filtersStore.clearFilters();
   return { mutated: true, summary: "all filters" };
+}
+
+const PHYLO_COMMAND_LABELS: Record<string, string> = {
+  reset_view: "Reset View",
+  expand_all: "Expand all",
+  collapse_all: "Collapse all",
+  collapse_to_species: "Collapse to species",
+};
+
+function applyPhyloAction(action: AssistantAction, deps: DispatcherDeps): DispatchResult {
+  const command = String(action.spec.command || "").trim().toLowerCase();
+  if (!(command in PHYLO_COMMAND_LABELS)) {
+    throw new Error(
+      `phylo_action.command must be one of ${Object.keys(PHYLO_COMMAND_LABELS).join(", ")}`,
+    );
+  }
+  const onPhyloRoute = /\/PhyloTree(\/|$)/i.test(deps.route.fullPath || "")
+    || String(deps.route.name || "").toLowerCase().includes("phylo");
+  if (!onPhyloRoute) {
+    throw new Error("phylo_action can only run on the PhyloTree view");
+  }
+  // The PhyloTree commands depend on the runtime hierarchy computed inside
+  // each <PhylogeneticTree> instance, so they are not expressible as a
+  // Pinia patch. The view listens for this event and fans the call out to
+  // every mounted tree ref.
+  if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+    window.dispatchEvent(
+      new CustomEvent("genx:phylo-command", { detail: { command } }),
+    );
+  } else {
+    throw new Error("phylo_action requires a browser environment");
+  }
+  return { mutated: true, summary: PHYLO_COMMAND_LABELS[command] };
 }
 
 async function applySelectTables(action: AssistantAction, deps: DispatcherDeps): Promise<DispatchResult> {

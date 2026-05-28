@@ -200,6 +200,27 @@ function callOnAllTrees(method: 'expandAll' | 'collapseAll' | 'collapseToSpecies
   }
 }
 
+// Assistant-driven PhyloTree toolbar commands. The AI assistant emits a
+// `phylo_action` block ({command:"reset_view"|"expand_all"|"collapse_all"
+// |"collapse_to_species"}) which the shared action dispatcher converts to
+// a window CustomEvent - this view fans the call out to every mounted
+// tree instance, mirroring the manual toolbar buttons. Decoupling via a
+// CustomEvent avoids dragging the tree refs into a global store and
+// keeps the imperative commands data-agnostic.
+const PHYLO_COMMAND_DISPATCH: Record<string, () => void> = {
+  reset_view: () => resetPhyloTreeView(),
+  expand_all: () => callOnAllTrees('expandAll'),
+  collapse_all: () => callOnAllTrees('collapseAll'),
+  collapse_to_species: () => callOnAllTrees('collapseToSpecies'),
+};
+
+function onAssistantPhyloCommand(event: Event) {
+  const detail = (event as CustomEvent<{ command?: string }>).detail;
+  const command = String(detail?.command || '').trim().toLowerCase();
+  const handler = PHYLO_COMMAND_DISPATCH[command];
+  if (handler) handler();
+}
+
 function cancelUnifiedLoading() {
   activeHashAbortController?.abort();
   activeHashAbortController = null;
@@ -334,6 +355,9 @@ watch(
 );
 
 onMounted(async () => {
+  if (typeof window !== "undefined") {
+    window.addEventListener('genx:phylo-command', onAssistantPhyloCommand);
+  }
   activeHashAbortController?.abort();
   const controller = new AbortController();
   activeHashAbortController = controller;
@@ -374,6 +398,9 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  if (typeof window !== "undefined") {
+    window.removeEventListener('genx:phylo-command', onAssistantPhyloCommand);
+  }
   if (hideCombinedLoadingTimer !== null) {
     clearTimeout(hideCombinedLoadingTimer);
     hideCombinedLoadingTimer = null;
