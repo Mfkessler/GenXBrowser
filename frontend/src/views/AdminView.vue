@@ -5,7 +5,7 @@
       <div class="auth-card">
         <h2>🔒 Admin Access</h2>
         <p>Enter the admin token to access the configuration panel.</p>
-        <div class="auth-form">
+        <form class="auth-form" @submit.prevent="authenticate">
           <input
             v-model="tokenInput"
             type="password"
@@ -13,10 +13,10 @@
             placeholder="Admin token"
             @keyup.enter="authenticate"
           />
-          <button class="btn btn-primary" @click="authenticate" :disabled="!tokenInput">
+          <button type="submit" class="btn btn-primary" :disabled="!tokenInput">
             Authenticate
           </button>
-        </div>
+        </form>
         <p v-if="authError" class="auth-error">{{ authError }}</p>
       </div>
     </div>
@@ -53,8 +53,9 @@
           <button @click="reloadConfig" class="btn btn-outline">
             🔄 Reload
           </button>
-          <button @click="saveConfig" class="btn btn-primary" :disabled="!hasChanges">
-            💾 Save
+          <button @click="saveConfig" class="btn btn-primary" :disabled="saveRunning || !hasChanges">
+            <span v-if="saveRunning" class="btn-spinner" aria-hidden="true"></span>
+            {{ saveRunning ? 'Saving…' : '💾 Save' }}
           </button>
           <button @click="restartBackend" class="btn btn-warning">
             ⚡ Restart
@@ -238,7 +239,7 @@
               the assistant UI is completely hidden from end users.
             </p>
 
-            <template v-if="config.llm_config">
+            <form v-if="config.llm_config" class="assistant-settings-form" @submit.prevent>
               <div
                 v-if="config.llm_config.enabled && (!config.llm_config.api_base || !config.llm_config.model)"
                 class="banner banner-warning"
@@ -335,6 +336,7 @@
 
               <div class="form-group">
                 <button
+                  type="button"
                   class="btn btn-outline"
                   :disabled="llmTestRunning || !config.llm_config.api_base || !config.llm_config.model"
                   @click="testLlmConnection"
@@ -351,7 +353,7 @@
                 </div>
                 <small class="hint">Uses the unsaved values above (falling back to the stored API key when the field is empty).</small>
               </div>
-            </template>
+            </form>
           </div>
         </div>
       </div>
@@ -411,7 +413,7 @@
           </p>
           <div class="modal-actions">
             <button class="btn btn-outline" @click="showReloadConfirm = false">Back</button>
-            <button class="btn btn-warning" @click="_doReload">Discard &amp; Reload</button>
+            <button class="btn btn-warning" @click="doReload">Discard &amp; Reload</button>
           </div>
         </div>
       </div>
@@ -547,6 +549,7 @@ export default defineComponent({
     const error = ref<string | null>(null);
     const statusMessage = ref('');
     const statusType = ref<'success' | 'error' | 'info'>('info');
+    const saveRunning = ref(false);
 
     // UI state
     const activeTab = ref('project');
@@ -698,7 +701,8 @@ export default defineComponent({
     }
 
     async function saveConfig() {
-      if (!config.value) return;
+      if (!config.value || saveRunning.value) return;
+      saveRunning.value = true;
       try {
         await axios.put(`${adminBaseUrl}/config`, config.value, {
           headers: getAuthHeaders(),
@@ -709,6 +713,8 @@ export default defineComponent({
         showStatus('Configuration saved!', 'success');
       } catch (err: unknown) {
         showStatus(getRequestErrorMessage(err, 'Save failed'), 'error');
+      } finally {
+        saveRunning.value = false;
       }
     }
 
@@ -717,10 +723,10 @@ export default defineComponent({
         showReloadConfirm.value = true;
         return;
       }
-      await _doReload();
+      await doReload();
     }
 
-    async function _doReload() {
+    async function doReload() {
       showReloadConfirm.value = false;
       try {
         const resp = await axios.post(`${adminBaseUrl}/config/reload`, {}, {
@@ -932,7 +938,7 @@ export default defineComponent({
 
     return {
       authRequired, authenticated, adminToken, tokenInput, authError, authenticate,
-      config, loading, error, statusMessage, statusType,
+      config, loading, error, statusMessage, statusType, saveRunning,
       activeTab, tabs, hasChanges, datasets,
       loadConfig, saveConfig, reloadConfig, restartBackend, updateTags,
       onColumnsUpdate, openMetadataImport, openMetadataEdit, closeMetadataImport, onMetadataImported, deleteColumn,
@@ -940,7 +946,7 @@ export default defineComponent({
       showImportModal, importTarget, importMode, editColumnInfo,
       profiles, showProfileMenu, showSaveProfileModal,
       profileName, profileDescription, openSaveProfile, saveProfile, loadProfile,
-      columnsStore, showReloadConfirm, _doReload, apiBaseUrl,
+      columnsStore, showReloadConfirm, doReload, apiBaseUrl,
       llmTestRunning, llmTestResult, testLlmConnection, REDACTED_PLACEHOLDER,
     };
   },
@@ -1033,6 +1039,15 @@ export default defineComponent({
 }
 
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
 
 .btn-primary { background: #2563eb; color: white; }
 .btn-primary:hover:not(:disabled) { background: #1d4ed8; }

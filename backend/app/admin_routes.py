@@ -25,6 +25,7 @@ import logging
 import os
 import io
 import csv
+import threading
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -86,6 +87,23 @@ def get_config_manager():
 def get_service():
     """Get H5AD service from app context."""
     return current_app.h5ad_service
+
+
+def warmup_assistant_cache_async(service, config_mgr) -> None:
+    """Prime assistant caches off the request path after config changes."""
+    try:
+        from . import assistant_tools as _assistant_tools
+    except Exception:
+        return
+
+    def _run() -> None:
+        try:
+            _assistant_tools.invalidate_runtime_cache()
+            _assistant_tools.warmup_runtime_cache(service, config_mgr)
+        except Exception:
+            logger.exception("Assistant cache warmup failed")
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 # ============================================================================
@@ -246,9 +264,7 @@ def update_config():
             except Exception:
                 pass
             try:
-                from . import assistant_tools as _assistant_tools
-                _assistant_tools.invalidate_runtime_cache()
-                _assistant_tools.warmup_runtime_cache(get_service(), config_mgr)
+                warmup_assistant_cache_async(get_service(), config_mgr)
             except Exception:
                 pass
 
@@ -293,9 +309,7 @@ def reload_config():
         # Reload service with new config
         get_service().reload_config()
         try:
-            from . import assistant_tools as _assistant_tools
-            _assistant_tools.invalidate_runtime_cache()
-            _assistant_tools.warmup_runtime_cache(get_service(), config_mgr)
+            warmup_assistant_cache_async(get_service(), config_mgr)
         except Exception:
             pass
         
