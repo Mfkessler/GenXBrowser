@@ -636,7 +636,7 @@ function loadSettings() {
 
 function setDefaultColumns() {
   // Default: configured sample metadata + RNA metrics. Sample ID is always visible.
-  const primarySampleColumn = columnsStore.tissueColumnName || 'tissue';
+  const primarySampleColumn = columnsStore.defaultTraitColumnName || 'tissue';
   const defaults = [
     primarySampleColumn,
     ...RNA_METRICS

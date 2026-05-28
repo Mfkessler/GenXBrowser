@@ -763,7 +763,7 @@ class GenXBrowserService:
         """Return visible metadata columns backed by the current config."""
         column_defs = self.config_manager.get_column_definitions()
         configured_columns: List[Dict[str, Any]] = []
-        tissue_column = self.config_manager.get_config().get('tissue_column')
+        default_trait_column = self.config_manager.get_config().get('default_trait_column')
 
         for column_name, col_def in column_defs.items():
             if not col_def.get('visible', True):
@@ -790,7 +790,7 @@ class GenXBrowserService:
                 'actual_name': actual_col,
                 'type': col_def.get('type') or self._get_column_type(dtype, actual_col or column_name),
                 'order': col_def.get('order', 9999),
-                'is_tissue': sample_metadata and column_name == tissue_column,
+                'is_default_trait': sample_metadata and column_name == default_trait_column,
             })
 
         configured_columns.sort(key=lambda item: (item['order'], item['column_name']))
@@ -888,10 +888,10 @@ class GenXBrowserService:
             if not species_tags:
                 species_tags = full_name.split('_') + ['expression']
             
-            # Count unique tissues
-            tissue_count = 0
-            if 'tissue' in adata.obs.columns:
-                tissue_count = adata.obs['tissue'].dropna().nunique()
+            default_trait_count = 0
+            default_trait_column = self.config_manager.get_config().get('default_trait_column')
+            if default_trait_column in adata.obs.columns:
+                default_trait_count = adata.obs[default_trait_column].dropna().nunique()
             
             # Filter by tags if specified
             if tags:
@@ -912,7 +912,7 @@ class GenXBrowserService:
                 'tags': species_tags,
                 'photo': matched_photo,  # Photo filename or None
                 '_species_code': code,
-                '_tissue_count': tissue_count,
+                '_default_trait_count': default_trait_count,
                 '_enabled': is_enabled,  # Add enabled status
             })
         
@@ -970,7 +970,7 @@ class GenXBrowserService:
                         'description': '',
                         'format': format_str,
                         'isMeta': False,
-                        'is_tissue': col_info['is_tissue'],
+                        'is_default_trait': col_info['is_default_trait'],
                     })
 
                 columns.extend(obs_candidates)

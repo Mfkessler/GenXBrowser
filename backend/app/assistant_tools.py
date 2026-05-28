@@ -2078,7 +2078,7 @@ def tool_build_deeplink(
     # split the columns into var- (gene) and obs- (sample) filters,
     # then check `n_var_match` and `n_obs_match` independently. A table
     # is kept only if BOTH counts are non-zero (or no filter applies to
-    # that axis). This is what makes "tissue=flower" work for the
+    # that axis). This is what makes a sample-metadata filter work for the
     # Compare view: a species with zero flower samples gets dropped here
     # instead of failing the whole deeplink.
     dropped_tables: List[Dict[str, Any]] = []

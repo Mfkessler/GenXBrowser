@@ -315,8 +315,8 @@ const beautifiedLabel = computed(() => beautifyLabel(props.label) ?? "Filter");
 const availableOptionsForBatch = computed(() => {
   const columnName = props.id || props.label;
   // Check if this is a tissue column with pre-cached values
-  if (columnsStore.tissueColumnName === columnName) {
-    return columnsStore.tissueValues;
+  if (columnsStore.defaultTraitColumnName === columnName) {
+    return columnsStore.traitValues;
   }
   // Return undefined for regular text input mode
   return undefined;
@@ -526,7 +526,7 @@ async function ensureTissueValuesLoaded() {
   const columnName = props.id || props.label;
   
   // Only load if this is the tissue column and values are not yet cached
-  if (columnsStore.tissueColumnName === columnName && columnsStore.tissueValues.length === 0) {
+  if (columnsStore.defaultTraitColumnName === columnName && columnsStore.traitValues.length === 0) {
     try {
       // Fetch from all tables (same logic as SidebarComponent)
       const tablesResponse = await axios.get(`${API_BASE_URL}/api/tables`);

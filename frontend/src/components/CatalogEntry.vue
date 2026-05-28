@@ -54,8 +54,8 @@
           </h2>
           <p :class="['text-gray-400 text-sm transition-colors duration-500 text-center break-words', countFlash ? 'count-flash' : '']"><b>Count: </b>{{ displayCount }} {{ entityLabelPlural }}</p>
           <div class="flex items-center justify-center min-w-0 max-w-full">
-            <p :class="['text-gray-400 text-sm transition-colors duration-500 break-words min-w-0', tissueFlash ? 'count-flash' : '']">
-              <b>{{ defaultSampleColumnLabel }}: </b>{{ tissues }}
+            <p :class="['text-gray-400 text-sm transition-colors duration-500 break-words min-w-0', traitFlash ? 'count-flash' : '']">
+              <b>{{ defaultSampleColumnLabel }}: </b>{{ traits }}
             </p>
             <!-- Help Icon -->
             <div
@@ -79,8 +79,8 @@
         </h2>
         <p :class="['text-gray-400 text-sm transition-colors duration-500', countFlash ? 'count-flash' : '']"><b>Count: </b>{{ displayCount }} {{ entityLabelPlural }}</p>
         <div class="flex items-center">
-          <p :class="['text-gray-400 text-sm transition-colors duration-500', tissueFlash ? 'count-flash' : '']">
-            <b>{{ defaultSampleColumnLabel }}: </b>{{ tissues }}
+          <p :class="['text-gray-400 text-sm transition-colors duration-500', traitFlash ? 'count-flash' : '']">
+            <b>{{ defaultSampleColumnLabel }}: </b>{{ traits }}
           </p>
 
           <!-- Help Icon -->
@@ -294,7 +294,7 @@ const props = defineProps<{
   description: string;
   tags: string[];
   photo?: string;  // Photo filename from API
-  tissueCount?: number;
+  defaultTraitCount?: number;
   selected: boolean;
   highlightedTag?: string | null;
 }>();
@@ -304,12 +304,12 @@ const emit = defineEmits(["inspect-metadata", "inspect-data", "toggle-select", "
 const filteredCount = ref<number | null>(null);
 const loadingCount = ref(false);
 const isOG = ref(false);
-const n_tissues = ref<number | null>(null);
-const tissueTypes = ref<string[] | null>(null);
-const hasCalculatedTissues = ref(false);
+const n_traits = ref<number | null>(null);
+const traitValues = ref<string[] | null>(null);
+const hasCalculatedTraits = ref(false);
 const showBatchModal = ref(false);
 const countFlash = ref(false);
-const tissueFlash = ref(false);
+const traitFlash = ref(false);
 
 // Species photo state
 const photoUrl = ref<string | null>(null);
@@ -320,7 +320,7 @@ const showPhotoModal = ref(false);
 // Track "last settled" values so we only flash on real changes, not on
 // initial mount, loading transitions, or route-back re-renders.
 let lastSettledCount: number | null = null;
-let lastSettledTissues: number | null = null;
+let lastSettledTraits: number | null = null;
 // True once the initial onMounted load has finished; prevents false flash.
 let initialLoadDone = false;
 // Serialised snapshot of the filter object at last settle — used to detect
@@ -335,18 +335,16 @@ const displayCount = computed(() => {
   return props.dataPoints;
 });
 
-const tissues = computed(() => {
+const traits = computed(() => {
   if (loadingCount.value) return "...";
-  // Prioritize calculated value when we have actively calculated tissues
-  if (hasCalculatedTissues.value && n_tissues.value !== null) return n_tissues.value;
-  // Fall back to prop only if we haven't calculated yet
-  if (props.tissueCount !== undefined) return props.tissueCount;
-  if (n_tissues.value !== null) return n_tissues.value;
+  if (hasCalculatedTraits.value && n_traits.value !== null) return n_traits.value;
+  if (props.defaultTraitCount !== undefined) return props.defaultTraitCount;
+  if (n_traits.value !== null) return n_traits.value;
   return 0;
 });
 
 const defaultSampleColumn = computed(() => (
-  columnsStore.filterableColColumns.find((column) => column.is_tissue) ?? null
+  columnsStore.filterableColColumns.find((column) => column.is_default_trait) ?? null
 ));
 
 const defaultSampleColumnName = computed(() => defaultSampleColumn.value?.column_name ?? null);
@@ -358,10 +356,10 @@ const defaultSampleColumnLabel = computed(() => (
 
 const defaultSampleColumnTooltip = computed(() => {
   const label = defaultSampleColumnLabel.value;
-  if (tissueTypes.value && tissueTypes.value.length > 0) {
-    return `${label}: ${tissueTypes.value.join(', ')}`;
+  if (traitValues.value && traitValues.value.length > 0) {
+    return `${label}: ${traitValues.value.join(', ')}`;
   }
-  if (tissueTypes.value && tissueTypes.value.length === 0) {
+  if (traitValues.value && traitValues.value.length === 0) {
     return `No ${label} values match current filters`;
   }
   return 'Loading...';
@@ -455,10 +453,10 @@ function closePhotoModal() {
   showPhotoModal.value = false;
 }
 
-async function calculate_tissues(tableName: string, filters: Record<string, unknown>): Promise<string[]> {
+async function calculate_traits(tableName: string, filters: Record<string, unknown>): Promise<string[]> {
   try {
-    const tissueColumnName = defaultSampleColumn.value?.column_name;
-    if (!tissueColumnName) return [];
+    const defaultTraitColumnName = defaultSampleColumn.value?.column_name;
+    if (!defaultTraitColumnName) return [];
     const sampleMetadataColumns = new Set(columnsStore.filterableColColumns.map((column) => column.column_name));
     
     // Backend doesn't properly filter _meta tables, so we always fetch all data
@@ -475,15 +473,15 @@ async function calculate_tissues(tableName: string, filters: Record<string, unkn
     const data = response_data.data?.data || response_data.data || [];
     
     if (!Array.isArray(data) && typeof data !== 'object') {
-      console.warn('Invalid data structure for calculate_tissues:', data);
+      console.warn('Invalid data structure for calculate_traits:', data);
       return [];
     }
     
     const dataArray = (Array.isArray(data) ? data : Object.values(data)) as MetadataRow[];
     const filteredRows = filterMetadataRows(dataArray, filters as Record<string, MetadataFilterValue>, sampleMetadataColumns);
-    return uniqueMetadataValues(filteredRows, tissueColumnName);
+    return uniqueMetadataValues(filteredRows, defaultTraitColumnName);
   } catch (error) {
-    console.error("Error calculating tissues:", error);
+    console.error("Error calculating default trait values:", error);
     return [];
   }
 }
@@ -494,11 +492,11 @@ async function calculate_tissues(tableName: string, filters: Record<string, unkn
  * and only after the initial mount has completed (so navigating back
  * to home doesn't cause a spurious flash).
  */
-function settleAndFlash(newCount: number | null, newTissueCount: number | null, filterSnapshot: string) {
+function settleAndFlash(newCount: number | null, newTraitCount: number | null, filterSnapshot: string) {
   // On first mount we just record the baseline — no flash.
   if (!initialLoadDone) {
     lastSettledCount = newCount;
-    lastSettledTissues = newTissueCount;
+    lastSettledTraits = newTraitCount;
     lastFilterSnapshot = filterSnapshot;
     initialLoadDone = true;
     return;
@@ -507,7 +505,7 @@ function settleAndFlash(newCount: number | null, newTissueCount: number | null, 
   // with the same filters), skip flashing entirely.
   if (filterSnapshot === lastFilterSnapshot) {
     lastSettledCount = newCount;
-    lastSettledTissues = newTissueCount;
+    lastSettledTraits = newTraitCount;
     return;
   }
   // Flash count only when it actually changed
@@ -515,13 +513,13 @@ function settleAndFlash(newCount: number | null, newTissueCount: number | null, 
     countFlash.value = true;
     setTimeout(() => { countFlash.value = false; }, 600);
   }
-  // Flash tissue count only when it actually changed
-  if (newTissueCount !== lastSettledTissues) {
-    tissueFlash.value = true;
-    setTimeout(() => { tissueFlash.value = false; }, 600);
+  // Flash trait count only when it actually changed
+  if (newTraitCount !== lastSettledTraits) {
+    traitFlash.value = true;
+    setTimeout(() => { traitFlash.value = false; }, 600);
   }
   lastSettledCount = newCount;
-  lastSettledTissues = newTissueCount;
+  lastSettledTraits = newTraitCount;
   lastFilterSnapshot = filterSnapshot;
 }
 
@@ -536,7 +534,7 @@ watch(
 onMounted(() => {
   // Emit initial count (total) so the catalog store has a baseline.
   // The effectiveFilters watcher ({immediate: true}) handles the actual
-  // tissue + count fetch — including any already-active filters.
+  // Trait + count fetch, including any already-active filters.
   emit("update:filtered-count", props.tableName, null);
 });
 
@@ -549,9 +547,9 @@ watch(
     if (!props.tableName) return;
 
     if (!defaultSampleColumnName.value) {
-      hasCalculatedTissues.value = false;
-      n_tissues.value = null;
-      tissueTypes.value = null;
+      hasCalculatedTraits.value = false;
+      n_traits.value = null;
+      traitValues.value = null;
       return;
     }
 
@@ -565,30 +563,30 @@ watch(
 
     if (isEmpty) {
       filteredCount.value = null;
-      // Reset tissues to show all when filters are cleared
+      // Reset trait values to show all when filters are cleared
       loadingCount.value = true;
       try {
-        const tissues = await calculate_tissues(props.tableName, {});
-        n_tissues.value = tissues.length;
-        tissueTypes.value = tissues;
-        hasCalculatedTissues.value = true;
+        const traits = await calculate_traits(props.tableName, {});
+        n_traits.value = traits.length;
+        traitValues.value = traits;
+        hasCalculatedTraits.value = true;
       } catch (error) {
-        console.error("Error occurred fetching tissues: ", error);
-        hasCalculatedTissues.value = false;
+        console.error("Error occurred fetching default trait values: ", error);
+        hasCalculatedTraits.value = false;
       } finally {
         loadingCount.value = false;
-        settleAndFlash(props.dataPoints, n_tissues.value, snapshot);
+        settleAndFlash(props.dataPoints, n_traits.value, snapshot);
       }
       return;
     }
 
     loadingCount.value = true;
     try {
-      // Recalculate tissues with current filters
-      const tissues = await calculate_tissues(props.tableName, newFilters);
-      n_tissues.value = tissues.length;
-      tissueTypes.value = tissues;
-      hasCalculatedTissues.value = true;
+      // Recalculate trait values with current filters
+      const traits = await calculate_traits(props.tableName, newFilters);
+      n_traits.value = traits.length;
+      traitValues.value = traits;
+      hasCalculatedTraits.value = true;
 
       // Get filtered count
       const response = await axios.post(
@@ -603,10 +601,10 @@ watch(
     } catch (error) {
       console.error("Error occurred fetching count: ", error);
       filteredCount.value = null;
-      hasCalculatedTissues.value = false;
+      hasCalculatedTraits.value = false;
     } finally {
       loadingCount.value = false;
-      settleAndFlash(filteredCount.value ?? props.dataPoints, n_tissues.value, snapshot);
+      settleAndFlash(filteredCount.value ?? props.dataPoints, n_traits.value, snapshot);
     }
   },
   {immediate: true, deep: true},

@@ -130,7 +130,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useFiltersStore, type FilterChainGroup, type FilterValue } from "@/stores/filters";
-import { getDisplayName } from "@/shared/metadataDisplayNames";
+import { getDisplayName } from "@/shared/metadataFields";
 
 const props = defineProps<{
   open: boolean;

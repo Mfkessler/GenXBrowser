@@ -178,7 +178,7 @@ class ConfigManager:
         Detects old-style column_mappings (e.g. ortho_id→orthogroup) and renames
         keys in column_definitions, meta_columns, array_columns, and
         frontend_settings.default_columns to use h5ad-native names.
-        Also adds 'tissue_column' if missing, and clears old column_mappings.
+        Also migrates the legacy default sample metadata role key, and clears old column_mappings.
         """
         changed = False
 
@@ -192,13 +192,15 @@ class ConfigManager:
         )
         has_old_mappings = bool(old_mappings)
 
+        obs_cols = [k for k, v in col_defs.items() if v.get("is_sample_metadata")]
+        if "default_trait_column" not in self._config:
+            self._config["default_trait_column"] = self._config.get("tissue_column")
+            changed = True
+        if "tissue_column" in self._config:
+            del self._config["tissue_column"]
+            changed = True
+
         if not needs_migration and not has_old_mappings:
-            # Ensure tissue_column exists even on fresh configs
-            if "tissue_column" not in self._config:
-                # Auto-detect: if 'tissue' exists in obs columns, use it
-                obs_cols = [k for k, v in col_defs.items() if v.get("is_sample_metadata")]
-                self._config["tissue_column"] = "tissue" if "tissue" in obs_cols else None
-                changed = True
             if changed:
                 self._save_config()
             return
@@ -244,12 +246,6 @@ class ConfigManager:
         # 6. Clear old column_mappings (no longer needed)
         if has_old_mappings:
             self._config["column_mappings"] = {"h5ad_to_display": {}}
-            changed = True
-
-        # 7. Add tissue_column if missing
-        if "tissue_column" not in self._config:
-            obs_cols = [k for k, v in col_defs.items() if v.get("is_sample_metadata")]
-            self._config["tissue_column"] = "tissue" if "tissue" in obs_cols else None
             changed = True
 
         if changed:
@@ -438,9 +434,6 @@ class ConfigManager:
             if candidate in obs_cols:
                 default_sample_metadata_column = candidate
                 break
-        if default_sample_metadata_column is None and "tissue" in obs_cols:
-            default_sample_metadata_column = "tissue"
-        
         # Add virtual gene columns (served dynamically, not stored in .var)
         VIRTUAL_GENE_COLUMNS = [
             ("newick_str",   "text"),
@@ -481,7 +474,7 @@ class ConfigManager:
                 "default_columns": ["gene_id", "description", "ortho_id"],
                 "hidden_columns": [],
             },
-            "tissue_column": default_sample_metadata_column,
+            "default_trait_column": default_sample_metadata_column,
             "data_paths": {
                 "h5ad_dir": str(self._h5ad_dir),
             },
@@ -502,6 +495,7 @@ class ConfigManager:
             "meta_columns": [],
             "sample_metadata_columns": {"enabled": True, "columns": []},
             "frontend_settings": {"default_columns": [], "hidden_columns": []},
+            "default_trait_column": None,
             "data_paths": {"h5ad_dir": str(self._h5ad_dir)},
         }
     

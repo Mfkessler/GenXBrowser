@@ -48,7 +48,7 @@ Every command (`init`, `validate`, `build`, `app`) is a thin wrapper around this
 | File | Format |
 |---|---|
 | Normalised matrices (`tpm`, `tmm`, `getmm`) | Same shape as the count matrix; stored as additional H5AD layers |
-| Sample mapping | TSV with a `Sample` column plus arbitrary metadata columns (`tissue`, `condition`, …) |
+| Sample mapping | TSV with a `Sample` column plus arbitrary metadata columns (`trait`, `condition`, `batch`, …) |
 | RNA-seq metrics | TSV columns: `sample`, `assigned`, `pct unmapped`, `pct no_feature`, `pct trimmed` |
 | Orthogroups | TSV with `Orthogroup` + one column per species (comma-separated gene IDs) |
 | Gene trees | TXT, one entry per line: `OG_ID:newick_string` |
@@ -98,6 +98,8 @@ species:
       protein: path/to/protein.fas
       rna:     path/to/rna.fas
 ```
+
+Sample mapping columns are generic. During build, GenXPrep preserves the metadata column names in `.obs`; if your mapping or upstream H5AD marks a preferred sample column, the generated project config stores it as `default_trait_column`. Otherwise the role can be selected later in the Admin Panel.
 
 > All paths are resolved relative to `root_dir`, or - if `root_dir` is unset - relative to the directory containing `config.yml`. Absolute paths and `~` expansion are both supported.
 

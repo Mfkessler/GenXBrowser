@@ -275,7 +275,7 @@ import ExportModal from "./ExportModal.vue";
 import {useVisualizationStore} from "@/stores/visualization";
 import { getExpressionOption } from "@/shared/ExpressionDisplay";
 import TooltipModal from "./TooltipModal.vue";
-import { getDisplayName, sequenceFields, verboseFields } from "@/shared/metadataDisplayNames";
+import { getDisplayName, sequenceFields, verboseFields } from "@/shared/metadataFields";
 import { getEntityCountLabel } from "@/shared/dataTypeLabels";
 import { useClustering } from "@/shared/useClustering";
 import {
@@ -667,7 +667,7 @@ async function fetchAndPrepareData() {
 
       // Initialize default SideColors if not already set
       const rowColumnNames = columnNames.value.filter((c) => !dataColumnNames.value.includes(c));
-      // Use columnsStore.colColumns which includes 'tissue_types'
+      // Use columnsStore.colColumns which includes 'default_trait'
       const colColumnNames = columnStore.colColumns.map((c) => c.column_name);
       visualizationStore.initializeDefaultSideColors(rowColumnNames, colColumnNames);
 
@@ -789,7 +789,7 @@ function calculateSortedColumns(metaData: RowType[]): RowType[] {
 
   const customOrder = visualizationStore.customColOrder;
   if (customOrder.enabled) {
-    const tissueKey = columnStore.tissueColumnName ?? 'tissue';
+    const tissueKey = columnStore.defaultTraitColumnName ?? 'tissue';
     if (customOrder.mode === "samples" && customOrder.sampleNames.length > 0) {
       const sampleRank = new Map(customOrder.sampleNames.map((sampleName, index) => [sampleName, index]));
       return [...metaData].sort((a, b) => {
@@ -803,7 +803,7 @@ function calculateSortedColumns(metaData: RowType[]): RowType[] {
     }
 
     if (customOrder.mode === "metadata" && customOrder.metadataValues.length > 0) {
-      const metadataKey = customOrder.metadataColumn === "tissue_types" ? tissueKey : customOrder.metadataColumn;
+      const metadataKey = customOrder.metadataColumn === "default_trait" ? tissueKey : customOrder.metadataColumn;
       const valueRank = new Map(customOrder.metadataValues.map((value, index) => [value, index]));
       return [...metaData].sort((a, b) => {
         const aValue = String(a[metadataKey] ?? "");
@@ -823,9 +823,9 @@ function calculateSortedColumns(metaData: RowType[]): RowType[] {
   const primaryOrder = visualizationStore.colOrder.order;
 
   const sorted = [...metaData].sort((a, b) => {
-    // For tissue_types, use the configured tissue column
-    const tissueKey = columnStore.tissueColumnName ?? 'tissue';
-    const actualPrimaryKey = primaryKey === "tissue_types" ? tissueKey : primaryKey;
+    // For default_trait, use the configured tissue column
+    const tissueKey = columnStore.defaultTraitColumnName ?? 'tissue';
+    const actualPrimaryKey = primaryKey === "default_trait" ? tissueKey : primaryKey;
     const compPrimary = compareValues(
       a[actualPrimaryKey],
       b[actualPrimaryKey],
@@ -833,7 +833,7 @@ function calculateSortedColumns(metaData: RowType[]): RowType[] {
     );
     if (compPrimary !== 0) return compPrimary;
 
-    if (primaryKey !== "tissue_types") {
+    if (primaryKey !== "default_trait") {
       const compTissue = compareValues(
         a[tissueKey] ?? "",
         b[tissueKey] ?? "",
@@ -1940,7 +1940,7 @@ async function renderHeatmap(): Promise<boolean> {
 
       const row = data[d.rowIndex];
       const formattedSpecies = props.tableName.replace(/_/g, ' ').replace(/^\w/, (c: string) => c.toUpperCase());
-      const tissueColName = columnStore.tissueColumnName;
+      const tissueColName = columnStore.defaultTraitColumnName;
       const sampleMeta = columns.value.find(c => String(c.column_name) === d.col);
       const tissueValue = tissueColName && sampleMeta ? String(sampleMeta[tissueColName] ?? '') : null;
       const allMetaCols = Object.keys(row).filter(
@@ -1987,7 +1987,7 @@ async function renderHeatmap(): Promise<boolean> {
       <b>${getDisplayName(currentIdColumn)}:</b> ${row[currentIdColumn]}<br>
       <b>Species:</b> <i>${formattedSpecies}</i><br>
       <b>Sample:</b> ${d.col}<br>
-      ${tissueValue ? `<b>${columnStore.filterableColColumns.find(c => c.is_tissue)?.display_name ?? (tissueColName ? getDisplayName(tissueColName) : 'Group')}:</b> ${tissueValue}<br>` : ''}
+      ${tissueValue ? `<b>${columnStore.filterableColColumns.find(c => c.is_default_trait)?.display_name ?? (tissueColName ? getDisplayName(tissueColName) : 'Group')}:</b> ${tissueValue}<br>` : ''}
       <b>Value:</b> ${d.value}<br>
       ${metaHtml ? `<hr style="margin:4px 0; border-color:#888"/><div>${metaHtml}</div>` : ''}
       <hr style="margin:4px 0; border-color:#888"/>
@@ -2159,10 +2159,10 @@ async function renderHeatmap(): Promise<boolean> {
       const allColMeta = sortedColumns.value.filter((meta) =>
         allHeatmapCols.includes(String(meta.column_name ?? "")),
       );
-      if (col === "tissue_types") {
+      if (col === "default_trait") {
         xLabelsForColoring = heatmapCols;
         // Get actual tissue values from column metadata using configured tissue column
-        const tissueKey = columnStore.tissueColumnName ?? 'tissue';
+        const tissueKey = columnStore.defaultTraitColumnName ?? 'tissue';
         const filteredColMeta = sortedColumns.value.filter((meta) =>
           heatmapCols.includes(String(meta.column_name ?? "")),
         );

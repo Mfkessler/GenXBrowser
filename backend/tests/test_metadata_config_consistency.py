@@ -102,7 +102,7 @@ def test_get_all_columns_hides_removed_sample_metadata_from_sidebar():
     adata = build_adata()
     config = {
         "species": {"AT": {"enabled": True}},
-        "tissue_column": "tissue",
+        "default_trait_column": "tissue",
         "column_definitions": {
             "tissue": {
                 "display_name": "Tissue",
@@ -143,7 +143,7 @@ def test_meta_table_data_uses_dynamic_configured_sample_metadata_columns():
     adata = build_adata()
     config = {
         "species": {"AT": {"enabled": True}},
-        "tissue_column": "tissue",
+        "default_trait_column": "tissue",
         "column_definitions": {
             "tissue": {
                 "display_name": "Tissue",
@@ -215,7 +215,7 @@ def test_delete_metadata_column_cleans_stale_config_references():
     adata = build_adata()
     config = {
         "species": {"AT": {"enabled": True}},
-        "tissue_column": "condition",
+        "default_trait_column": "condition",
         "meta_columns": [],
         "sample_metadata_columns": {
             "enabled": True,
@@ -265,7 +265,7 @@ def test_delete_metadata_column_cleans_stale_config_references():
     assert updated["frontend_settings"]["default_columns"] == ["description"]
     assert updated["frontend_settings"]["hidden_columns"] == []
     assert updated["frontend_settings"]["column_order"] == ["description"]
-    assert updated["tissue_column"] is None
+    assert updated["default_trait_column"] is None
 
 
 def test_metadata_import_upserts_existing_custom_sample_column_for_another_dataset():
@@ -274,7 +274,7 @@ def test_metadata_import_upserts_existing_custom_sample_column_for_another_datas
     ps.obs.index = ["ps_sample_a", "ps_sample_b"]
     config = {
         "species": {"AT": {"enabled": True}, "PS": {"enabled": True}},
-        "tissue_column": "tissue",
+        "default_trait_column": "tissue",
         "sample_metadata_columns": {
             "enabled": True,
             "columns": ["tissue", "Group"],

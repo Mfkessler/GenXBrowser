@@ -114,11 +114,11 @@
           <!-- Default Sample Column Badge (only for obs/sample columns) -->
           <button
             v-if="element.is_sample_metadata"
-            :class="['chip-tissue-badge', { active: element.name === tissueColumn }]"
-            :title="element.name === tissueColumn ? 'This is the default sample column — click to unset' : 'Click to set as default sample column'"
-            @click.stop="toggleTissueRole(element)"
+            :class="['chip-default-trait-badge', { active: element.name === defaultTraitColumn }]"
+            :title="element.name === defaultTraitColumn ? 'This is the default sample column — click to unset' : 'Click to set as default sample column'"
+            @click.stop="toggleDefaultTraitRole(element)"
           >
-            Default{{ element.name === tissueColumn ? ' ✓' : '?' }}
+            Default{{ element.name === defaultTraitColumn ? ' ✓' : '?' }}
           </button>
 
           <!-- Edit / delete metadata columns -->
@@ -172,7 +172,7 @@ import {
   getEntityLabel,
   getEntityLabelLower,
 } from '@/shared/dataTypeLabels';
-import { sequenceFields } from '@/shared/metadataDisplayNames';
+import { sequenceFields } from '@/shared/metadataFields';
 
 export interface ChipItem {
   name: string;
@@ -211,13 +211,12 @@ export default defineComponent({
       type: Object as PropType<Record<string, ColumnDefinition>>,
       required: true,
     },
-    /** The currently configured default sample column name (stored as config.tissue_column for compatibility) */
-    tissueColumn: {
+    defaultTraitColumn: {
       type: String as PropType<string | null>,
       default: null,
     },
   },
-  emits: ['update:columns', 'add-metadata', 'edit-column', 'delete-column', 'update:tissueColumn'],
+  emits: ['update:columns', 'add-metadata', 'edit-column', 'delete-column', 'update:defaultTraitColumn'],
   setup(props, { emit }) {
     const activeTarget = ref<'var' | 'obs'>('var');
     const searchQuery = ref('');
@@ -368,10 +367,10 @@ export default defineComponent({
       emitUpdate();
     }
 
-    function toggleTissueRole(chip: ChipItem) {
+    function toggleDefaultTraitRole(chip: ChipItem) {
       // If already the default sample column, unset it; otherwise set it
-      const newVal = chip.name === props.tissueColumn ? null : chip.name;
-      emit('update:tissueColumn', newVal);
+      const newVal = chip.name === props.defaultTraitColumn ? null : chip.name;
+      emit('update:defaultTraitColumn', newVal);
     }
 
     function emitUpdate() {
@@ -441,7 +440,7 @@ export default defineComponent({
       finishEditing,
       cancelEditing,
       onDragEnd,
-      toggleTissueRole,
+      toggleDefaultTraitRole,
       shortenType,
       TYPE_OPTIONS,
       changeType,
@@ -756,7 +755,7 @@ export default defineComponent({
   background: transparent;
 }
 
-.chip-tissue-badge {
+.chip-default-trait-badge {
   font-size: 11px;
   padding: 2px 7px;
   border-radius: 4px;
@@ -768,13 +767,13 @@ export default defineComponent({
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
-.chip-tissue-badge.active {
+.chip-default-trait-badge.active {
   background: #d97706;
   color: #fff;
   border-color: #b45309;
 }
 
-.chip-tissue-badge:hover {
+.chip-default-trait-badge:hover {
   background: #f59e0b;
   color: #fff;
   border-color: #d97706;

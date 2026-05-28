@@ -40,7 +40,7 @@ def auto_discover_species(
                 "n_genes": 25000,
                 "n_samples": 100,
                 "var_columns": ["gene_id", "description", ...],
-                "obs_columns": ["tissue", "assigned", ...],
+                "obs_columns": ["trait", "assigned", ...],
             },
             ...
         }

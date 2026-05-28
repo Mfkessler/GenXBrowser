@@ -144,6 +144,10 @@
         }
       }
     },
+    "default_trait_column": {
+      "type": ["string", "null"],
+      "description": "Sample metadata column used as the default trait for grouping, coloring, and sample-axis ordering"
+    },
     "frontend_settings": {
       "type": "object",
       "description": "Frontend display settings",

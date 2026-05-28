@@ -41,7 +41,7 @@ export interface SpeciesOverview {
   var_summary: ColumnSummary[];
   obs_summary: ColumnSummary[];
   derived: {
-    tissue_distribution?: Array<{ value: string; count: number }>;
+    default_trait_distribution?: Array<{ value: string; count: number }>;
     tf_count?: number;
     tf_families?: Array<{ value: string; count: number }>;
     orthogroup_count?: number;
@@ -61,7 +61,7 @@ export interface OverviewPayload {
     has_orthogroups: boolean;
     gene_tree_count: number;
     tf_total: number;
-    tissue_union: Array<{ tissue: string; counts: Record<string, number>; total: number }>;
+    default_trait_union: Array<{ trait: string; counts: Record<string, number>; total: number }>;
   };
   species: SpeciesOverview[];
   mtime?: number;

@@ -72,7 +72,7 @@ def serialize_dataframe(df, column_defs=None):
     return records
 
 # ============================================================================
-# Schemas for request validation (matching butterfly_schema.py EXACTLY)
+# Schemas for request validation
 # ============================================================================
 
 class CommaSeparatedList(fields.Field):
@@ -86,25 +86,25 @@ class CommaSeparatedList(fields.Field):
 
 
 class TagsSchema(Schema):
-    """Schema for tags filtering (GET /butterfly/tables)."""
+    """Schema for tags filtering (GET /api/tables)."""
     tags = CommaSeparatedList(required=False, allow_none=True)
     include_disabled = fields.Boolean(required=False, allow_none=True, load_default=False)
 
 
 class ColumnNameSchema(Schema):
-    """Schema for single column name (GET /butterfly/col)."""
+    """Schema for single column name (GET /api/col)."""
     column_name = fields.String(required=True)
 
 
 class ColumnsSchema(Schema):
-    """Schema for columns listing (GET /butterfly/columns)."""
+    """Schema for columns listing (GET /api/columns)."""
     table_name = fields.String(required=False, allow_none=True)
     meta = fields.Boolean(required=False, allow_none=True)
     columns = fields.Boolean(required=False, allow_none=True)
 
 
 class ColumnBinSchema(Schema):
-    """Schema for histogram bins (GET /butterfly/column_bins)."""
+    """Schema for histogram bins (GET /api/column_bins)."""
     table_names = fields.String(required=False, allow_none=True, load_default="")
     column_name = fields.String(required=True)
     n_bins = fields.Integer(required=False, allow_none=True)
@@ -122,7 +122,7 @@ class ColumnBinSchema(Schema):
 
 
 class QueryRequestSchema(Schema):
-    """Schema for data queries (POST /butterfly/data, /butterfly/count)."""
+    """Schema for data queries (POST /api/data, /api/count)."""
     table_name = fields.String(required=True)
     columns = fields.List(fields.String(), required=False, load_default=list)
     filters = fields.Dict(keys=fields.String(), values=fields.Raw(), required=False, load_default=dict)
@@ -142,7 +142,7 @@ class QueryRequestSchema(Schema):
 
 
 class FindSimilarValuesSchema(Schema):
-    """Schema for fuzzy search (GET /butterfly/find)."""
+    """Schema for fuzzy search (GET /api/find)."""
     # NOTE: Frontend sends 'column', not 'column_name'!
     column = fields.String(required=True)
     search_term = fields.String(required=True)
@@ -150,13 +150,13 @@ class FindSimilarValuesSchema(Schema):
 
 
 class FindSimilarTagsSchema(Schema):
-    """Schema for tag search (GET /butterfly/tags)."""
+    """Schema for tag search (GET /api/tags)."""
     search_term = fields.String(required=True)
     limit = fields.Integer(required=False, load_default=10, validate=validate.Range(min=1, max=100))
 
 
 class FilterIDSchema(Schema):
-    """Schema for filter storage (POST /butterfly/id)."""
+    """Schema for filter storage (POST /api/id)."""
     id = fields.String(required=False, allow_none=True)
     filters = fields.Dict(
         keys=fields.String(),
@@ -2333,7 +2333,7 @@ def assistant_deeplink():
     # whose .var or .obs rows are entirely cleared by the requested filters.
     # Filters arrive flat under ``filters.filters`` — we split them per
     # table into var- vs obs-filters by inspecting the loaded AnnData so a
-    # sample-metadata filter (e.g. ``tissue=flower``) drops only the
+    # sample-metadata filter drops only the
     # species without matching samples instead of failing the whole
     # request with 422.
     dropped: List[Dict[str, Any]] = []

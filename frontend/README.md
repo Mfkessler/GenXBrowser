@@ -113,7 +113,8 @@ frontend/
 │   │   ├── clustering.worker.ts # Web Worker variant
 │   │   ├── Colorscales.ts       # Plotly colour-scale presets
 │   │   ├── blast.ts             # NCBI BLAST link builder
-│   │   ├── metadataDisplayNames.ts
+│   │   ├── metadataFields.ts     # Dynamic display-name helper + field groups
+│   │   ├── defaultTrait.ts       # default_trait pseudo-column helpers
 │   │   ├── tooltipDirective.ts  # Custom v-tooltip
 │   │   └── … (utility modules)
 │   ├── utils/                   # Lower-level helpers

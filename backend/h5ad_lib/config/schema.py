@@ -200,7 +200,6 @@ class ColumnTypeInference:
             "rna_seq": "RNA Sequence",
             "protein_seq": "Protein Sequence",
             "newick_str": "Newick Tree",
-            "tissue": "Tissue",
             "assigned": "Assigned Reads",
             "pct_unmapped": "% Unmapped",
             "pct_no_feature": "% No Feature",

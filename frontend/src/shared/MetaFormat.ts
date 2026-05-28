@@ -5,5 +5,5 @@ export interface MetaFormat {
   description?: string;
   format?: string;
   isMeta?: boolean;
-  is_tissue?: boolean;
+  is_default_trait?: boolean;
 }

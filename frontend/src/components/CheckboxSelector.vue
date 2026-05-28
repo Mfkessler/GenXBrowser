@@ -20,7 +20,7 @@
 //IMPORT
 import { computed } from "vue";
 
-import { getDisplayName } from "@/shared/metadataDisplayNames";
+import { getDisplayName } from "@/shared/metadataFields";
 
 //VARIABLES
 const props = defineProps<{

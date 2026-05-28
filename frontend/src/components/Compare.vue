@@ -184,7 +184,7 @@ import ExportModal from "@/components/ExportModal.vue";
 import VisualizationSettings from "@/components/VisualizationSettings.vue";
 import DropdownMenu from "@/components/DropdownMenu.vue";
 import TooltipModal from "@/components/TooltipModal.vue";
-import { getDisplayName } from "@/shared/metadataDisplayNames";
+import { getDisplayName } from "@/shared/metadataFields";
 
 import { useRoute, useRouter } from "vue-router";
 
@@ -413,7 +413,7 @@ const selectedGroupingColumn = computed(() => {
   if (configured && columnsStore.filterableColColumns.some((col) => col.column_name === configured)) {
     return configured;
   }
-  return columnsStore.tissueColumnName || columnsStore.filterableColColumns[0]?.column_name || 'tissue';
+  return columnsStore.defaultTraitColumnName || columnsStore.filterableColColumns[0]?.column_name || 'tissue';
 });
 
 const groupingColumnLabel = computed(() => {

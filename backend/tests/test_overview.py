@@ -106,7 +106,8 @@ def test_build_overview_aggregates_global_totals():
             "PS": {"enabled": True},
             "CS": {"enabled": True},
             "ZZ": {"enabled": False},
-        }
+        },
+        "default_trait_column": "tissue",
     })
     out = overview.build_overview(service, cm)
     assert out["project"]["name"] == "Test"
@@ -120,30 +121,28 @@ def test_build_overview_aggregates_global_totals():
 def test_build_overview_gates_on_column_presence():
     overview.invalidate_cache()
     service = FakeService({"PS": _make_adata_full(), "CS": _make_adata_sparse()})
-    cm = FakeCM({"species": {"PS": {"enabled": True}, "CS": {"enabled": True}}})
+    cm = FakeCM({"species": {"PS": {"enabled": True}, "CS": {"enabled": True}}, "default_trait_column": "tissue"})
     out = overview.build_overview(service, cm)
     ps = next(s for s in out["species"] if s["code"] == "PS")
     cs = next(s for s in out["species"] if s["code"] == "CS")
 
-    # PS has tissue/tf/ortho signals.
-    assert "tissue_distribution" in ps["derived"]
+    assert "default_trait_distribution" in ps["derived"]
     assert ps["derived"]["tf_count"] == 2
     assert ps["derived"]["orthogroup_count"] == 2
     assert "qc_metrics" in ps["derived"]
     assert "pct_unmapped" in ps["derived"]["qc_metrics"]
-    # CS has none — no tissue, no tf, no orthogroup.
-    assert "tissue_distribution" not in cs["derived"]
+    assert "default_trait_distribution" not in cs["derived"]
     assert "tf_count" not in cs["derived"]
     assert "orthogroup_count" not in cs["derived"]
 
 
-def test_build_overview_tissue_union_totals():
+def test_build_overview_default_trait_union_totals():
     overview.invalidate_cache()
     service = FakeService({"PS": _make_adata_full()})
-    cm = FakeCM({"species": {"PS": {"enabled": True}}})
+    cm = FakeCM({"species": {"PS": {"enabled": True}}, "default_trait_column": "tissue"})
     out = overview.build_overview(service, cm)
-    tissues = {row["tissue"]: row["total"] for row in out["global"]["tissue_union"]}
-    assert tissues == {"leaf": 2, "root": 2, "flower": 1}
+    traits = {row["trait"]: row["total"] for row in out["global"]["default_trait_union"]}
+    assert traits == {"leaf": 2, "root": 2, "flower": 1}
 
 
 def test_disabled_species_excluded():

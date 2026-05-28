@@ -147,7 +147,7 @@ species:
     #   - The first metadata column becomes the default sample column
     #
     # Example:
-    #   Sample    tissue              group    condition
+    #   Sample    trait               group    condition
     #   AC_J_1    Petal early stage   A        control
     #   AC_Q_2    Young leaf          B        treated
     #

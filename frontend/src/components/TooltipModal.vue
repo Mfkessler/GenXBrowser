@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { getDisplayName, sequenceFields } from "@/shared/metadataDisplayNames";
+import { getDisplayName, sequenceFields } from "@/shared/metadataFields";
 import { useColumnsStore } from "@/stores/columns";
 import axios from "axios";
 import { API_BASE_URL } from "@/shared/Config";

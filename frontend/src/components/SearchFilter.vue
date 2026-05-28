@@ -1,7 +1,7 @@
 <template>
   <div class="relative py-1 border-b border-white bg-gray-50">
     <CollapseWrapper
-      v-if="label !== 'tissue_types'"
+      v-if="label !== 'default_trait'"
       ref="collapseWrapperRef"
       v-model="collapseWrapperIsOpen"
       :disabled="!pillItemsActive"

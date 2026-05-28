@@ -289,7 +289,7 @@ import ShareOverlay from "./ShareOverlay.vue";
 import ExportModal from "./ExportModal.vue";
 import OraTooltipModal from "./OraTooltipModal.vue";
 import { beautifyLabel, compareValues } from "@/shared/utils";
-import { getDisplayName } from "@/shared/metadataDisplayNames";
+import { getDisplayName } from "@/shared/metadataFields";
 import { useVisualizationStore } from "@/stores/visualization";
 import { useColumnsStore } from "@/stores/columns";
 import { useAssistantStore } from "@/stores/assistant";

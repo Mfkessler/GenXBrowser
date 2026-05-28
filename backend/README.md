@@ -33,7 +33,7 @@ $H5AD_DATA_DIR/
 └── filters/                        # content-addressed filter hashes ($FILTER_STORE_PATH)
 ```
 
-On first boot, `h5ad_lib.core.discovery` scans `$H5AD_DATA_DIR` for `.h5ad` files, infers species (from `.uns`), column types (from `.var` / `.obs` dtypes) and default frontend settings, and writes `project_config.json`. The schema lives in [`app/config_schema.json`](app/config_schema.json); validation is handled by `h5ad_lib.config.schema`. All subsequent edits are made through the Admin API and the schema is re-validated on write.
+On first boot, `h5ad_lib.core.discovery` scans `$H5AD_DATA_DIR` for `.h5ad` files, infers species (from `.uns`), column types (from `.var` / `.obs` dtypes) and default frontend settings, and writes `project_config.json`. Projects may set `default_trait_column` to any `.obs` sample metadata column; the frontend exposes that role as the `default_trait` pseudo-column for sample-axis colouring and ordering. The schema lives in [`app/config_schema.json`](app/config_schema.json); validation is handled by `h5ad_lib.config.schema`. All subsequent edits are made through the Admin API and the schema is re-validated on write.
 
 H5AD invariants the backend relies on:
 
@@ -44,6 +44,8 @@ H5AD invariants the backend relies on:
 | `.var` | Gene metadata (index = gene ID) |
 | `.obs` | Sample metadata (index = sample ID) |
 | `.uns` | Species name, project name, free-form annotations |
+
+Dynamic display names and the default trait role are managed through the Admin metadata editor.
 
 ## Development Workflow
 

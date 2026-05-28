@@ -1,4 +1,5 @@
 import { defineStore } from "pinia";
+import { DEFAULT_TRAIT_COLUMN, normalizeDefaultTraitColumn, normalizeDefaultTraitColumns } from "@/shared/defaultTrait";
 
 export interface ExpressionDisplayState {
   optionId: string; // 'tpm', 'tmm', 'getmm', 'log2', 'zscore', 'raw'
@@ -127,13 +128,13 @@ function getDefaultState(): VisualizationState {
     rowLabel: true,
     colLabel: true,
     rowSideColors: [],  // Will be initialized with ['ortho_id'] if available
-    colSideColors: [],  // Will be initialized with ['tissue_types'] if available
+    colSideColors: [],
     rowOrder: { name: "", order: "asc" },
     colOrder: { name: "", order: "asc" },
     customColOrder: {
       enabled: false,
       mode: "metadata",
-      metadataColumn: "tissue_types",
+      metadataColumn: DEFAULT_TRAIT_COLUMN,
       metadataValues: [],
       sampleNames: [],
     },
@@ -196,7 +197,7 @@ export const useVisualizationStore = defineStore("visualization", {
     initialize(id_column: string, availableRowColumns?: string[], availableColColumns?: string[]) {
       // Set config-dependent data here
       this.rowOrder.name = id_column;
-      this.colOrder.name = "tissue_types"; // Default column order — assumes tissue_types is available
+      this.colOrder.name = DEFAULT_TRAIT_COLUMN;
       this.oraColumnName = "ortho_id"; // Default ORA grouping column — requires ortho_id data
       this.oraOrder.name = "p_value";
       
@@ -205,9 +206,8 @@ export const useVisualizationStore = defineStore("visualization", {
         this.rowSideColors = ['ortho_id'];
       }
       
-      // Set default colSideColors to include 'tissue_types' if available
-      if (availableColColumns && availableColColumns.includes('tissue_types') && this.colSideColors.length === 0) {
-        this.colSideColors = ['tissue_types'];
+      if (availableColColumns && availableColColumns.includes(DEFAULT_TRAIT_COLUMN) && this.colSideColors.length === 0) {
+        this.colSideColors = [DEFAULT_TRAIT_COLUMN];
       }
     },
     toggleRowLabel() {
@@ -439,8 +439,8 @@ export const useVisualizationStore = defineStore("visualization", {
       if (this.rowSideColors.length === 0 && availableRowColumns.includes('ortho_id')) {
         this.rowSideColors = ['ortho_id'];
       }
-      if (this.colSideColors.length === 0 && availableColColumns.includes('tissue_types')) {
-        this.colSideColors = ['tissue_types'];
+      if (this.colSideColors.length === 0 && availableColColumns.includes(DEFAULT_TRAIT_COLUMN)) {
+        this.colSideColors = [DEFAULT_TRAIT_COLUMN];
       }
     },
     reset() {
@@ -463,9 +463,15 @@ export const useVisualizationStore = defineStore("visualization", {
             this.customColOrder = {
               ...this.customColOrder,
               ...customOrder,
+              metadataColumn: normalizeDefaultTraitColumn(customOrder.metadataColumn ?? this.customColOrder.metadataColumn),
               metadataValues: Array.isArray(customOrder.metadataValues) ? [...customOrder.metadataValues] : this.customColOrder.metadataValues,
               sampleNames: Array.isArray(customOrder.sampleNames) ? [...customOrder.sampleNames] : this.customColOrder.sampleNames,
             };
+          } else if (key === 'colSideColors') {
+            this.colSideColors = Array.isArray(value) ? normalizeDefaultTraitColumns(value as string[]) : this.colSideColors;
+          } else if (key === 'colOrder') {
+            const order = value as VisualizationState["colOrder"];
+            this.colOrder = { ...this.colOrder, ...order, name: normalizeDefaultTraitColumn(order.name) };
           } else if (key === 'clustering') {
             const clustering = value as Partial<ClusteringState>;
             this.clustering = {

@@ -44,7 +44,7 @@
         :description="entry.description"
         :tags="entry.tags"
         :photo="entry.photo"
-        :tissue-count="entry._tissue_count"
+        :default-trait-count="entry._default_trait_count"
         :selected="catalogStore.isSelected(entry.table_name)"
         @toggle-select="catalogStore.toggleSelection($event)"
         @update:filtered-count="onFilteredCountUpdate"

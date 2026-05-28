@@ -3,15 +3,16 @@ import axios from "axios";
 
 import { type MetaFormat } from "@/shared/MetaFormat";
 import { API_BASE_URL } from "@/shared/Config";
+import { DEFAULT_TRAIT_COLUMN } from "@/shared/defaultTrait";
 
 export interface ColumnsState {
   rowColumns: MetaFormat[];
   colColumns: MetaFormat[];
   // Columns available for filtering in the Samples tab
   filterableColColumns: MetaFormat[];
-  // Columns available for Column Order dropdown (includes tissue_types)
+  // Columns available for Column Order dropdown (includes the default trait pseudo-column)
   orderableColColumns: MetaFormat[];
-  // Cached distinct values for specific columns (e.g., tissue types)
+  // Cached distinct values for specific columns
   distinctValues: Record<string, string[]>;
   // Currently loaded sample metadata rows from active visualizations
   sampleMetadata: Record<string, unknown>[];
@@ -33,52 +34,48 @@ export const useColumnsStore = defineStore("columns", {
   }),
   actions: {
     setRowColumns(columns: MetaFormat[]) {
-      // Filter out columns that are sample-level (is_tissue marks the tissue col as obs-only)
-      this.rowColumns = columns.filter(c => !c.is_tissue);
+      this.rowColumns = columns.filter(c => !c.is_default_trait);
     },
     setColColumns(columns: MetaFormat[]) {
       // Filter out hidden internal columns
       const cleaned = columns.filter(c => !HIDDEN_COL_COLUMNS.includes(c.column_name.toLowerCase()));
-      // Find the column the admin has marked as the tissue role
-      const tissueColEntry = cleaned.find(c => c.is_tissue);
-      const nonTissueColumns = cleaned.filter(c => !c.is_tissue);
+      const defaultTraitEntry = cleaned.find(c => c.is_default_trait);
+      const regularColumns = cleaned.filter(c => !c.is_default_trait);
 
-      if (tissueColEntry) {
-        const tissueDisplayName = tissueColEntry.display_name || tissueColEntry.column_name;
+      if (defaultTraitEntry) {
+        const defaultTraitDisplayName = defaultTraitEntry.display_name || defaultTraitEntry.column_name;
 
-        // For filtering: use the tissue column directly (it has the actual values)
+        // For filtering: use the configured source column directly because it has the actual values.
         this.filterableColColumns = [
           {
-            column_name: tissueColEntry.column_name,
-            type: tissueColEntry.type || "text",
-            display_name: tissueDisplayName,
-            is_tissue: true,
+            column_name: defaultTraitEntry.column_name,
+            type: defaultTraitEntry.type || "text",
+            display_name: defaultTraitDisplayName,
+            is_default_trait: true,
           },
-          ...nonTissueColumns,
+          ...regularColumns,
         ];
 
-        // For ordering: use only the tissue_types pseudo-column so the Tissue option
-        // matches the ColSideColors/SampleColor option and does not appear twice.
+        // For ordering/coloring: expose the role as a single pseudo-column so the
+        // configured source column does not appear twice.
         this.orderableColColumns = [
-          ...nonTissueColumns,
-          { column_name: "tissue_types", type: "text", display_name: tissueDisplayName },
+          ...regularColumns,
+          { column_name: DEFAULT_TRAIT_COLUMN, type: "text", display_name: defaultTraitDisplayName },
         ];
 
-        // colColumns for ColSideColors: tissue_types pseudo-column carries the admin display name
         this.colColumns = [
-          ...nonTissueColumns,
-          { column_name: "tissue_types", type: "text", display_name: tissueDisplayName },
+          ...regularColumns,
+          { column_name: DEFAULT_TRAIT_COLUMN, type: "text", display_name: defaultTraitDisplayName },
         ];
       } else {
-        // No tissue column configured — keep original columns as-is
         this.filterableColColumns = cleaned;
         this.orderableColColumns = [
           ...cleaned,
-          { column_name: "tissue_types", type: "text" },
+          { column_name: DEFAULT_TRAIT_COLUMN, type: "text" },
         ];
         this.colColumns = [
           ...cleaned,
-          { column_name: "tissue_types", type: "text" },
+          { column_name: DEFAULT_TRAIT_COLUMN, type: "text" },
         ];
       }
     },
@@ -123,16 +120,14 @@ export const useColumnsStore = defineStore("columns", {
     allColumns(state): MetaFormat[] {
       return [...state.rowColumns, ...state.filterableColColumns];
     },
-    // Get tissue column name if it exists
-    tissueColumnName(state): string | null {
-      const tissueCol = state.filterableColColumns.find(c => c.is_tissue);
-      return tissueCol?.column_name || null;
+    defaultTraitColumnName(state): string | null {
+      const defaultTraitColumn = state.filterableColColumns.find(c => c.is_default_trait);
+      return defaultTraitColumn?.column_name || null;
     },
-    // Get cached tissue values
-    tissueValues(state): string[] {
-      const tissueCol = state.filterableColColumns.find(c => c.is_tissue);
-      if (tissueCol) {
-        return state.distinctValues[tissueCol.column_name] || [];
+    traitValues(state): string[] {
+      const defaultTraitColumn = state.filterableColColumns.find(c => c.is_default_trait);
+      if (defaultTraitColumn) {
+        return state.distinctValues[defaultTraitColumn.column_name] || [];
       }
       return [];
     },

@@ -164,7 +164,7 @@ import LoadingOverlay from "@/components/LoadingOverlay.vue";
 import NoNewickComponent from "@/components/NoNewickComponent.vue";
 import TooltipModal from "@/components/TooltipModal.vue";
 import DropdownMenu from "@/components/DropdownMenu.vue";
-import { getDisplayName } from "@/shared/metadataDisplayNames";
+import { getDisplayName } from "@/shared/metadataFields";
 import { beautifyLabel } from "@/shared/utils";
 import { getEntityIdLabel } from "@/shared/dataTypeLabels";
 import { mean, median } from "@/shared/aggregation";
@@ -397,7 +397,7 @@ const selectedGroupingColumn = computed(() => {
   if (configured && columnStore.filterableColColumns.some((col) => col.column_name === configured)) {
     return configured;
   }
-  return columnStore.tissueColumnName || columnStore.filterableColColumns[0]?.column_name || 'tissue';
+  return columnStore.defaultTraitColumnName || columnStore.filterableColColumns[0]?.column_name || 'tissue';
 });
 
 const groupingColumnLabel = computed(() => {

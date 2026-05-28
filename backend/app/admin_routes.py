@@ -1173,8 +1173,8 @@ def delete_metadata_column(column_name):
         if column_name in values:
             frontend_settings[key] = [value for value in values if value != column_name]
 
-    if config.get('tissue_column') == column_name:
-        config['tissue_column'] = None
+    if config.get('default_trait_column') == column_name:
+        config['default_trait_column'] = None
     
     config_mgr.update_config(config)
     service.reload_config()

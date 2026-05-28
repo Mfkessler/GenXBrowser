@@ -3,7 +3,7 @@ Data-agnostic overview aggregation for the landing page.
 
 Builds a single response describing every enabled species in the project:
 per-dataset sample/gene counts, layer availability, metadata coverage ratios,
-tissue distributions, TF / orthogroup / gene-tree totals. Results are cached
+default-trait distributions, TF / orthogroup / gene-tree totals. Results are cached
 per (species, h5ad-mtime) to avoid re-scanning AnnData objects on every
 request. All outputs are data-driven — fields that are absent in a given
 dataset are omitted rather than zero-padded, so the frontend can gate
@@ -39,7 +39,6 @@ KNOWN_ANNOTATIONS = {
         "ortho_id",
     ],
     "obs": [
-        "tissue",
         "assigned",
         "pct_unmapped",
         "pct_no_feature",
@@ -174,7 +173,7 @@ def _column_summary(series: pd.Series, name: str) -> Dict[str, Any]:
     return summary
 
 
-def _build_species_overview(service, code: str) -> Optional[Dict[str, Any]]:
+def _build_species_overview(service, config_manager, code: str) -> Optional[Dict[str, Any]]:
     adata = service.registry.load(code)
     if adata is None:
         return None
@@ -221,8 +220,13 @@ def _build_species_overview(service, code: str) -> Optional[Dict[str, Any]]:
 
     # Derived high-signal facts for widgets.
     derived: Dict[str, Any] = {}
-    if "tissue" in obs_cols:
-        derived["tissue_distribution"] = _top_values(adata.obs["tissue"], k=20)
+    default_trait_column = None
+    try:
+        default_trait_column = config_manager.get_config().get("default_trait_column")
+    except Exception:
+        default_trait_column = None
+    if default_trait_column in obs_cols:
+        derived["default_trait_distribution"] = _top_values(adata.obs[default_trait_column], k=20)
     if "is_tf" in var_cols:
         try:
             tf_mask = adata.var["is_tf"].astype(bool)
@@ -273,7 +277,7 @@ def build_overview(service, config_manager) -> Dict[str, Any]:
             per_species.append(_CACHE[key])
             continue
         try:
-            entry = _build_species_overview(service, code)
+            entry = _build_species_overview(service, config_manager, code)
         except Exception as e:
             logger.warning("Overview build failed for %s: %s", code, e)
             entry = None
@@ -286,10 +290,10 @@ def build_overview(service, config_manager) -> Dict[str, Any]:
     n_samples = sum(s["n_samples"] for s in per_species)
     n_genes = sum(s["n_genes"] for s in per_species)
 
-    tissue_union: Dict[str, Dict[str, int]] = {}
+    default_trait_union: Dict[str, Dict[str, int]] = {}
     for s in per_species:
-        for item in s["derived"].get("tissue_distribution", []) or []:
-            row = tissue_union.setdefault(item["value"], {})
+        for item in s["derived"].get("default_trait_distribution", []) or []:
+            row = default_trait_union.setdefault(item["value"], {})
             row[s["code"]] = row.get(s["code"], 0) + int(item["count"])
 
     total_orthogroups = 0
@@ -338,9 +342,9 @@ def build_overview(service, config_manager) -> Dict[str, Any]:
             "has_orthogroups": any_ortho,
             "gene_tree_count": gene_tree_count,
             "tf_total": tf_total,
-            "tissue_union": [
-                {"tissue": t, "counts": counts, "total": sum(counts.values())}
-                for t, counts in sorted(tissue_union.items(), key=lambda kv: -sum(kv[1].values()))
+            "default_trait_union": [
+                {"trait": trait, "counts": counts, "total": sum(counts.values())}
+                for trait, counts in sorted(default_trait_union.items(), key=lambda kv: -sum(kv[1].values()))
             ],
         },
         "species": per_species,

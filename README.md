@@ -26,7 +26,7 @@ flowchart LR
     E --> U((User))
 ```
 
-Each stage is independent: [GenXPrep](prepare/README.md) validates and packages the provided expression matrices (raw counts and, where available, pre-computed normalised values such as TPM, TMM or geTMM) together with all supplied metadata (sample mappings, GO terms, etc.) into H5AD files, embedding them in `.obs` and `.var` accordingly. The backend serves the resulting H5AD files read-only, and the frontend is a static SPA that talks to the backend over `/api/*`.
+Each stage is independent: [GenXPrep](prepare/README.md) validates and packages the provided expression matrices (raw counts and, where available, pre-computed normalised values such as TPM, TMM or geTMM) together with all supplied metadata (sample mappings, GO terms, etc.) into H5AD files, embedding them in `.obs` and `.var` accordingly. A sample metadata column can be marked as the configurable `default_trait_column` for grouping, colouring, and sample-axis ordering; it is not required to have any fixed column name. The backend serves the resulting H5AD files read-only, and the frontend is a static SPA that talks to the backend over `/api/*`.
 
 ## ⚡ Quick Start
 
@@ -64,7 +64,7 @@ The `backend/` and `frontend/` directories each provide a `Dockerfile` (`python:
 - 🌳 **Phylogenetic Trees** - Newick gene-family trees rendered with phylotree + D3.
 - **Cross-Species Comparison** - box plots of orthologous expression across selected species.
 - 🤖 **AI Assistant** *(opt-in)* - chat panel that reads the live UI state and proposes one-click filter / view changes. Activates only when `LLM_API_BASE`, `LLM_API_KEY` and `LLM_MODEL` are set on the backend.
-- **Admin Panel** - runtime config editing at `/admin`, optionally protected by `ADMIN_TOKEN`.
+- **Admin Panel** - runtime config editing at `/admin`, including dynamic metadata display names and default trait selection, optionally protected by `ADMIN_TOKEN`.
 
 ## ⚙️ Runtime Configuration
 

@@ -145,7 +145,7 @@ import { useFiltersStore, type FilterValue } from "@/stores/filters";
 import SearchFilter from "./SearchFilter.vue";
 import GlobalFilterChainModal from "./GlobalFilterChainModal.vue";
 import { getEntityLabelPlural } from "@/shared/dataTypeLabels";
-import { getDisplayName, sequenceFields } from "@/shared/metadataDisplayNames";
+import { getDisplayName, sequenceFields } from "@/shared/metadataFields";
 
 const config = inject("config") as Config;
 
@@ -289,7 +289,7 @@ function extractTissueValues(data: Record<string, unknown>[], tissueColName: str
 }
 
 async function fetchTissueValuesForAllTables() {
-  const tissueColName = columnsStore.tissueColumnName;
+  const tissueColName = columnsStore.defaultTraitColumnName;
   if (!tissueColName) return;
   
   try {
@@ -328,7 +328,7 @@ async function fetchTissueValuesForAllTables() {
 }
 
 async function fetchTissueValues() {
-  const tissueColName = columnsStore.tissueColumnName;
+  const tissueColName = columnsStore.defaultTraitColumnName;
   const tableName = currentTableName.value;
   
   if (!tissueColName) return;
@@ -360,7 +360,7 @@ async function fetchTissueValues() {
 
 // Fetch tissue values when table is available or changes
 watch(currentTableName, async () => {
-  if (columnsStore.tissueColumnName) {
+  if (columnsStore.defaultTraitColumnName) {
     await fetchTissueValues();
   }
 }, { immediate: true });

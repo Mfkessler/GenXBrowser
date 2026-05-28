@@ -35,7 +35,7 @@ function makeDeps(): TestDeps {
     customColOrder: {
       enabled: false,
       mode: "metadata",
-      metadataColumn: "tissue_types",
+      metadataColumn: "default_trait",
       metadataValues: [],
       sampleNames: [],
     },
@@ -70,7 +70,7 @@ function makeDeps(): TestDeps {
         { column_name: "is_tf", display_name: "Is TF", type: "boolean" },
       ],
       colColumns: [
-        { column_name: "tissue_types", display_name: "Tissue" },
+        { column_name: "default_trait", display_name: "Tissue" },
         { column_name: "condition", display_name: "Condition" },
       ],
       filterableColColumns: [
@@ -78,7 +78,7 @@ function makeDeps(): TestDeps {
         { column_name: "condition", display_name: "Condition" },
       ],
       orderableColColumns: [
-        { column_name: "tissue_types", display_name: "Tissue" },
+        { column_name: "default_trait", display_name: "Tissue" },
         { column_name: "condition", display_name: "Condition" },
       ],
       sampleMetadata: [{ column_name: "sample_a" }, { column_name: "sample_b" }],
@@ -119,7 +119,7 @@ describe("assistant visualization action guardrails", () => {
   });
 
   it("rejects sample metadata in row-axis settings", async () => {
-    const action = vizAction({ rowSideColors: ["tissue_types"] });
+    const action = vizAction({ rowSideColors: ["default_trait"] });
     const mutated = await createAssistantActionDispatcher(makeDeps()).dispatch(action);
 
     expect(mutated).toBe(false);
@@ -131,7 +131,7 @@ describe("assistant visualization action guardrails", () => {
     const deps = makeDeps();
     const action = vizAction({
       rowSideColors: ["ortho_id", "tf_family"],
-      colSideColors: ["tissue_types"],
+      colSideColors: ["default_trait"],
       compare: { groupingColumn: "tissue" },
     });
 
@@ -140,7 +140,7 @@ describe("assistant visualization action guardrails", () => {
     expect(mutated).toBe(true);
     expect(action.status).toBe("applied");
     expect(deps.visualizationStore.$state.rowSideColors).toEqual(["ortho_id", "tf_family"]);
-    expect(deps.visualizationStore.$state.colSideColors).toEqual(["tissue_types"]);
+    expect(deps.visualizationStore.$state.colSideColors).toEqual(["default_trait"]);
   });
 
   it("resolves display names before axis validation", async () => {
@@ -155,7 +155,7 @@ describe("assistant visualization action guardrails", () => {
     expect(mutated).toBe(true);
     expect(action.status).toBe("applied");
     expect(deps.visualizationStore.$state.rowSideColors).toEqual(["ortho_id", "tf_family"]);
-    expect(deps.visualizationStore.$state.colSideColors).toEqual(["tissue_types", "condition"]);
+    expect(deps.visualizationStore.$state.colSideColors).toEqual(["default_trait", "condition"]);
     expect(action.summary).toContain("Orthogroup");
     expect(action.summary).toContain("Condition");
   });

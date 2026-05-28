@@ -908,7 +908,7 @@ import {
   EXPRESSION_SECTIONS,
   getExpressionOption,
 } from "@/shared/ExpressionDisplay";
-import { getDisplayName, sequenceFields } from "@/shared/metadataDisplayNames";
+import { getDisplayName, sequenceFields } from "@/shared/metadataFields";
 import { getEntityLabelPlural, getMinimumCountLabel, getEntityLabelPluralLower } from "@/shared/dataTypeLabels";
 
 const columnsStore = useColumnsStore();
@@ -1183,7 +1183,7 @@ const onCompareExpressionChange = (event: Event) => {
 const groupingColumnOptions = computed<Record<string, string>>(() => toOptionsRecord(columnsStore.filterableColColumns));
 
 function defaultGroupingColumn(): string {
-  if (columnsStore.tissueColumnName) return columnsStore.tissueColumnName;
+  if (columnsStore.defaultTraitColumnName) return columnsStore.defaultTraitColumnName;
   return columnsStore.filterableColColumns[0]?.column_name || '';
 }
 
@@ -1197,7 +1197,7 @@ const selectedGroupingColumn = computed(() => {
 });
 
 const selectedGroupingColumnLabel = computed(() => groupingColumnOptions.value[selectedGroupingColumn.value] || selectedGroupingColumn.value);
-const axisOrderColumn = computed(() => selectedGroupingColumn.value || defaultGroupingColumn() || "tissue_types");
+const axisOrderColumn = computed(() => selectedGroupingColumn.value || defaultGroupingColumn() || "default_trait");
 const axisOnlyColumnOrderEnabled = computed(() => axisOnlyCustomOrder.value && Boolean(store.colOrder.name));
 
 function setGroupingColumn(columnName: string) {
@@ -1274,12 +1274,12 @@ const colOrderOptions = computed<Record<string, string>>(() => {
   if (axisOnlyCustomOrder.value) {
     return { [axisOrderColumn.value]: selectedGroupingColumnLabel.value };
   }
-  // Use orderableColColumns for Column Order dropdown (includes tissue_types)
+  // Use orderableColColumns for Column Order dropdown (includes default_trait)
   return toOptionsRecord(columnsStore.orderableColColumns);
 });
 
 const colSideColorOptions = computed<string[]>(() =>
-  // Use colColumns for ColSideColors (only tissue_types, not individual tissue columns)
+  // Use colColumns for ColSideColors (only default_trait, not individual tissue columns)
   sortMetadataColumns(columnsStore.colColumns).map((c) => c.column_name),
 );
 
@@ -1312,7 +1312,7 @@ const customOrderEnabled = computed({
 });
 
 const customOrderMetadataColumn = computed({
-  get: () => store.customColOrder.metadataColumn || "tissue_types",
+  get: () => store.customColOrder.metadataColumn || "default_trait",
   set: (metadataColumn: string) => {
     store.setCustomColOrderState({ metadataColumn, metadataValues: getMetadataValues(metadataColumn) });
   },
@@ -1351,8 +1351,8 @@ function arraysEqual(a: string[], b: string[]): boolean {
 }
 
 function getMetadataValues(columnName: string): string[] {
-  const metadataColumn = columnName || "tissue_types";
-  const lookupKey = metadataColumn === "tissue_types" ? (columnsStore.tissueColumnName ?? "tissue") : metadataColumn;
+  const metadataColumn = columnName || "default_trait";
+  const lookupKey = metadataColumn === "default_trait" ? (columnsStore.defaultTraitColumnName ?? "tissue") : metadataColumn;
   const values = new Set<string>();
   for (const record of columnsStore.sampleMetadata) {
     const value = record[lookupKey];
@@ -1403,7 +1403,7 @@ async function loadSampleMetadataForVisibleTables() {
 }
 
 function ensureCustomOrderLists() {
-  const metadataColumn = axisOnlyCustomOrder.value ? axisOrderColumn.value : store.customColOrder.metadataColumn || "tissue_types";
+  const metadataColumn = axisOnlyCustomOrder.value ? axisOrderColumn.value : store.customColOrder.metadataColumn || "default_trait";
   const metadataValues = withMissingValues(
     store.customColOrder.metadataValues,
     axisOnlyCustomOrder.value ? getAxisValues() : getMetadataValues(metadataColumn),
@@ -1443,8 +1443,8 @@ function resetCustomOrder() {
   store.setCustomColOrderState({
     enabled: false,
     mode: "metadata",
-    metadataColumn: axisOnlyCustomOrder.value ? axisOrderColumn.value : "tissue_types",
-    metadataValues: axisOnlyCustomOrder.value ? getAxisValues() : getMetadataValues("tissue_types"),
+    metadataColumn: axisOnlyCustomOrder.value ? axisOrderColumn.value : "default_trait",
+    metadataValues: axisOnlyCustomOrder.value ? getAxisValues() : getMetadataValues("default_trait"),
     sampleNames: sampleNames.value,
   });
 }

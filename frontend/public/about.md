@@ -15,7 +15,7 @@ GenXBrowser visualizes gene expression data stored in AnnData (.h5ad) files. Sel
 - **Advanced Filtering** - Filter genes by GO terms, descriptions, EC numbers, and custom metadata columns
 - **Gene Ontology** - Integrated GO term search with autocomplete and hierarchy navigation
 - **Shareable States** - Export filtered data as TSV and share filter configurations via URL
-- **Sample Metadata** - Filter and color by tissue types, conditions, and experimental metadata
+- **Sample Metadata** - Filter and color by configurable sample traits, conditions, and experimental metadata
 
 ## Technology
 

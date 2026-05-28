@@ -1,7 +1,7 @@
 """Sample mapping validator – validates sample metadata mapping files.
 
 Expected format: TSV with a ``sample`` column (case-insensitive) and any
-number of additional sample metadata columns (e.g. ``tissue``, ``condition``,
+number of additional sample metadata columns (e.g. ``trait``, ``condition``,
 ``cell_type``, ``group``). The first metadata column is treated as the default
 sample metadata column by the builder; all metadata columns are preserved.
 """
@@ -74,7 +74,7 @@ def validate_sample_mapping(
     if not metadata_cols:
         vr.warn(
             "Sample mapping has only one column; no sample metadata available.",
-            suggestion="Add one or more columns (e.g. 'tissue', 'group', 'condition') for sample metadata.",
+            suggestion="Add one or more columns (e.g. 'trait', 'group', 'condition') for sample metadata.",
         )
 
     df = df.rename(columns={sample_col: "Sample"})
