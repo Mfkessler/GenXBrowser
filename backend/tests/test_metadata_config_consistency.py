@@ -222,11 +222,6 @@ def test_delete_metadata_column_cleans_stale_config_references():
             "columns": ["condition", "tissue"],
             "default_visible_columns": ["condition"],
         },
-        "frontend_settings": {
-            "default_columns": ["condition", "description"],
-            "hidden_columns": ["condition"],
-            "column_order": ["condition", "description"],
-        },
         "column_definitions": {
             "condition": {
                 "display_name": "Condition",
@@ -262,9 +257,6 @@ def test_delete_metadata_column_cleans_stale_config_references():
     assert "condition" not in updated["column_definitions"]
     assert updated["sample_metadata_columns"]["columns"] == ["tissue"]
     assert updated["sample_metadata_columns"]["default_visible_columns"] == []
-    assert updated["frontend_settings"]["default_columns"] == ["description"]
-    assert updated["frontend_settings"]["hidden_columns"] == []
-    assert updated["frontend_settings"]["column_order"] == ["description"]
     assert updated["default_trait_column"] is None
 
 

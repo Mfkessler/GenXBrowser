@@ -148,27 +148,6 @@
       "type": ["string", "null"],
       "description": "Sample metadata column used as the default trait for grouping, coloring, and sample-axis ordering"
     },
-    "frontend_settings": {
-      "type": "object",
-      "description": "Frontend display settings",
-      "properties": {
-        "default_columns": {
-          "type": "array",
-          "items": {"type": "string"},
-          "description": "Columns shown by default in tables"
-        },
-        "hidden_columns": {
-          "type": "array",
-          "items": {"type": "string"},
-          "description": "Columns hidden from all views"
-        },
-        "column_order": {
-          "type": "array",
-          "items": {"type": "string"},
-          "description": "Global column display order"
-        }
-      }
-    },
     "analysis_limits": {
       "type": "object",
       "description": "Dynamic per-analysis frontend/backend guard limits. Set max_rows to null to disable a row limit for a view.",

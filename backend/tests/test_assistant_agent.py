@@ -129,13 +129,13 @@ def test_list_schema_returns_both_species_with_columns():
     assert "heatmap" in res["views"]
 
 
-def test_list_schema_uses_admin_visibility_types_and_separators():
+def test_list_schema_uses_column_visibility_types_and_separators():
     svc = _make_fake_service()
     cm = SimpleNamespace(
-        get_config=lambda: {"frontend_settings": {"hidden_columns": ["tf_family"]}},
+        get_config=lambda: {},
         get_column_mappings=lambda: {},
         get_column_definitions=lambda: {
-            "tf_family": {"display_name": "Hidden Family", "type": "text", "visible": True, "filterable": True},
+            "tf_family": {"display_name": "Hidden Family", "type": "text", "visible": False, "filterable": True},
             "ortho_id": {"display_name": "Group", "type": "array", "is_array": True, "array_separator": ",", "visible": True, "filterable": True},
             "pfam_desc": {"display_name": "Pfam Desc", "type": "array", "is_array": True, "array_separator": "|", "visible": True, "filterable": True},
         },

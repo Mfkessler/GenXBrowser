@@ -134,18 +134,8 @@ def build_suggestion_pool(service, cm) -> Dict[str, List[str]]:
         except Exception:
             return {}
 
-    def _hidden_columns() -> set:
-        try:
-            config = cm.get_config() or {}
-            frontend = config.get("frontend_settings") or {}
-            return {str(item) for item in (frontend.get("hidden_columns") or [])}
-        except Exception:
-            return set()
-
     def _is_filterable(col: str) -> bool:
         spec = _column_spec(col)
-        if col in _hidden_columns():
-            return False
         if spec.get("visible") is False or spec.get("filterable") is False:
             return False
         return True

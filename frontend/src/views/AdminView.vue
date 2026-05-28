@@ -26,7 +26,6 @@
       <header class="admin-header">
         <div class="header-left">
           <h1>GenXBrowser Admin</h1>
-          <span class="version-badge" v-if="config">v{{ config.version }}</span>
         </div>
         <div class="header-actions">
           <!-- Profile Dropdown -->
@@ -99,7 +98,7 @@
               </div>
               <div class="form-group">
                 <label>Version</label>
-                <input v-model="config.version" type="text" class="form-control" readonly />
+                <input v-model="config.version" type="text" class="form-control" />
               </div>
             </div>
             <div class="form-group">
@@ -208,32 +207,6 @@
               @edit-column="openMetadataEdit"
               @delete-column="deleteColumn"
             />
-          </div>
-
-          <!-- Frontend Settings -->
-          <div v-show="activeTab === 'frontend'" class="section">
-            <h2>Frontend Display Settings</h2>
-
-            <div class="form-group">
-              <label>Default Columns <span class="hint">(comma-separated, shown by default)</span></label>
-              <input
-                :value="config.frontend_settings?.default_columns?.join(', ') || ''"
-                @input="updateArray('default_columns', ($event.target as HTMLInputElement).value)"
-                type="text"
-                class="form-control"
-                placeholder="gene_id, description, ortho_id"
-              />
-            </div>
-
-            <div class="form-group">
-              <label>Hidden Columns <span class="hint">(comma-separated, completely hidden from UI)</span></label>
-              <input
-                :value="config.frontend_settings?.hidden_columns?.join(', ') || ''"
-                @input="updateArray('hidden_columns', ($event.target as HTMLInputElement).value)"
-                type="text"
-                class="form-control"
-              />
-            </div>
           </div>
 
           <!-- Data Paths -->
@@ -489,11 +462,6 @@ interface Config {
   column_definitions: Record<string, ColumnDefinition>;
   sample_metadata_columns?: { enabled: boolean; columns: string[] };
   default_trait_column?: string | null;
-  frontend_settings: {
-    default_columns: string[];
-    hidden_columns: string[];
-    column_order: string[];
-  };
   data_paths: {
     h5ad_dir: string;
     gene_trees_path: string;
@@ -603,7 +571,6 @@ export default defineComponent({
       { id: 'project', label: 'Project', icon: '⚙️' },
       { id: 'species', label: 'Species', icon: '🧬' },
       { id: 'metadata', label: 'Metadata', icon: '📊' },
-      { id: 'frontend', label: 'Frontend', icon: '🎨' },
       { id: 'paths', label: 'Data Paths', icon: '📁' },
       { id: 'assistant', label: 'AI Assistant', icon: '🤖' },
     ];
@@ -929,11 +896,6 @@ export default defineComponent({
       config.value.species[code].tags = value.split(',').map((t: string) => t.trim()).filter((t: string) => t);
     }
 
-    function updateArray(field: 'default_columns' | 'hidden_columns', value: string) {
-      if (!config.value) return;
-      config.value.frontend_settings[field] = value.split(',').map((t: string) => t.trim()).filter((t: string) => t);
-    }
-
     function showStatus(message: string, type: 'success' | 'error' | 'info') {
       statusMessage.value = message;
       statusType.value = type;
@@ -972,7 +934,7 @@ export default defineComponent({
       authRequired, authenticated, adminToken, tokenInput, authError, authenticate,
       config, loading, error, statusMessage, statusType,
       activeTab, tabs, hasChanges, datasets,
-      loadConfig, saveConfig, reloadConfig, restartBackend, updateTags, updateArray,
+      loadConfig, saveConfig, reloadConfig, restartBackend, updateTags,
       onColumnsUpdate, openMetadataImport, openMetadataEdit, closeMetadataImport, onMetadataImported, deleteColumn,
       deleteModalColumn, deleteFromH5ad, deleteRunning, closeDeleteModal, confirmDeleteColumn,
       showImportModal, importTarget, importMode, editColumnInfo,
@@ -1047,15 +1009,6 @@ export default defineComponent({
   margin: 0;
   font-size: 24px;
   color: #111827;
-}
-
-.version-badge {
-  padding: 2px 10px;
-  background: #eff6ff;
-  color: #2563eb;
-  border-radius: 12px;
-  font-size: 12px;
-  font-weight: 600;
 }
 
 .header-actions {

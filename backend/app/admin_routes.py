@@ -487,62 +487,6 @@ def update_column(column_name: str):
         }), 500
 
 
-@admin_bp.route('/frontend-settings', methods=['GET'])
-def get_frontend_settings():
-    """
-    Get frontend settings.
-    
-    Returns:
-        Frontend settings object
-    """
-    config_mgr = get_config_manager()
-    settings = config_mgr.get_frontend_settings()
-    
-    return jsonify({
-        "success": True,
-        "settings": settings
-    })
-
-
-@admin_bp.route('/frontend-settings', methods=['PUT'])
-@require_admin_token
-def update_frontend_settings():
-    """
-    Update frontend settings.
-    
-    Request body:
-        Frontend settings object
-    
-    Returns:
-        Success status
-    """
-    if not request.is_json:
-        return jsonify({
-            "success": False,
-            "error": "Request must be JSON"
-        }), 400
-    
-    settings_data = request.get_json()
-    
-    try:
-        config_mgr = get_config_manager()
-        config = config_mgr.get_config()
-        config['frontend_settings'] = settings_data
-        config_mgr.update_config(config)
-        
-        return jsonify({
-            "success": True,
-            "message": "Frontend settings updated successfully"
-        })
-    
-    except Exception as e:
-        logger.error(f"Frontend settings update failed: {e}")
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
-
-
 @admin_bp.route('/datasets', methods=['GET'])
 def get_datasets():
     """
@@ -1166,12 +1110,6 @@ def delete_metadata_column(column_name):
     default_visible_cols = smc.get('default_visible_columns', [])
     if column_name in default_visible_cols:
         default_visible_cols.remove(column_name)
-
-    frontend_settings = config.get('frontend_settings', {})
-    for key in ('default_columns', 'hidden_columns', 'column_order'):
-        values = frontend_settings.get(key, [])
-        if column_name in values:
-            frontend_settings[key] = [value for value in values if value != column_name]
 
     if config.get('default_trait_column') == column_name:
         config['default_trait_column'] = None

@@ -225,19 +225,7 @@ def _column_definitions(config_manager=None) -> Dict[str, Any]:
     except Exception:
         return {}
 
-
-def _hidden_columns(config_manager=None) -> set:
-    try:
-        config = config_manager.get_config() or {}
-        frontend = config.get("frontend_settings") or {}
-        return {str(col) for col in (frontend.get("hidden_columns") or [])}
-    except Exception:
-        return set()
-
-
 def _column_is_visible(config_manager, column: str, spec: Optional[Dict[str, Any]] = None) -> bool:
-    if column in _hidden_columns(config_manager):
-        return False
     if spec is None:
         spec = _column_definitions(config_manager).get(column) or {}
     if isinstance(spec, dict) and spec.get("visible") is False:

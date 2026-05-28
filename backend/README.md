@@ -33,7 +33,7 @@ $H5AD_DATA_DIR/
 └── filters/                        # content-addressed filter hashes ($FILTER_STORE_PATH)
 ```
 
-On first boot, `h5ad_lib.core.discovery` scans `$H5AD_DATA_DIR` for `.h5ad` files, infers species (from `.uns`), column types (from `.var` / `.obs` dtypes) and default frontend settings, and writes `project_config.json`. Projects may set `default_trait_column` to any `.obs` sample metadata column; the frontend exposes that role as the `default_trait` pseudo-column for sample-axis colouring and ordering. The schema lives in [`app/config_schema.json`](app/config_schema.json); validation is handled by `h5ad_lib.config.schema`. All subsequent edits are made through the Admin API and the schema is re-validated on write.
+On first boot, `h5ad_lib.core.discovery` scans `$H5AD_DATA_DIR` for `.h5ad` files, infers species (from `.uns`) and column types (from `.var` / `.obs` dtypes), and writes `project_config.json`. Projects may set `default_trait_column` to any `.obs` sample metadata column; the frontend exposes that role as the `default_trait` pseudo-column for sample-axis colouring and ordering. The schema lives in [`app/config_schema.json`](app/config_schema.json); validation is handled by `h5ad_lib.config.schema`. All subsequent edits are made through the Admin API and the schema is re-validated on write.
 
 H5AD invariants the backend relies on:
 
@@ -159,7 +159,6 @@ The assistant activates only when `LLM_API_BASE`, `LLM_API_KEY` and `LLM_MODEL` 
 | `PUT` | `/api/admin/species/<code>` | Update a species configuration |
 | `GET` | `/api/admin/columns` | List column definitions |
 | `PUT` | `/api/admin/columns/<name>` | Update a column definition |
-| `GET/PUT` | `/api/admin/frontend-settings` | Frontend display settings |
 | `GET` | `/api/admin/datasets` | Datasets + status info |
 | `PATCH` | `/api/admin/datasets/<code>/enabled` | Toggle a dataset on/off |
 | `POST` | `/api/admin/metadata/import` | Validate a metadata CSV against an H5AD |

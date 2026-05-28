@@ -76,7 +76,6 @@ class ConfigManager:
     Manages:
     - Species configuration (codes, names, layers)
     - Column definitions (types, visibility, mappings)
-    - Frontend settings (default columns, hidden columns)
     
     Example:
         # Auto-discover from H5AD directory
@@ -152,6 +151,7 @@ class ConfigManager:
                 logger.info(f"Loaded config: {self._config.get('project_name', 'Unknown')}")
                 # Auto-migrate old configs with legacy column names
                 self._migrate_config()
+                self._strip_deprecated_frontend_settings()
                 # Ensure all .var columns from h5ad files are in config and marked is_meta=True
                 self._ensure_all_var_columns_in_config()
                 # Back-fill any virtual columns that weren't present when config was created
@@ -166,18 +166,24 @@ class ConfigManager:
         """Save configuration to JSON file."""
         with self._lock:
             try:
+                self._strip_deprecated_frontend_settings()
                 with open(self._config_path, "w") as f:
                     json.dump(self._config, f, indent=2, sort_keys=False)
                 logger.info(f"Saved config to {self._config_path}")
             except Exception as e:
                 logger.error(f"Failed to save config: {e}")
 
+    def _strip_deprecated_frontend_settings(self) -> None:
+        """Drop deprecated admin frontend display settings from config."""
+        if isinstance(self._config, dict):
+            self._config.pop("frontend_settings", None)
+
     def _migrate_config(self) -> None:
         """Auto-migrate old configs that used legacy display column names.
 
         Detects old-style column_mappings (e.g. ortho_id→orthogroup) and renames
-        keys in column_definitions, meta_columns, array_columns, and
-        frontend_settings.default_columns to use h5ad-native names.
+        keys in column_definitions, meta_columns, and array_columns to use
+        h5ad-native names.
         Also migrates the legacy default sample metadata role key, and clears old column_mappings.
         """
         changed = False
@@ -234,16 +240,10 @@ class ConfigManager:
             self._config["array_columns"] = list(dict.fromkeys(new_array))
             changed = True
 
-        # 5. Rename in frontend_settings.default_columns
-        fs = self._config.get("frontend_settings", {})
-        default_cols = fs.get("default_columns", [])
-        if default_cols:
-            fs["default_columns"] = [
-                _LEGACY_DISPLAY_TO_H5AD.get(c, c) for c in default_cols
-            ]
+        if self._config.pop("frontend_settings", None) is not None:
             changed = True
 
-        # 6. Clear old column_mappings (no longer needed)
+        # 5. Clear old column_mappings (no longer needed)
         if has_old_mappings:
             self._config["column_mappings"] = {"h5ad_to_display": {}}
             changed = True
@@ -470,10 +470,6 @@ class ConfigManager:
                 "enabled": True,
                 "columns": list(obs_cols),
             },
-            "frontend_settings": {
-                "default_columns": ["gene_id", "description", "ortho_id"],
-                "hidden_columns": [],
-            },
             "default_trait_column": default_sample_metadata_column,
             "data_paths": {
                 "h5ad_dir": str(self._h5ad_dir),
@@ -494,7 +490,6 @@ class ConfigManager:
             "array_columns": [],
             "meta_columns": [],
             "sample_metadata_columns": {"enabled": True, "columns": []},
-            "frontend_settings": {"default_columns": [], "hidden_columns": []},
             "default_trait_column": None,
             "data_paths": {"h5ad_dir": str(self._h5ad_dir)},
         }
@@ -519,6 +514,7 @@ class ConfigManager:
             
             # Deep merge: profile overrides current config
             self._deep_merge(self._config, profile_data)
+            self._strip_deprecated_frontend_settings()
             self._save_config()
             logger.info(f"Applied config profile: {profile_name}")
         except Exception as e:
@@ -553,7 +549,8 @@ class ConfigManager:
         """
         with self._lock:
             try:
-                self._config = new_config
+                self._config = dict(new_config)
+                self._strip_deprecated_frontend_settings()
                 self._save_config()
                 return True
             except Exception as e:
@@ -745,22 +742,6 @@ class ConfigManager:
         if name in special:
             return special[name]
         return name.replace("_", " ").title()
-    
-    # Frontend settings
-    
-    def get_frontend_settings(self) -> Dict[str, Any]:
-        """Get frontend settings."""
-        return self._config.get("frontend_settings", {})
-    
-    def set_default_columns(self, columns: List[str]) -> None:
-        """Set default columns for display."""
-        with self._lock:
-            self._config.setdefault("frontend_settings", {})["default_columns"] = columns
-    
-    def set_hidden_columns(self, columns: List[str]) -> None:
-        """Set hidden columns."""
-        with self._lock:
-            self._config.setdefault("frontend_settings", {})["hidden_columns"] = columns
     
     # Path properties
     
