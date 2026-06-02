@@ -233,7 +233,7 @@
 
           <!-- AI Assistant -->
           <div v-show="activeTab === 'assistant'" class="section">
-            <h2>AI Assistant</h2>
+            <h2>GAIA (GenXBrowser AI-Assistant)</h2>
             <p class="info">
               Configure an OpenAI-compatible chat completion endpoint. When disabled or unconfigured,
               the assistant UI is completely hidden from end users.
@@ -575,7 +575,7 @@ export default defineComponent({
       { id: 'species', label: 'Species', icon: '🧬' },
       { id: 'metadata', label: 'Metadata', icon: '📊' },
       { id: 'paths', label: 'Data Paths', icon: '📁' },
-      { id: 'assistant', label: 'AI Assistant', icon: '🤖' },
+      { id: 'assistant', label: 'GAIA', icon: '🧬' },
     ];
 
     // AI assistant test-connection state

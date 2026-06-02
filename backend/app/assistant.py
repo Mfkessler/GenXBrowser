@@ -1235,6 +1235,34 @@ def run_agentic_turn(
         # name or value.
         real_prepared: List[Tuple[str, str, Dict[str, Any]]] = []
         for call_id, name, args in prepared:
+            # GAIA's generic execution tool: `dispatch_frontend_action(action_type,
+            # payload)`. Unwrap it into the concrete action-block name + spec so the
+            # existing intercept path handles it uniformly. Data-agnostic: we only
+            # validate the action_type against the known tag set, never columns.
+            if name == "dispatch_frontend_action":
+                action_type = str((args or {}).get("action_type") or "").strip()
+                payload = (args or {}).get("payload")
+                if not isinstance(payload, dict):
+                    payload = {}
+                if action_type in _ACTION_BLOCK_TOOL_NAMES:
+                    name, args = action_type, payload
+                else:
+                    yield {"type": "tool_start", "id": call_id, "name": "dispatch_frontend_action", "args": args}
+                    err = {
+                        "ok": False,
+                        "error": (
+                            f"unknown action_type '{action_type}'. Allowed: "
+                            + ", ".join(sorted(_ACTION_BLOCK_TOOL_NAMES))
+                        ),
+                    }
+                    yield {"type": "tool_result", "id": call_id, "name": "dispatch_frontend_action", "result": err}
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "name": "dispatch_frontend_action",
+                        "content": json.dumps(err, ensure_ascii=False),
+                    })
+                    continue
             if name in _ACTION_BLOCK_TOOL_NAMES:
                 try:
                     spec_payload = json.dumps(args or {}, ensure_ascii=False)

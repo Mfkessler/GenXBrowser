@@ -124,7 +124,7 @@ export const useAssistantStore = defineStore("assistant", () => {
   const analysisContext = ref<Record<string, unknown>>({});
 
   const enabled = computed(() => features.value?.assistant_enabled === true);
-  const displayName = computed(() => features.value?.assistant?.display_name || "AI Assistant");
+  const displayName = computed(() => features.value?.assistant?.display_name || "GAIA");
 
   async function loadFeatures() {
     if (features.value) return;

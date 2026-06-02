@@ -1320,7 +1320,7 @@ def features():
             "assistant_enabled": assistant_on,
             "assistant": {
                 "enabled": assistant_on,
-                "display_name": corporate.get("llm_name") or "AI Assistant",
+                "display_name": corporate.get("llm_name") or "GAIA",
                 "model": cfg.get("model") if assistant_on else None,
             },
             "analysis_limits": assistant_tools_module.get_analysis_limits(cm),

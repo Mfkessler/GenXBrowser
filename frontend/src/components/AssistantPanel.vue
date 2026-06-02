@@ -5,13 +5,13 @@
       ref="panelEl"
       class="assistant-panel fixed top-0 right-0 h-full w-full sm:w-[440px] bg-white/50 hover:bg-white focus-within:bg-white border-l border-gray-200 shadow-2xl z-50 flex flex-col opacity-50 hover:opacity-100 focus-within:opacity-100 transition-[opacity,background-color,width] duration-300"
       role="dialog"
-      aria-label="AI Assistant"
+      :aria-label="store.displayName"
     >
       <header class="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-gradient-to-r from-blue-50 to-blue-100/40">
         <div class="flex items-center gap-2 min-w-0">
-          <AiSparkleIcon class="w-6 h-6 text-blue-600 shrink-0" />
+          <GaiaIcon class="w-6 h-6 text-blue-600 shrink-0" />
           <div class="min-w-0">
-            <div class="text-xs text-gray-500">GenXBrowser</div>
+            <div class="text-xs text-gray-500">GenXBrowser AI-Assistant</div>
             <h2 class="font-semibold text-gray-800 truncate">{{ store.displayName }}</h2>
           </div>
         </div>
@@ -48,7 +48,7 @@
       <div ref="scrollEl" class="flex-1 overflow-y-auto p-4 space-y-3 bg-gray-50">
         <div v-if="store.messages.length === 0" class="text-sm text-gray-600 space-y-3">
           <p>
-            Ask about your loaded data. The assistant sees which view, filters and visualizations
+            Ask GAIA about your loaded data. GAIA sees which view, filters and visualizations
             you currently have open and can propose changes, compute summaries or open deep links.
           </p>
           <div class="space-y-2">
@@ -137,6 +137,30 @@
                 <span class="inline-block w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" style="animation-delay: 300ms"></span>
               </span>
               <span class="min-w-0 break-words">{{ thinkingLabel(msg) }}</span>
+            </div>
+
+            <!-- Execution badges: GAIA's Discovery → Plan → Execute trail.
+                 Compact pills like [🔍 Checking schema] / [⚡ Applying filter]
+                 / [📊 Rendering view] so the user sees the pipeline. -->
+            <div
+              v-if="executionBadges(msg).length"
+              class="mt-2 flex flex-wrap gap-1.5"
+            >
+              <span
+                v-for="b in executionBadges(msg)"
+                :key="b.key"
+                class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium border"
+                :class="b.status === 'done'
+                  ? 'bg-primary-50 border-primary-200 text-primary-700'
+                  : 'bg-amber-50 border-amber-200 text-amber-700'"
+              >
+                <span aria-hidden="true">{{ b.icon }}</span>
+                <span>{{ b.label }}</span>
+                <span
+                  v-if="b.status === 'running'"
+                  class="inline-block w-1 h-1 rounded-full bg-amber-500 animate-pulse"
+                ></span>
+              </span>
             </div>
 
             <!-- Tool trace (collapsible) -->
@@ -388,7 +412,7 @@ import {
   restoreSnapshot,
   snapshotState as captureAssistantSnapshot,
 } from "@/shared/assistantActions";
-import AiSparkleIcon from "@/components/icons/AiSparkleIcon.vue";
+import GaiaIcon from "@/components/icons/GaiaIcon.vue";
 
 const store = useAssistantStore();
 const filtersStore = useFiltersStore();
@@ -593,6 +617,10 @@ function escapeHtml(s: string): string {
  *  the result has come back. */
 const TOOL_LABELS: Record<string, { running: string; finished: string }> = {
   list_schema:          { running: "Inspecting datasets",      finished: "Inspected datasets" },
+  get_dataset_schema:   { running: "Checking schema",          finished: "Checked schema" },
+  get_available_datasets: { running: "Listing datasets",       finished: "Listed datasets" },
+  state_summary:        { running: "Reading state",            finished: "Read state" },
+  search_go_terms:      { running: "Resolving GO terms",       finished: "Resolved GO terms" },
   resolve_value:        { running: "Locating term",            finished: "Located term" },
   list_distinct_values: { running: "Listing values",           finished: "Listed values" },
   count_rows:           { running: "Checking dataset sizes",   finished: "Checked dataset sizes" },
@@ -601,6 +629,67 @@ const TOOL_LABELS: Record<string, { running: string; finished: string }> = {
   summary_stats:        { running: "Computing statistics",     finished: "Computed statistics" },
   build_deeplink:       { running: "Preparing analysis link",  finished: "Prepared analysis link" },
 };
+
+/** Emoji + short caption for each execution step GAIA surfaces as a badge
+ *  (e.g. `[🔍 Checking Schema]`, `[⚡ Applying Filter]`, `[📊 Rendering
+ *  Heatmap]`). Keyed by tool name and by frontend action kind. Data-agnostic:
+ *  it maps mechanisms, never dataset columns. */
+const BADGE_META: Record<string, { icon: string; label: string }> = {
+  // Discovery tools
+  get_available_datasets: { icon: "🗂️", label: "Listing datasets" },
+  state_summary:          { icon: "🗂️", label: "Reading state" },
+  list_schema:            { icon: "🔍", label: "Checking schema" },
+  get_dataset_schema:     { icon: "🔍", label: "Checking schema" },
+  search_go_terms:        { icon: "🧬", label: "Resolving GO terms" },
+  resolve_value:          { icon: "🧬", label: "Locating term" },
+  list_distinct_values:   { icon: "🔢", label: "Listing values" },
+  count_rows:             { icon: "📏", label: "Checking sizes" },
+  top_groups:             { icon: "📈", label: "Ranking values" },
+  common_values:          { icon: "🔗", label: "Comparing datasets" },
+  summary_stats:          { icon: "📐", label: "Computing stats" },
+  build_deeplink:         { icon: "📊", label: "Preparing view" },
+  // Frontend action kinds (execution)
+  add_filter:             { icon: "⚡", label: "Applying filter" },
+  remove_filter:          { icon: "⚡", label: "Removing filter" },
+  clear_filters:          { icon: "🧹", label: "Clearing filters" },
+  set_filter_chain:       { icon: "⚡", label: "Linking filters" },
+  select_tables:          { icon: "🗂️", label: "Selecting datasets" },
+  dataset_visibility:     { icon: "👁️", label: "Updating datasets" },
+  set_expression_display: { icon: "🎚️", label: "Setting display" },
+  viz_update:             { icon: "🎨", label: "Updating view" },
+  deeplink:               { icon: "📊", label: "Rendering view" },
+  phylo_action:           { icon: "🌳", label: "Updating tree" },
+};
+
+export interface ExecutionBadge {
+  key: string;
+  icon: string;
+  label: string;
+  status: "running" | "done";
+}
+
+/** Build the ordered execution-badge trail for a message: every tool that
+ *  ran (discovery) followed by every frontend action it emitted (execution).
+ *  Surfaces GAIA's Discovery → Plan → Execute progress compactly. */
+function executionBadges(msg: ChatMessage): ExecutionBadge[] {
+  const out: ExecutionBadge[] = [];
+  for (const t of msg.tools || []) {
+    const meta = BADGE_META[t.name] || { icon: "⚙️", label: t.name };
+    out.push({ key: `tool:${t.id || t.name}`, icon: meta.icon, label: meta.label, status: t.status });
+  }
+  for (let i = 0; i < (msg.actions?.length || 0); i++) {
+    const a = msg.actions![i];
+    const meta = BADGE_META[a.kind];
+    if (!meta) continue;
+    out.push({
+      key: `action:${i}`,
+      icon: meta.icon,
+      label: meta.label,
+      status: a.status === "applied" ? "done" : "running",
+    });
+  }
+  return out;
+}
 
 /** Human-readable description of what the assistant is doing right now.
  *  Surfaces the most recent (or currently running) tool so the user

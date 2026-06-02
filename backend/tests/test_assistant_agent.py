@@ -566,7 +566,8 @@ def test_prompt_builder_includes_all_sections():
         base_prompt="CustomBase.", data_context={"x": 1}, ui_context={"view": "heatmap"},
     )
     assert "CustomBase." in p
-    assert "GenXBrowser AI assistant" in p
+    assert "GAIA (GenXBrowser AI-Assistant)" in p
+    assert "Discovery -> Plan -> Execute" in p
     assert "add_filter" in p
     assert "CURRENT_DATA_CONTEXT" in p
     assert "USER_UI_CONTEXT" in p
@@ -770,3 +771,187 @@ def test_agentic_loop_repairs_sparse_deeplink_from_build_tool(monkeypatch):
     assert '"MIKC"' in final
     assert '"rowSideColors"' in final
 
+
+
+# ---------------------------------------------------------------------------
+# GAIA — data-agnostic function-calling contract
+#   * exact tool-name aliases (get_available_datasets / get_dataset_schema)
+#   * dispatch_frontend_action generic execution tool + intercept
+#   * Discovery -> Plan -> Execute sequencing (filter BEFORE render)
+# ---------------------------------------------------------------------------
+
+def test_gaia_alias_tools_registered_in_schema_and_dispatch():
+    """The GAIA contract names must be exposed as real OpenAI tools."""
+    names = {t["function"]["name"] for t in tools.openai_schema()}
+    assert {"get_available_datasets", "get_dataset_schema"} <= names
+    # dispatch_frontend_action is advertised to the model as a tool too.
+    assert "dispatch_frontend_action" in names
+
+    dispatch_map = tools._get_dispatch()
+    assert "get_available_datasets" in dispatch_map
+    assert "get_dataset_schema" in dispatch_map
+
+
+def test_get_available_datasets_lists_loaded_species_without_expression():
+    svc = _make_fake_service()
+    res = tools.tool_get_available_datasets(svc, _make_fake_cm())
+    codes = {d.get("code") for d in res.get("datasets", [])}
+    assert codes == {"CS", "PS"}
+    # No raw expression matrix is ever leaked through this tool.
+    blob = json.dumps(res)
+    assert "X" not in {k for d in res.get("datasets", []) for k in d.keys()}
+    assert "expression" not in blob.lower()
+
+
+def test_get_dataset_schema_scopes_to_species_and_matches_shape():
+    """Payloads must be structured according to the TARGET dataset's shape."""
+    svc = _make_fake_service()
+    cm = _make_fake_cm()
+    res = tools.tool_get_dataset_schema(svc, cm, species_id="CS")
+    assert len(res["tables"]) == 1
+    table = res["tables"][0]
+    assert table["code"] == "CS"
+
+    var_names = {c["name"] for c in table["var_columns"]}
+    obs_names = {c["name"] for c in table["obs_columns"]}
+    # Real columns present in the fixture must be discoverable...
+    assert "tf_family" in var_names
+    assert "tissue" in obs_names
+    # ...and a column that does NOT exist must be absent (zero-hallucination).
+    assert "ColSideColors" not in var_names
+    assert "made_up_column" not in (var_names | obs_names)
+
+
+def test_get_dataset_schema_unknown_species_reports_available():
+    svc = _make_fake_service()
+    res = tools.tool_get_dataset_schema(svc, _make_fake_cm(), species_id="ZZ")
+    assert "error" in res
+    avail = {a.get("code") for a in res.get("available", [])}
+    assert avail == {"CS", "PS"}
+
+
+def test_dispatch_frontend_action_intercept_emits_action_block(monkeypatch):
+    """A `dispatch_frontend_action` tool_call becomes a fenced action block."""
+    svc = _make_fake_service()
+    cm = _make_fake_cm()
+
+    def dispatch(name, args):
+        return tools.dispatch_tool_call(name, args, service=svc, config_manager=cm)
+
+    script = [
+        {
+            "role": "assistant", "content": "",
+            "tool_calls": [{
+                "id": "d1", "type": "function",
+                "function": {
+                    "name": "dispatch_frontend_action",
+                    "arguments": json.dumps({
+                        "action_type": "add_filter",
+                        "payload": {"column": "tf_family", "value": "MIKC"},
+                    }),
+                },
+            }],
+        },
+        {"role": "assistant", "content": "Filter applied."},
+    ]
+    monkeypatch.setattr(assistant, "_stream_with_fallback", _make_fake_llm(script))
+
+    events = list(assistant.run_agentic_turn(
+        cfg={"model": "fake"},
+        initial_messages=[{"role": "user", "content": "filter for MIKC"}],
+        tools=tools.openai_schema(),
+        dispatch=dispatch,
+        max_iterations=4,
+    ))
+    assert events[-1]["type"] == "done"
+    final = [e for e in events if e["type"] == "delta"][-1]["delta"]
+    assert "```add_filter" in final
+    assert '"tf_family"' in final
+    assert '"MIKC"' in final
+
+
+def test_dispatch_frontend_action_rejects_unknown_action_type(monkeypatch):
+    svc = _make_fake_service()
+    cm = _make_fake_cm()
+
+    def dispatch(name, args):
+        return tools.dispatch_tool_call(name, args, service=svc, config_manager=cm)
+
+    script = [
+        {
+            "role": "assistant", "content": "",
+            "tool_calls": [{
+                "id": "d1", "type": "function",
+                "function": {
+                    "name": "dispatch_frontend_action",
+                    "arguments": json.dumps({
+                        "action_type": "frobnicate",
+                        "payload": {"foo": "bar"},
+                    }),
+                },
+            }],
+        },
+        {"role": "assistant", "content": "Sorry, I cannot do that."},
+    ]
+    monkeypatch.setattr(assistant, "_stream_with_fallback", _make_fake_llm(script))
+
+    events = list(assistant.run_agentic_turn(
+        cfg={"model": "fake"},
+        initial_messages=[{"role": "user", "content": "do something weird"}],
+        tools=tools.openai_schema(),
+        dispatch=dispatch,
+        max_iterations=4,
+    ))
+    # An invalid action_type yields an ok:false tool_result and NO action block.
+    result = [e for e in events if e["type"] == "tool_result"
+              and e["name"] == "dispatch_frontend_action"][0]
+    assert result["result"]["ok"] is False
+    final = [e for e in events if e["type"] == "delta"][-1]["delta"]
+    assert "```frobnicate" not in final
+    assert "```add_filter" not in final
+
+
+def test_gaia_sequences_discovery_then_filter_then_render(monkeypatch):
+    """Discovery -> Plan -> Execute: schema first, filter BEFORE the deeplink."""
+    svc = _make_fake_service()
+    cm = _make_fake_cm()
+
+    def dispatch(name, args):
+        return tools.dispatch_tool_call(name, args, service=svc, config_manager=cm)
+
+    script = [
+        # 1. DISCOVERY: GAIA inspects the schema to find the tf-family column.
+        {
+            "role": "assistant", "content": "",
+            "tool_calls": [{
+                "id": "s1", "type": "function",
+                "function": {"name": "get_dataset_schema",
+                             "arguments": json.dumps({"species_id": "CS"})},
+            }],
+        },
+        # 2/3. EXECUTE: filter first, then render — both as one final answer.
+        {
+            "role": "assistant",
+            "content": (
+                "Filtering to MIKC, then opening the heatmap.\n\n"
+                "```add_filter\n{\"column\":\"tf_family\",\"value\":\"MIKC\"}\n```\n\n"
+                "```deeplink\n{\"view\":\"heatmap\",\"tables\":[\"CS\"],"
+                "\"filters\":{\"filters\":{\"tf_family\":{\"value\":\"MIKC\"}}}}\n```"
+            ),
+        },
+    ]
+    monkeypatch.setattr(assistant, "_stream_with_fallback", _make_fake_llm(script))
+
+    events = list(assistant.run_agentic_turn(
+        cfg={"model": "fake"},
+        initial_messages=[{"role": "user", "content": "Show the heatmap and filter for MIKC"}],
+        tools=tools.openai_schema(),
+        dispatch=dispatch,
+        max_iterations=4,
+    ))
+
+    # Schema discovery actually ran before any rendering action.
+    assert any(e["type"] == "tool_start" and e["name"] == "get_dataset_schema" for e in events)
+    final = [e for e in events if e["type"] == "delta"][-1]["delta"]
+    # The filter block must precede the deeplink block (filter BEFORE render).
+    assert final.index("```add_filter") < final.index("```deeplink")

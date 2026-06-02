@@ -1006,6 +1006,60 @@ def tool_state_summary(service, cm) -> Dict[str, Any]:
     return warmup_runtime_cache(service, cm)
 
 
+def tool_get_available_datasets(service, cm) -> Dict[str, Any]:
+    """GAIA discovery alias: list the species/datasets currently loaded.
+
+    Thin, data-agnostic wrapper over :func:`tool_state_summary` exposing the
+    GAIA contract name ``get_available_datasets``. Returns only dataset
+    identity/shape (no expression values), so it is cheap and safe as the
+    first discovery call of a turn.
+    """
+    summary = tool_state_summary(service, cm)
+    return {
+        "datasets": summary.get("datasets", []),
+        "species_names": summary.get("species_names", []),
+        "views": summary.get("views", []),
+    }
+
+
+def tool_get_dataset_schema(service, cm, *, species_id: Optional[str] = None,
+                            max_values_per_col: int = 5, **_ignore) -> Dict[str, Any]:
+    """GAIA discovery alias: the `.obs`/`.var` layout of loaded datasets.
+
+    Wraps :func:`tool_list_schema` and, when ``species_id`` is given, narrows
+    the result to the matching dataset (matched case-insensitively against the
+    canonical ``table_name``, short ``code``, display label, or species name).
+    Never returns raw expression values — only column metadata, dtypes,
+    categorical levels and numeric ranges. This is the only sanctioned source
+    of truth for whether a column the user named actually exists.
+    """
+    full = tool_list_schema(service, cm, max_values_per_col=max_values_per_col)
+    if not species_id:
+        return full
+    tables = full.get("tables") or []
+    needle = str(species_id).strip().lower()
+    matched = [
+        t for t in tables
+        if needle in {
+            str(t.get("table_name") or "").lower(),
+            str(t.get("code") or "").lower(),
+            str(t.get("full_name") or "").lower(),
+            str(t.get("species_name") or "").lower(),
+            str(t.get("display_label") or "").lower(),
+        }
+    ]
+    if not matched:
+        return {
+            "error": f"No loaded dataset matches species_id '{species_id}'.",
+            "available": [
+                {"table_name": t.get("table_name"), "code": t.get("code"),
+                 "full_name": t.get("full_name")}
+                for t in tables
+            ],
+        }
+    return {**full, "tables": matched}
+
+
 # Static catalog of expression-display options. The frontend mirror lives at
 # `frontend/src/shared/ExpressionDisplay.ts` — keep these two in sync. The
 # tool below filters this list per instance based on which `.layers` are
@@ -2802,6 +2856,76 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_available_datasets",
+            "description": (
+                "GAIA discovery step 1. List the species/datasets currently "
+                "loaded (identity + shape only, no expression values). Call "
+                "this first to learn which datasets exist before planning."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_dataset_schema",
+            "description": (
+                "GAIA discovery step 2. Return the `.obs` (sample metadata "
+                "columns + categorical levels / numeric ranges) and `.var` "
+                "(gene metadata columns) layout for the loaded datasets, "
+                "without any raw expression values. Pass `species_id` to scope "
+                "to one dataset. This is the ONLY sanctioned way to verify a "
+                "column or category exists before emitting any filter, color "
+                "group, annotation, or visualization setting."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "species_id": {
+                        "type": "string",
+                        "description": "Optional table_name / code / species name to scope the schema.",
+                    },
+                    "max_values_per_col": {"type": "integer", "default": 5},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "dispatch_frontend_action",
+            "description": (
+                "GAIA execution step. Instruct the Vue frontend state manager "
+                "to perform ONE UI mutation, exactly as a human user could. "
+                "`action_type` MUST be one of: add_filter, remove_filter, "
+                "clear_filters, select_tables, set_expression_display, "
+                "set_filter_chain, viz_update, deeplink, dataset_visibility, "
+                "phylo_action. `payload` is that action block's object. Only "
+                "dispatch actions whose columns/values you have verified via "
+                "get_dataset_schema. The backend converts this into the "
+                "matching action block; never invent unverified payloads."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action_type": {
+                        "type": "string",
+                        "enum": [
+                            "add_filter", "remove_filter", "clear_filters",
+                            "select_tables", "set_expression_display",
+                            "set_filter_chain", "viz_update", "deeplink",
+                            "dataset_visibility", "phylo_action",
+                        ],
+                    },
+                    "payload": {"type": "object", "additionalProperties": True},
+                },
+                "required": ["action_type", "payload"],
+            },
+        },
+    },
 ]
 
 
@@ -2817,7 +2941,9 @@ def _get_dispatch():
 
     return {
         "state_summary": lambda service, cm, **kw: tool_state_summary(service, cm),
+        "get_available_datasets": lambda service, cm, **kw: tool_get_available_datasets(service, cm),
         "list_schema": lambda service, cm, **kw: tool_list_schema(service, cm, **_tool_args(kw)),
+        "get_dataset_schema": lambda service, cm, **kw: tool_get_dataset_schema(service, cm, **_tool_args(kw)),
         "get_active_view_state": lambda service, cm, **kw: tool_get_active_view_state(service, client_context=kw.get("client_context")),
         "update_dataset_visibility": lambda service, cm, **kw: tool_update_dataset_visibility(service, **_tool_args(kw), client_context=kw.get("client_context")),
         "list_view_settings": lambda service, cm, **kw: tool_list_view_settings(service, cm, **_tool_args(kw)),

@@ -67,7 +67,7 @@
         v-tooltip:left="`Ask ${assistantStore.displayName}`"
         @click="assistantStore.open = true"
       >
-        <AiSparkleIcon class="w-6 h-6 drop-shadow" />
+        <GaiaIcon class="w-6 h-6 drop-shadow" />
       </button>
     </template>
   </div>
@@ -78,7 +78,7 @@ import { onBeforeUnmount, onMounted, provide, ref } from "vue";
 import FooterComponent from "./components/FooterComponent.vue";
 import SidebarComponent from "./components/SidebarComponent.vue";
 import AssistantPanel from "./components/AssistantPanel.vue";
-import AiSparkleIcon from "./components/icons/AiSparkleIcon.vue";
+import GaiaIcon from "./components/icons/GaiaIcon.vue";
 import { useAssistantStore } from "./stores/assistant";
 
 // TODO: Optimize heatmap rendering performance for large datasets
