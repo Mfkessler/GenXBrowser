@@ -1483,6 +1483,162 @@ def _assistant_fast_path_response(service, cm, user_text: str, client_ctx: Dict[
         return None
     lower = text.lower()
 
+    # Plot-type / expression render directives. A box/violin/line plot is a
+    # Compare-view rendering; expression keywords map to a concrete display
+    # option. These are detected up front so a combined "switch to <view> as
+    # <plot> with <expression>" prompt is handled as ONE deterministic
+    # navigate-and-render task instead of being split or deferred.
+    _plot_type: Optional[str] = None
+    if re.search(r"\bbox\s*-?\s*plot\b|\bboxplot\b", lower):
+        _plot_type = "box"
+    elif re.search(r"\bviolin\b", lower):
+        _plot_type = "violin"
+    elif re.search(r"\bline\s*-?\s*plot\b|\blineplot\b|\bline\s+chart\b", lower):
+        _plot_type = "line"
+
+    def _expression_id_from_text() -> Optional[str]:
+        has_tpm = bool(re.search(r"\btpm\b", lower))
+        if re.search(r"\bz\s*-?\s*score\b|\bzscore\b", lower):
+            return "zscore-tpm" if has_tpm else "zscore"
+        if re.search(r"\blog\s*-?\s*2\b|\blog2\b", lower):
+            return "log2"
+        if re.search(r"\bgetmm\b", lower):
+            return "getmm"
+        if re.search(r"\btmm\b", lower):
+            return "tmm"
+        if re.search(r"\braw\s+counts?\b", lower):
+            return "raw"
+        if has_tpm:
+            return "tpm"
+        return None
+
+    _expression_id = _expression_id_from_text()
+
+    # Target view for a combined navigate-and-render command. An explicit view
+    # word wins; otherwise a plot-type directive implies the Compare view.
+    _render_target_view: Optional[str] = None
+    if re.search(r"\bcompare\b", lower):
+        _render_target_view = "compare"
+    elif re.search(r"\bheatmap\b", lower):
+        _render_target_view = "heatmap"
+    elif re.search(r"\bora\b|over-?representation", lower):
+        _render_target_view = "ora"
+    elif re.search(r"\bphylo\b|phylo\s*tree|phylogenetic", lower):
+        _render_target_view = "phylo"
+    elif _plot_type:
+        _render_target_view = "compare"
+
+    # Explicit view word (no plot-type inference) — used by the "complex render"
+    # branch, which builds ONE deeplink that opens a heatmap/compare with any
+    # combination of a text filter + expression + Row/ColSideColors. This is the
+    # heavy multi-directive case that the LLM handles unreliably.
+    _explicit_view: Optional[str] = None
+    if re.search(r"\bheatmap\b", lower):
+        _explicit_view = "heatmap"
+    elif re.search(r"\bcompare\b", lower):
+        _explicit_view = "compare"
+    elif re.search(r"\bora\b|over-?representation", lower):
+        _explicit_view = "ora"
+    elif re.search(r"\bphylo\b|phylo\s*tree|phylogenetic", lower):
+        _explicit_view = "phylo"
+    _has_sidecolors = bool(
+        re.search(r"row\s*-?\s*side\s*-?\s*colors?|col\s*-?\s*side\s*-?\s*colors?|side\s*-?\s*colors?", lower)
+    )
+    # A complex render = an explicit heatmap/compare view PLUS SideColors. The
+    # dedicated branch below resolves a text filter (via resolve_value),
+    # expression, and the Row/ColSideColors (curated display-name → internal
+    # key) into a single deeplink, so it must bypass the compound guard.
+    _complex_render = bool(_explicit_view in {"heatmap", "compare"} and _has_sidecolors)
+
+    # A combined navigate+render task = a named/implied view PLUS at least one
+    # rendering directive (plot type or expression). Finalized AFTER the intent
+    # scan below, because the dedicated branch only encodes view + ctx filters +
+    # plot type + expression. It does NOT parse text filters, SideColors,
+    # group-by or dataset-visibility directives, so it may bypass the compound
+    # guard ONLY when none of those are present.
+    _combined_nav_render = False
+
+    # Compound-intent guard: the deterministic shortcuts below each resolve
+    # exactly ONE action and return immediately, so a prompt that bundles
+    # several actions (e.g. "open compare as box plot and z score") would be
+    # silently truncated to whichever branch matches first. Count the distinct
+    # intent categories present; if more than one, defer the whole prompt to
+    # the multi-step agentic loop so every requested step is executed.
+    # Note: opening/switching a view together with a single "where X is Y"
+    # filter is one logical "navigate" task (it has a dedicated combined
+    # branch below) and is therefore counted only once.
+    intents: set = set()
+    if re.search(r"\bz\s*-?\s*score\b|\bzscore\b", lower):
+        intents.add("expression_display")
+    if re.search(
+        r"\bbox\s*-?\s*plot\b|\bboxplot\b|\bviolin\b|\bbar\s*-?\s*plot\b|\bbarplot\b|"
+        r"\bbeeswarm\b|\bswarm\b|\bstrip\s*-?\s*plot\b|\bscatter\b|\bdot\s*plot\b",
+        lower,
+    ):
+        intents.add("plot_type")
+    if re.search(r"\b(?:group\s+by|group\s+samples\s+by|gruppiere(?:n)?\s+nach)\b", lower):
+        intents.add("group_by")
+    if (
+        re.search(r"\bshow\s+all\b|\bshow\s+only\b|\b(?:don'?t|do\s+not)\s+show\b|\b(?:hide|remove)\b", lower)
+        or re.search(r"\b(?:use|focus(?:\s+on)?|limit|keep)\s+.+\s+(?:dataset|datasets|species)\b", lower)
+    ):
+        intents.add("dataset_visibility")
+    if re.search(r"\bfilter\s+chain\b", lower):
+        intents.add("filter_chain")
+    if re.search(
+        r"\bhas\s+value\b|\bis\s+present\b|\bexists\b|"
+        # German "has no value" / "without a value" phrasings, incl. the
+        # relative-clause form "Samples, die keine <X>-Value haben".
+        r"\bkeine?n?\b[^.,;]*\b(?:value|wert)\b|\bohne\b[^.,;]*\b(?:value|wert)\b|"
+        r"\bhat\s+keine?n?\b|\bhaben\s+keine?n?\b",
+        lower,
+    ):
+        intents.add("has_value")
+    # A "filter <samples/rows/transcripts/proben/zeilen>" instruction used as a
+    # VERB (e.g. "filter Samples, die ...") is a refine action distinct from the
+    # noun form "<X> Filter" handled by the complex-render branch and from the
+    # "open view where X is Y" navigate branch. Detect it so a prompt that
+    # bundles it with another action (e.g. "group by Group AND filter ...")
+    # correctly defers to the multi-step loop instead of being truncated.
+    if re.search(
+        r"\b(?:filter|filtere?|filtern)\s+(?:the\s+)?"
+        r"(?:samples?|rows?|transcripts?|genes?|proben|zeilen|gene)\b",
+        lower,
+    ):
+        intents.add("refine_filter")
+    # Navigate = open/switch a view (EN or DE verbs), optionally with a single
+    # where-filter. Counted as one intent regardless of the where-clause.
+    _navigate = False
+    if re.search(
+        r"\b(?:switch|open|go|change|navigate|wechsel(?:e|n)?|wechsle|öffne(?:n)?|zeige?|gehe?|ändere?)\b",
+        lower,
+    ) and re.search(r"\b(?:compare|heatmap|ora|phylo|catalog)\b", lower):
+        _navigate = True
+    elif re.search(r"\bwhere\s+.+?\s+(?:is|=)\s+", lower):
+        _navigate = True
+    if _navigate:
+        intents.add("navigate")
+    # Finalize the combined navigate+render bypass. The dedicated branch can
+    # only encode view + ctx filters + plot type + expression, so it is unsafe
+    # whenever the prompt also asks for something it would silently drop: a text
+    # filter (e.g. "MIKC Filter"), SideColors (Row/ColSideColors), group-by, or
+    # any extra intent category beyond navigate/plot_type/expression_display.
+    # In those cases keep _combined_nav_render False so the prompt is deferred to
+    # the multi-step agentic loop and every requested step is actually applied.
+    _uncombinable = bool(
+        re.search(r"side\s*-?\s*colors?|row\s*-?\s*side|col\s*-?\s*side", lower)
+        or re.search(r"\bfilter\b", lower)
+        or (intents - {"navigate", "plot_type", "expression_display"})
+    )
+    _combined_nav_render = bool(
+        _render_target_view and (_plot_type or _expression_id) and not _uncombinable
+    )
+    # The complex-render branch handles filter + expression + SideColors as one
+    # deterministic deeplink, so it (like _combined_nav_render) bypasses the
+    # compound guard.
+    if len(intents) >= 2 and not _combined_nav_render and not _complex_render:
+        return None
+
     def _view_from_ctx() -> str:
         raw = str((client_ctx or {}).get("view") or (client_ctx or {}).get("route") or "").lower()
         if "compare" in raw or "/c/" in raw:
@@ -1687,6 +1843,304 @@ def _assistant_fast_path_response(service, cm, user_text: str, client_ctx: Dict[
     def _json_block(tag: str, payload: Dict[str, Any]) -> str:
         return f"```{tag}\n{json.dumps(payload, ensure_ascii=False)}\n```"
 
+    # Select-all SideColors: "show all SideColors", "all RowSideColors",
+    # "also ColSideColors", "alle möglichen SideColors", etc. The user wants
+    # EVERY checkbox that exists in Visualization Settings selected for the
+    # named axis (data-agnostic). The LLM does this unreliably — it picks a
+    # partial set or the wrong axis (e.g. answering "ColSideColors" by setting
+    # rowSideColors). Resolve the full option list deterministically instead.
+    # The trigger word (all/every/alle/möglichen/also/auch/…) must sit right
+    # before the SideColors phrase so "all datasets" is never mistaken for a
+    # select-all-sidecolors request.
+    _sc_trigger = (
+        r"(?:all|every|complete|sämtliche|samtliche|möglichen?|moglichen?|possible|"
+        r"both|beide|also|auch|zusätzlich|zusatzlich|dazu|too|additionally)"
+    )
+    _all_row_sc = re.search(_sc_trigger + r"\b[\w\s]{0,18}?\brow\s*-?\s*side\s*-?\s*colors?", lower)
+    _all_col_sc = re.search(_sc_trigger + r"\b[\w\s]{0,18}?\bcol(?:umn)?\s*-?\s*side\s*-?\s*colors?", lower)
+    _all_any_sc = re.search(_sc_trigger + r"\b[\w\s]{0,18}?\bside\s*-?\s*colors?", lower)
+    if _all_row_sc or _all_col_sc or _all_any_sc:
+        # Emit the "*" sentinel and let the frontend expand it to EXACTLY the
+        # checkboxes it renders in Visualization Settings. The eligible set is
+        # the client's single source of truth (it filters out hidden columns
+        # such as ``hide_columns`` and the id column, which the backend config
+        # does not know about), so expanding here would otherwise over-select
+        # masked columns like ``rna_seq``/``newick_str``. Stay data-agnostic by
+        # deferring the expansion to the client.
+        # A bare "SideColors" with no row/col qualifier targets BOTH axes.
+        _want_row = bool(_all_row_sc) or not (_all_row_sc or _all_col_sc)
+        _want_col = bool(_all_col_sc) or not (_all_row_sc or _all_col_sc)
+        sc_patch: Dict[str, Any] = {}
+        sc_descriptors: List[str] = []
+        if _want_row:
+            sc_patch["rowSideColors"] = ["*"]
+            sc_descriptors.append("RowSideColors")
+        if _want_col:
+            sc_patch["colSideColors"] = ["*"]
+            sc_descriptors.append("ColSideColors")
+        if sc_patch:
+            return (
+                f"Selecting all {' and '.join(sc_descriptors)}.\n\n"
+                + _json_block("viz_update", {"patch": sc_patch})
+            )
+
+    # Complex render: an explicit heatmap/compare view combined with
+    # Row/ColSideColors and (optionally) a text filter and an expression. The
+    # LLM handles this unreliably (it hallucinates colorScales, drops the
+    # filter, or emits invalid viz_update paths). Resolve every directive
+    # deterministically here and emit ONE deeplink so the view opens with the
+    # filter, expression and side colors already applied.
+    if _complex_render and _explicit_view in {"heatmap", "compare"}:
+        view = _explicit_view
+        if re.search(
+            r"\ball\s+datasets?\b|allen?\s+datens|alle\s+datens|across\s+all|across\s+loaded|"
+            r"\ball\s+species\b|allen?\s+spezies",
+            lower,
+        ):
+            tables = ["all"]
+        else:
+            tables = _tables_from_ctx(default_all=True)
+
+        try:
+            settings = assistant_tools_module.tool_list_view_settings(service, cm, view=view, tables=tables)
+        except Exception:
+            settings = {}
+        controls = settings.get("controls") if isinstance(settings, dict) else None
+        controls = controls if isinstance(controls, list) else []
+
+        def _sidecolor_display_map(control_key: str) -> Dict[str, str]:
+            mapping: Dict[str, str] = {}
+            for control in controls:
+                if not isinstance(control, dict) or control.get("key") != control_key:
+                    continue
+                for opt in control.get("option_details") or []:
+                    if not isinstance(opt, dict):
+                        continue
+                    name = str(opt.get("name") or "").strip()
+                    display = str(opt.get("display_name") or "").strip()
+                    if not name:
+                        continue
+                    mapping[re.sub(r"\s+", " ", name.lower())] = name
+                    if display:
+                        mapping[re.sub(r"\s+", " ", display.lower())] = name
+            return mapping
+
+        def _segment_after(start_pattern: str, stop_pattern: Optional[str]) -> str:
+            match = re.search(start_pattern, lower)
+            if not match:
+                return ""
+            segment = text[match.end():]
+            if stop_pattern:
+                stop = re.search(stop_pattern, segment, re.I)
+                if stop:
+                    segment = segment[: stop.start()]
+            return segment
+
+        def _split_terms(segment: str) -> List[str]:
+            if not segment:
+                return []
+            parts = re.split(
+                r"\s*(?:,|;|&|/|\bund\b|\band\b|\bsowie\b|\bplus\b|\bas\s+well\s+as\b)\s*",
+                segment,
+                flags=re.I,
+            )
+            terms: List[str] = []
+            for part in parts:
+                cleaned = part.strip().strip('"\'').strip()
+                # Trim a trailing clause introduced by a conjunction/preposition
+                # that the split missed (e.g. "TF Family for all datasets").
+                cleaned = re.split(r"\b(?:for|on|in|with|mit|für|über|aber)\b", cleaned, 1, flags=re.I)[0].strip()
+                cleaned = re.sub(r"\s+", " ", cleaned)
+                if cleaned:
+                    terms.append(cleaned)
+            return terms
+
+        def _map_terms(terms: List[str], mapping: Dict[str, str]) -> Tuple[List[str], List[str]]:
+            resolved: List[str] = []
+            unknown: List[str] = []
+            for term in terms:
+                key = re.sub(r"\s+", " ", term.lower())
+                internal = mapping.get(key)
+                if internal is None:
+                    # Fuzzy: the term is contained in (or contains) a display name.
+                    for disp_key, internal_name in mapping.items():
+                        if key and (key in disp_key or disp_key in key):
+                            internal = internal_name
+                            break
+                if internal is None:
+                    unknown.append(term)
+                elif internal not in resolved:
+                    resolved.append(internal)
+            return resolved, unknown
+
+        row_side = "row\\s*-?\\s*side\\s*-?\\s*colors?"
+        col_side = "col\\s*-?\\s*side\\s*-?\\s*colors?"
+        row_terms = _split_terms(_segment_after(row_side, col_side))
+        col_terms = _split_terms(_segment_after(col_side, row_side))
+        row_keys, row_unknown = _map_terms(row_terms, _sidecolor_display_map("rowSideColors"))
+        col_keys, col_unknown = _map_terms(col_terms, _sidecolor_display_map("colSideColors"))
+
+        visualizations: Dict[str, Any] = {}
+        if row_keys:
+            visualizations["rowSideColors"] = row_keys
+        if col_keys:
+            visualizations["colSideColors"] = col_keys
+
+        # Expression display (e.g. "Z Score", "log2 TPM").
+        expr_label = None
+        expr_display = None
+        if _expression_id:
+            try:
+                expr_opts = [o for o in (settings.get("expression_options") or []) if o.get("available")]
+            except Exception:
+                expr_opts = []
+            chosen = next((o for o in expr_opts if o.get("id") == _expression_id), None)
+            if chosen is None and _expression_id in {"zscore", "zscore-tpm"}:
+                chosen = next((o for o in expr_opts if o.get("transform") == "zscore"), None)
+            if chosen is not None:
+                expr_label = chosen.get("label")
+                expr_display = {
+                    "optionId": chosen.get("id"),
+                    "layer": chosen.get("layer"),
+                    "transform": chosen.get("transform"),
+                }
+                visualizations["expressionDisplay"] = expr_display
+                if view == "compare":
+                    visualizations.setdefault("compare", {})["expression"] = chosen.get("id")
+
+        # Text filter, e.g. "MIKC Filter" / "filter on MIKC". Resolve the value
+        # to its column with resolve_value so we never guess the column.
+        filters = _current_filters()
+        nested = dict(filters.get("filters")) if isinstance(filters.get("filters"), dict) else {}
+        filter_summary = None
+        filter_block = None
+        filter_match = (
+            re.search(r"([A-Za-z0-9_.:+-]{2,})\s+filter\b", text, re.I)
+            or re.search(r"\bfilter\b\s*(?:auf|on|for|für|=|:)?\s*([A-Za-z0-9_.:+-]{2,})", text, re.I)
+        )
+        if filter_match:
+            candidate = filter_match.group(1).strip().strip('"\'')
+            if candidate and candidate.lower() not in {
+                "the", "a", "an", "den", "der", "die", "das", "ein", "eine", "einen", "this", "that",
+            }:
+                try:
+                    sentinels = {"all", "*", "__all__", "every", "everything"}
+                    lookup_tables = None if any(str(t).strip().lower() in sentinels for t in tables) else tables
+                    resolved = assistant_tools_module.tool_resolve_value(
+                        service, cm, query=candidate, tables=lookup_tables, max_hits=25,
+                    )
+                except Exception:
+                    resolved = {}
+                hits = resolved.get("hits") if isinstance(resolved, dict) else None
+                hits = hits if isinstance(hits, list) else []
+                hit = next((h for h in hits if h.get("match") == "exact"), None) or (hits[0] if hits else None)
+                if hit and hit.get("column"):
+                    column = str(hit.get("column"))
+                    value = str(hit.get("value") or candidate)
+                    nested[column] = {"value": value, "match_mode": "or", "exact": True}
+                    filter_summary = f"{hit.get('display_name') or column} = {value}"
+                    filter_block = _json_block(
+                        "add_filter",
+                        {"column": column, "value": value, "match_mode": "or", "exact": True},
+                    )
+
+        filter_payload = {
+            "filters": nested,
+            "datasetIdFilters": filters.get("datasetIdFilters") if isinstance(filters.get("datasetIdFilters"), dict) else {},
+        }
+
+        # Only proceed deterministically if we actually resolved something to
+        # render; otherwise defer to the LLM.
+        if visualizations or nested:
+            check = assistant_tools_module.tool_build_deeplink(
+                service, cm, view=view, tables=tables, filters=filter_payload, visualizations=visualizations,
+            )
+            if isinstance(check, dict) and check.get("error"):
+                suggestion = check.get("suggestion") or "Please choose a narrower visible Sidebar filter value."
+                return f"I can't open that {view} yet: {check.get('error')} {suggestion}"
+
+            descriptors: List[str] = []
+            if filter_summary:
+                descriptors.append(f"filtered by {filter_summary}")
+            if expr_label:
+                descriptors.append(str(expr_label))
+            if row_keys:
+                descriptors.append("RowSideColors " + ", ".join(row_keys))
+            if col_keys:
+                descriptors.append("ColSideColors " + ", ".join(col_keys))
+            note = ""
+            unknown = row_unknown + col_unknown
+            if unknown:
+                note = " (skipped unrecognized SideColor(s): " + ", ".join(unknown) + ")"
+            suffix = (" — " + "; ".join(descriptors)) if descriptors else ""
+
+            blocks = ""
+            if filter_block:
+                blocks += filter_block + "\n\n"
+            blocks += _json_block("deeplink", {
+                "view": view, "tables": tables, "filters": filter_payload, "visualizations": visualizations,
+            })
+            if expr_display:
+                blocks += "\n\n" + _json_block("set_expression_display", expr_display)
+            return f"Opening {view}{suffix}.{note}\n\n" + blocks
+
+    # Combined navigate + render: "compare view as box plot with log2 tpm",
+    # "open compare as boxplot with z score", "switch to compare violin",
+    # etc. Build ONE deeplink that opens the target view with the requested
+    # plot type and expression baked in (build_deeplink encodes plotType and
+    # expression into the URL), so the view actually switches AND renders in a
+    # single deterministic step instead of relying on the LLM.
+    if _combined_nav_render and _render_target_view:
+        view = _render_target_view
+        tables = _tables_from_ctx(default_all=view != "catalog")
+        filters = _current_filters()
+        visualizations: Dict[str, Any] = {}
+        expr_label = None
+        if _expression_id:
+            try:
+                settings = assistant_tools_module.tool_list_view_settings(service, view=view, tables=tables)
+                expr_opts = [o for o in settings.get("expression_options") or [] if o.get("available")]
+            except Exception:
+                expr_opts = []
+            chosen = next((o for o in expr_opts if o.get("id") == _expression_id), None)
+            # Fall back to the z-score sibling if the exact TPM/GeTMM variant
+            # isn't available for the loaded datasets.
+            if chosen is None and _expression_id in {"zscore", "zscore-tpm"}:
+                chosen = next((o for o in expr_opts if o.get("transform") == "zscore"), None)
+            if chosen is None and expr_opts and _expression_id in {item.get("id") for item in expr_opts}:
+                chosen = next((o for o in expr_opts if o.get("id") == _expression_id), None)
+            if chosen is not None:
+                expr_label = chosen.get("label")
+                visualizations["expressionDisplay"] = {
+                    "optionId": chosen.get("id"),
+                    "layer": chosen.get("layer"),
+                    "transform": chosen.get("transform"),
+                }
+                if view == "compare":
+                    visualizations.setdefault("compare", {})["expression"] = chosen.get("id")
+        if _plot_type and view == "compare":
+            visualizations.setdefault("compare", {})["plotType"] = _plot_type
+
+        check = assistant_tools_module.tool_build_deeplink(
+            service, cm, view=view, tables=tables, filters=filters, visualizations=visualizations,
+        )
+        if isinstance(check, dict) and check.get("error"):
+            suggestion = check.get("suggestion") or "Please choose a narrower visible Sidebar filter value."
+            return f"I can't open that {view} yet: {check.get('error')} {suggestion}"
+
+        descriptors = []
+        if _plot_type and view == "compare":
+            descriptors.append(f"{_plot_type} plot")
+        if expr_label:
+            descriptors.append(str(expr_label))
+        suffix = f" as {', '.join(descriptors)}" if descriptors else ""
+        blocks = _json_block("deeplink", {
+            "view": view, "tables": tables, "filters": filters, "visualizations": visualizations,
+        })
+        if "expressionDisplay" in visualizations:
+            blocks += "\n\n" + _json_block("set_expression_display", visualizations["expressionDisplay"])
+        return f"Opening {view}{suffix}.\n\n" + blocks
+
     # Rendering shortcut: "z score", "z-score", "zscore".
     if re.search(r"\bz\s*-?\s*score\b|\bzscore\b", lower):
         view = _view_from_ctx()
@@ -1712,11 +2166,33 @@ def _assistant_fast_path_response(service, cm, user_text: str, client_ctx: Dict[
     group_match = re.search(r"\b(?:group\s+by|group\s+samples\s+by|gruppiere(?:n)?\s+nach)\s+(.+?)\s*[.!?]*$", text, re.I)
     if group_match:
         label = group_match.group(1).strip().strip('"\'')
+        # Defense in depth: never let the greedy capture swallow a following
+        # clause (e.g. "Group und filter Samples, die ..."). Trim the label at
+        # the first conjunction / relative-clause / second-action boundary so a
+        # stray compound prompt resolves to just the column name (or fails the
+        # column lookup cleanly) instead of searching for a sentence.
+        label = re.split(
+            r"\s*(?:,|;|\bund\b|\band\b|\bsowie\b|\bplus\b|\bthen\b|\bdann\b|"
+            r"\bfilter\b|\bwhere\b|\bwo\b|\bdie\b|\bdas\b|\bwhich\b|\bthat\b|"
+            r"\bmit\b|\bwith\b)\s",
+            label,
+            maxsplit=1,
+            flags=re.I,
+        )[0].strip().strip('"\'')
         view = _view_from_ctx()
         tables = _tables_from_ctx()
         col = _resolve_obs_column(label, tables)
         if not col:
             return f"I can't find a visible sample metadata column named '{label}' in the current datasets."
+        if view == "heatmap":
+            # The heatmap has no grouping column. "Group samples by <metadata>"
+            # is expressed as a ColSideColor in this view, so add the resolved
+            # sample-metadata column to colSideColors instead of emitting an
+            # invalid compare/phylo grouping patch.
+            return (
+                f"Annotating samples by {col['display']} (ColSideColor) in the heatmap.\n\n"
+                + _json_block("viz_update", {"patch": {"colSideColors": [col["internal"]]}})
+            )
         if view not in {"compare", "phylo"}:
             return (
                 f"'{col['display']}' is sample metadata. Grouping by sample metadata is available in Compare and Phylo views; "
@@ -1788,7 +2264,55 @@ def _assistant_fast_path_response(service, cm, user_text: str, client_ctx: Dict[
     # View switches: "switch to compare", "open heatmap", etc.  Prompts that
     # also contain a concrete "where X is Y" clause are handled below so the
     # requested filter is not lost.
-    switch_match = re.search(r"\b(?:switch|open|go|change)\s+(?:to\s+)?(?:the\s+)?(compare|heatmap|ora|phylo|catalog)\b", lower)
+    def _normalize_view_token(token: str) -> Optional[str]:
+        t = (token or "").strip().lower()
+        if t in {"compare", "comparison"}:
+            return "compare"
+        if t in {"heatmap", "heat map", "heat-map"}:
+            return "heatmap"
+        if t in {"ora", "over-representation", "overrepresentation", "over representation"}:
+            return "ora"
+        if t in {"phylo", "phylotree", "phylo tree", "phylogenetic", "phylogeny", "gene tree", "gene-tree"}:
+            return "phylo"
+        if t in {"catalog", "catalogue", "katalog"}:
+            return "catalog"
+        return None
+
+    def _switch_view_response(view: str) -> str:
+        tables = _tables_from_ctx(default_all=view != "catalog")
+        filters = _current_filters()
+        return (
+            f"Switching to {view}.\n\n"
+            + _json_block("deeplink", {
+                "view": view,
+                "tables": tables,
+                "filters": filters,
+                "visualizations": {},
+            })
+        )
+
+    # Bare view name: a prompt that is essentially just a view name, optionally
+    # led by a show/display/open verb (EN or DE) — e.g. "Heatmap", "Show
+    # Heatmap", "Compare", "zeige Heatmap", "öffne Compare". These must switch
+    # the view deterministically; otherwise they reach the LLM as a one-word
+    # message and come back empty.
+    _bare_view_match = re.fullmatch(
+        r"\s*(?:please\s+|bitte\s+|just\s+|now\s+|los\s+|mach\s+)?"
+        r"(?:show(?:\s+me)?|display|render|view|see|open|go|take\s+me|"
+        r"zeige?(?:\s+mir)?|zeig|öffne(?:n)?|wechs(?:le|ele|eln|el)|gehe?)?\s*"
+        r"(?:to\s+|zu(?:r|m)?\s+|the\s+|den\s+|die\s+|das\s+)?\s*"
+        r"(compare|comparison|heatmap|heat\s*-?\s*map|ora|over-?representation|"
+        r"phylo(?:genetic|geny)?|phylo\s*-?\s*tree|gene\s*-?\s*tree|"
+        r"catalog|catalogue|katalog)"
+        r"(?:\s+(?:view|analysis|ansicht|tree|plot))?\s*[.!?]*\s*",
+        lower,
+    )
+    if _bare_view_match:
+        bare_view = _normalize_view_token(_bare_view_match.group(1).replace("-", " ").strip())
+        if bare_view:
+            return _switch_view_response(bare_view)
+
+    switch_match = re.search(r"\b(?:switch|open|go|change|show|display)\s+(?:to\s+)?(?:the\s+)?(compare|heatmap|ora|phylo|catalog)\b", lower)
     if switch_match and not re.search(r"\bwhere\b.+\b(?:is|=)\b", lower):
         view = switch_match.group(1)
         if view == "phylo":

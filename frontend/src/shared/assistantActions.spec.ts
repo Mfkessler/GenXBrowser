@@ -143,6 +143,31 @@ describe("assistant visualization action guardrails", () => {
     expect(deps.visualizationStore.$state.colSideColors).toEqual(["default_trait"]);
   });
 
+  it("expands the '*' sentinel to all eligible RowSideColors", async () => {
+    const deps = makeDeps();
+    deps.idColumn = "length";
+    deps.hiddenColumns = ["tf_family"];
+    const action = vizAction({ rowSideColors: ["*"] });
+
+    const mutated = await createAssistantActionDispatcher(deps).dispatch(action);
+
+    expect(mutated).toBe(true);
+    expect(action.status).toBe("applied");
+    // length (id column) and tf_family (hidden) are excluded.
+    expect(deps.visualizationStore.$state.rowSideColors).toEqual(["ortho_id", "is_tf"]);
+  });
+
+  it("expands the '*' sentinel to all eligible ColSideColors", async () => {
+    const deps = makeDeps();
+    const action = vizAction({ colSideColors: ["*"] });
+
+    const mutated = await createAssistantActionDispatcher(deps).dispatch(action);
+
+    expect(mutated).toBe(true);
+    expect(action.status).toBe("applied");
+    expect(deps.visualizationStore.$state.colSideColors).toEqual(["default_trait", "condition"]);
+  });
+
   it("resolves display names before axis validation", async () => {
     const deps = makeDeps();
     const action = vizAction({
@@ -188,6 +213,40 @@ describe("assistant visualization action guardrails", () => {
     expect(deps.__test.filterChainColumns).toEqual([["ortho_id", "tf_family"]]);
     expect(deps.__test.filterChainOperators).toEqual([["ortho_id", "tf_family", "and"]]);
     expect(action.summary).toContain("Orthogroup AND TF Family");
+  });
+
+  it("re-homes a bare groupingColumn onto the active compare view", async () => {
+    const deps = makeDeps();
+    deps.visualizationStore.$state.compare = { groupingColumn: "" };
+    deps.route = {
+      ...deps.route,
+      fullPath: "/c/CS",
+      path: "/c/CS",
+      name: "compare expression",
+    } as unknown as DispatcherDeps["route"];
+
+    const action = vizAction({ groupingColumn: "condition" });
+    const mutated = await createAssistantActionDispatcher(deps).dispatch(action);
+
+    expect(mutated).toBe(true);
+    expect(action.status).toBe("applied");
+    expect((deps.visualizationStore.$state.compare as Record<string, unknown>).groupingColumn).toBe("condition");
+  });
+
+  it("re-homes a compare.groupingColumn onto colSideColors when in the heatmap", async () => {
+    const deps = makeDeps();
+    deps.visualizationStore.$state.colSideColors = ["default_trait"];
+    // Default route in makeDeps() is the heatmap (/h/CS).
+    const action = vizAction({ compare: { groupingColumn: "condition" } });
+    const mutated = await createAssistantActionDispatcher(deps).dispatch(action);
+
+    expect(mutated).toBe(true);
+    expect(action.status).toBe("applied");
+    // Grouping has no home in the heatmap, so the metadata column is added
+    // to the existing ColSideColors selection instead of being dropped.
+    expect(deps.visualizationStore.$state.colSideColors).toEqual(["default_trait", "condition"]);
+    // No bogus compare grouping column should leak in while at the heatmap.
+    expect(deps.visualizationStore.$state.compare).toBeUndefined();
   });
 
   it("updates visible dataset cards through route table_names", async () => {

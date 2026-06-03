@@ -391,11 +391,11 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { marked } from "marked";
 import axios from "axios";
-import { API_BASE_URL } from "@/shared/Config";
+import { API_BASE_URL, type Config } from "@/shared/Config";
 import {
   useAssistantStore,
   type AssistantAction,
@@ -419,6 +419,7 @@ const filtersStore = useFiltersStore();
 const visualizationStore = useVisualizationStore();
 const catalogStore = useCatalogStore();
 const columnsStore = useColumnsStore();
+const config = inject<Config>("config");
 const router = useRouter();
 const route = useRoute();
 const draft = ref("");
@@ -871,6 +872,8 @@ function dispatcherDeps() {
     catalogStore,
     router,
     route,
+    idColumn: config?.visualization?.id_column,
+    hiddenColumns: config?.visualization?.hide_columns,
   };
 }
 

@@ -248,10 +248,13 @@
               </div>
 
               <div class="form-group">
-                <label class="toggle-label">
-                  <input type="checkbox" v-model="config.llm_config.enabled" />
-                  <span>Enable assistant</span>
-                </label>
+                <div class="switch-row">
+                  <label class="switch-track" :class="{ checked: config.llm_config.enabled }">
+                    <input type="checkbox" v-model="config.llm_config.enabled" class="switch-input" />
+                    <span class="switch-thumb"></span>
+                  </label>
+                  <span class="switch-label" @click="config.llm_config.enabled = !config.llm_config.enabled">Enable assistant</span>
+                </div>
               </div>
 
               <div class="form-group">
@@ -332,17 +335,31 @@
                     max="600"
                   />
                 </div>
+                <div class="form-group">
+                  <label>Iteration limit</label>
+                  <input
+                    v-model.number="config.llm_config.max_tool_iterations"
+                    type="number"
+                    class="form-control"
+                    min="1"
+                    max="20"
+                  />
+                  <small class="hint">Max tool-call rounds per turn.</small>
+                </div>
               </div>
 
               <div class="form-group">
-                <button
-                  type="button"
-                  class="btn btn-outline"
-                  :disabled="llmTestRunning || !config.llm_config.api_base || !config.llm_config.model"
-                  @click="testLlmConnection"
-                >
-                  {{ llmTestRunning ? 'Testing…' : '🔌 Test connection' }}
-                </button>
+                <div class="btn-with-hint">
+                  <button
+                    type="button"
+                    class="btn btn-outline"
+                    :disabled="llmTestRunning || !config.llm_config.api_base || !config.llm_config.model"
+                    @click="testLlmConnection"
+                  >
+                    {{ llmTestRunning ? 'Testing…' : '🔌 Test connection' }}
+                  </button>
+                  <small class="hint">Uses the unsaved values above (falling back to the stored API key when the field is empty).</small>
+                </div>
                 <div v-if="llmTestResult" class="test-result" :class="llmTestResult.ok ? 'ok' : 'err'">
                   <template v-if="llmTestResult.ok">
                     ✅ Connected to <code>{{ llmTestResult.model }}</code> in {{ llmTestResult.latency_ms }} ms.
@@ -351,7 +368,6 @@
                     ❌ {{ llmTestResult.error }}
                   </template>
                 </div>
-                <small class="hint">Uses the unsaved values above (falling back to the stored API key when the field is empty).</small>
               </div>
             </form>
           </div>
@@ -479,6 +495,7 @@ interface Config {
     request_timeout_s: number;
     max_tokens: number;
     temperature: number;
+    max_tool_iterations: number;
   };
 }
 
@@ -597,7 +614,10 @@ export default defineComponent({
           request_timeout_s: 60,
           max_tokens: 1024,
           temperature: 0.2,
+          max_tool_iterations: 6,
         };
+      } else if (c.llm_config.max_tool_iterations == null) {
+        c.llm_config.max_tool_iterations = 6;
       }
     }
 
@@ -1180,14 +1200,15 @@ export default defineComponent({
 .form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
 .banner { padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; font-size: 14px; }
 .banner-warning { background: #fff7ed; color: #9a3412; border: 1px solid #fdba74; }
-.toggle-label { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 500; }
-.toggle-label input { width: 18px; height: 18px; }
+.toggle-label { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 500; line-height: 1.4; margin-bottom: 0; }
+.toggle-label input[type="checkbox"] { width: 16px; height: 16px; flex-shrink: 0; margin: 0; cursor: pointer; accent-color: #2563eb; }
 .test-result { margin-top: 10px; padding: 8px 12px; border-radius: 6px; font-size: 14px; display: inline-block; }
 .test-result.ok { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
 .test-result.err { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
 .test-result code { background: rgba(0,0,0,0.06); padding: 1px 5px; border-radius: 3px; }
+.btn-with-hint { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
 
-.form-group label {
+.form-group label:not(.toggle-label) {
   display: block;
   margin-bottom: 6px;
   font-weight: 500;
@@ -1286,6 +1307,68 @@ export default defineComponent({
 }
 
 .toggle-inline input:checked::before { left: 22px; }
+
+/* Polished pill-switch for GAIA enable toggle */
+.switch-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.switch-track {
+  position: relative;
+  display: inline-block;
+  width: 48px;
+  height: 26px;
+  border-radius: 13px;
+  background: #d1d5db;
+  cursor: pointer;
+  transition: background 0.25s ease, box-shadow 0.2s ease;
+  box-shadow: inset 0 1px 3px rgba(0,0,0,0.15);
+  flex-shrink: 0;
+}
+
+.switch-track.checked {
+  background: #22c55e;
+  box-shadow: inset 0 1px 3px rgba(0,0,0,0.1), 0 0 0 3px rgba(34,197,94,0.15);
+}
+
+.switch-input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.switch-input:focus-visible ~ .switch-thumb {
+  box-shadow: 0 1px 4px rgba(0,0,0,0.25), 0 0 0 3px rgba(37,99,235,0.35);
+}
+
+.switch-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.22);
+  transition: transform 0.25s ease, box-shadow 0.2s ease;
+}
+
+.switch-track.checked .switch-thumb {
+  transform: translateX(22px);
+}
+
+.switch-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: #374151;
+  cursor: pointer;
+  user-select: none;
+  line-height: 1;
+}
 
 /* Status Bar */
 .status-bar {

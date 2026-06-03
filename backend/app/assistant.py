@@ -1372,10 +1372,38 @@ def run_agentic_turn(
                 if result.get("url_path") and not result.get("error"):
                     last_deeplink_context = {"args": dict(_args or {}), "result": dict(result)}
 
-    # Iteration cap hit — force one more call without tools to get text.
+    # ── Iteration cap reached ────────────────────────────────────────────
+    # The model kept requesting tools past the configured limit. Force one
+    # last completion WITHOUT tools so it can summarise what it found, then
+    # always close with a clear, user-facing notice — never a raw/cryptic
+    # error string. `replace: True` wipes any leaked partial bubble content.
+    cap_notice = (
+        "\n\n---\n"
+        f"⚠️ **Step limit reached.** I stopped after {int(max_iterations)} "
+        "tool steps without finishing this request.\n\n"
+        "This usually means the request was very complex or ambiguous. You can:\n"
+        "- rephrase it more specifically or break it into smaller steps, or\n"
+        "- raise the limit in the Admin panel (GAIA → max tool iterations)."
+    )
+
     final, used_model, err = _complete_with_fallback(cfg, messages, tools=None)
     if final is None:
-        yield {"type": "error", "error": err or "iteration cap hit and no fallback response"}
+        # Even the no-tools fallback failed — show the notice (not a cryptic
+        # raw error) so the user still receives an actionable message.
+        msg_text = (
+            "I couldn't complete this request within the allowed number of steps."
+            + cap_notice
+        )
+        if err:
+            logger.warning("iteration cap fallback completion failed: %s", err)
+        yield {
+            "type": "delta",
+            "delta": msg_text,
+            "replace": True,
+            "model": last_model,
+            "iterations": int(max_iterations),
+        }
+        yield {"type": "done", "model": last_model, "iterations": int(max_iterations)}
         return
     final_text = _apply_coverage_corrections(
         retag_action_fences(final.get("content") or ""), coverage_facts,
@@ -1386,7 +1414,8 @@ def run_agentic_turn(
         final_text = (final_text or "").rstrip() + "\n\n" + "\n\n".join(intercepted_action_blocks)
     yield {
         "type": "delta",
-        "delta": final_text + "\n\n_(Note: tool iteration cap reached.)_",
+        "delta": (final_text or "").rstrip() + cap_notice,
+        "replace": True,
         "model": used_model or last_model,
         "iterations": int(max_iterations),
     }

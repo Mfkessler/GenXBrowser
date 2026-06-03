@@ -73,6 +73,12 @@ export interface DispatcherDeps {
   catalogStore: CatalogApi;
   router: Router;
   route: RouteLocationNormalizedLoaded;
+  /** The configured id column (config.visualization.id_column). Excluded from
+   *  the eligible RowSideColors set, mirroring Visualization Settings. */
+  idColumn?: string;
+  /** Columns hidden from the heatmap (config.visualization.hide_columns).
+   *  Excluded from the eligible RowSideColors set. */
+  hiddenColumns?: string[];
 }
 
 export interface DispatchResult {
@@ -214,8 +220,29 @@ export function createAssistantActionDispatcher(deps: DispatcherDeps) {
 
   async function autoApplyActions(msg: ChatMessage): Promise<boolean> {
     let mutated = false;
-    for (const action of msg.actions || []) {
-      if (action.kind !== "deeplink" && action.status && action.status !== "pending") continue;
+    const actions = msg.actions || [];
+
+    // Phase 1 — open/switch the view FIRST and wait until it is mounted.
+    // Visualization or filter settings applied before the destination view
+    // is ready would target the previous view (or get clobbered by the new
+    // view's onMounted initialization), which surfaced as "Update failed".
+    // Navigation must therefore complete and settle before anything else.
+    let navigatedTo: string | null = null;
+    for (const action of actions) {
+      if (action.kind !== "deeplink") continue;
+      mutated = (await dispatch(action)) || mutated;
+      if (action.status === "applied" && action.url_path) {
+        navigatedTo = action.url_path;
+      }
+    }
+    if (navigatedTo) await waitForViewReady(deps, navigatedTo);
+
+    // Phase 2 — apply the remaining settings (viz_update, expression,
+    // filters, grouping, …) on the now-mounted destination view, in the
+    // order the model emitted them.
+    for (const action of actions) {
+      if (action.kind === "deeplink") continue;
+      if (action.status && action.status !== "pending") continue;
       mutated = (await dispatch(action)) || mutated;
     }
     return mutated;
@@ -290,8 +317,50 @@ function writeAudit(action: AssistantAction, before: UndoSnapshot, after: UndoSn
 function applyVizUpdate(action: AssistantAction, deps: DispatcherDeps): DispatchResult {
   const patch = (action.spec.patch || action.spec) as Record<string, unknown>;
   const expressionAction = expressionActionFromPatch(patch, deps);
-  if (expressionAction) return applySetExpressionDisplay(expressionAction, deps);
-  const entries = normalizePatchEntries(patch);
+  let expressionResult: DispatchResult | null = null;
+  if (expressionAction) {
+    expressionResult = applySetExpressionDisplay(expressionAction, deps);
+  }
+  // Drop the expression-routing keys so the generic patch walk below doesn't
+  // try to validate `compare.expression` / `expression` as plain viz paths
+  // (they are handled by set_expression_display above).
+  const groupingNamespace = activeGroupingNamespace(deps);
+  const activeView = activeViewName(deps);
+  const entries = normalizePatchEntries(patch)
+    .flatMap(({ path, value }): Array<{ path: string[]; value: unknown }> => {
+      // The model often emits a grouping-column patch that belongs to a
+      // DIFFERENT view than the one the user is actually in (e.g. it sends
+      // `compare.groupingColumn` while the user is at the Heatmap). Re-home
+      // every grouping request onto the active view so "group by …" always
+      // means the right thing for the view GAIA is actually controlling:
+      //   • Compare → `compare.groupingColumn`
+      //   • Phylo   → `phyloTree.groupingColumn`
+      //   • Heatmap → the heatmap has no grouping column; sample-metadata
+      //     "grouping" is expressed as a ColSideColor (e.g. Group), so merge
+      //     the requested column into the existing colSideColors selection.
+      if (isGroupingColumnPath(path)) {
+        if (groupingNamespace) return [{ path: [groupingNamespace, "groupingColumn"], value }];
+        if (activeView === "heatmap") {
+          const current = Array.isArray(deps.visualizationStore.$state.colSideColors)
+            ? (deps.visualizationStore.$state.colSideColors as string[])
+            : [];
+          return [{ path: ["colSideColors"], value: [...current, String(value)] }];
+        }
+        // No view owns a grouping column here — drop it rather than error.
+        return [];
+      }
+      return [{ path, value }];
+    })
+    .filter(({ path }) => {
+      const joined = path.join(".");
+      return joined !== "compare.expression"
+        && joined !== "expression"
+        && path[0] !== "expressionDisplay";
+    });
+  if (entries.length === 0) {
+    if (expressionResult) return expressionResult;
+    throw new Error("no valid visualization patch keys");
+  }
   const validated = entries.map(({ path, value }) => ({
     path,
     value: validatePatchValue(path.join("."), value, deps),
@@ -319,19 +388,38 @@ function applyVizUpdate(action: AssistantAction, deps: DispatcherDeps): Dispatch
     }
   });
 
-  if (applied.length === 0) throw new Error("no patch keys matched the visualization store");
+  if (applied.length === 0 && !expressionResult) {
+    throw new Error("no patch keys matched the visualization store");
+  }
+  const summaryParts = applied.map(
+    ({ path, value }) => `${path} -> ${formatPatchSummaryValue(deps, value)}`,
+  );
+  if (expressionResult?.summary) summaryParts.unshift(expressionResult.summary);
   return {
     mutated: true,
-    summary: applied.map(({ path, value }) => `${path} -> ${formatPatchSummaryValue(deps, value)}`).join(", "),
+    summary: summaryParts.join(", "),
   };
 }
 
 function expressionActionFromPatch(patch: Record<string, unknown>, deps: DispatcherDeps): AssistantAction | null {
   const expression = patch.expressionDisplay;
   const flatOption = patch["expressionDisplay.optionId"];
-  const optionIdRaw = flatOption ?? (expression && typeof expression === "object" && !Array.isArray(expression)
-    ? (expression as Record<string, unknown>).optionId
-    : undefined);
+  // Compare view stores its own expression copy under `compare.expression`
+  // (a bare option-id string). The model sometimes emits it as a viz_update
+  // patch instead of `set_expression_display`; route it to the same handler
+  // so the expression display + compare mirror both update. Also tolerate a
+  // nested `compare: { expression }` object and a top-level `expression` key.
+  const nestedCompare = patch.compare;
+  const compareExpression = patch["compare.expression"]
+    ?? (nestedCompare && typeof nestedCompare === "object" && !Array.isArray(nestedCompare)
+      ? (nestedCompare as Record<string, unknown>).expression
+      : undefined)
+    ?? patch.expression;
+  const optionIdRaw = flatOption
+    ?? (expression && typeof expression === "object" && !Array.isArray(expression)
+      ? (expression as Record<string, unknown>).optionId
+      : undefined)
+    ?? compareExpression;
   if (optionIdRaw === undefined) return null;
   const optionId = enumValue(EXPRESSION_OPTION_IDS, "expressionDisplay.optionId")(optionIdRaw) as string;
   const option = EXPRESSION_OPTIONS[optionId];
@@ -526,10 +614,77 @@ function activeDatasetRoutePrefix(path: string): "h" | "o" | "c" | "p" | null {
   return match ? match[1] as "h" | "o" | "c" | "p" : null;
 }
 
-function applyDeeplink(action: AssistantAction, deps: DispatcherDeps): DispatchResult {
+function applyDeeplink(action: AssistantAction, deps: DispatcherDeps): DispatchResult | Promise<DispatchResult> {
   if (!action.url_path || action.url_path === deps.route.fullPath) return { mutated: false };
-  deps.router.push(action.url_path).catch(() => { /* ignore nav rejection */ });
-  return { mutated: true, summary: action.url_path };
+  // Await the navigation so callers can sequence post-navigation settings
+  // (viz/filters) only after the destination route is actually active.
+  return deps.router
+    .push(action.url_path)
+    .then(() => ({ mutated: true, summary: action.url_path as string }))
+    .catch(() => ({ mutated: true, summary: action.url_path as string }));
+}
+
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => resolve());
+    else setTimeout(resolve, 16);
+  });
+}
+
+/**
+ * Wait until the freshly-navigated view is mounted and has run its own
+ * onMounted initialization, so assistant-applied settings are the LAST writes
+ * and therefore survive. Bounded so it can never hang the dispatch loop.
+ */
+async function waitForViewReady(deps: DispatcherDeps, targetPath: string): Promise<void> {
+  const targetBase = targetPath.split("?")[0] || "";
+  const router = deps.router as unknown as {
+    currentRoute?: { value?: { path?: string } };
+  };
+  // If we can't observe the router (e.g. test stubs), don't block.
+  if (!router.currentRoute || typeof router.currentRoute.value === "undefined") {
+    await nextFrame();
+    return;
+  }
+  const deadline = Date.now() + 4000;
+  while (Date.now() < deadline) {
+    const curPath = router.currentRoute.value?.path || "";
+    if (curPath && targetBase && curPath === targetBase) break;
+    await nextFrame();
+  }
+  // Two extra frames let the destination view's onMounted defaults settle
+  // before we overwrite plot type / expression / grouping.
+  await nextFrame();
+  await nextFrame();
+}
+
+function activeGroupingNamespace(deps: DispatcherDeps): "compare" | "phyloTree" | null {
+  const name = String(deps.route?.name ?? "");
+  const path = String(deps.route?.path ?? "");
+  if (name === "compare expression" || path.startsWith("/c/")) return "compare";
+  if (name === "phylogenetic analysis" || path.startsWith("/p/")) return "phyloTree";
+  return null;
+}
+
+/** Which analysis view the user is currently in, derived from the route.
+ *  GAIA must only apply settings that belong to the active view; this lets
+ *  the dispatcher re-home or reject view-specific patches accordingly. */
+function activeViewName(deps: DispatcherDeps): "heatmap" | "compare" | "phylo" | "ora" | "catalog" | null {
+  const name = String(deps.route?.name ?? "");
+  const path = String(deps.route?.path ?? "");
+  if (name === "heatmap" || path.startsWith("/h/")) return "heatmap";
+  if (name === "compare expression" || path.startsWith("/c/")) return "compare";
+  if (name === "phylogenetic analysis" || path.startsWith("/p/")) return "phylo";
+  if (name === "ora analysis" || path.startsWith("/o/")) return "ora";
+  if (name === "catalog" || path.startsWith("/catalog")) return "catalog";
+  return null;
+}
+
+/** True for any grouping-column patch path the model might emit: a bare
+ *  `groupingColumn`, or the `compare`/`phyloTree` namespaced variants. */
+function isGroupingColumnPath(path: string[]): boolean {
+  if (path[path.length - 1] !== "groupingColumn") return false;
+  return path.length === 1 || path[0] === "compare" || path[0] === "phyloTree";
 }
 
 function normalizePatchEntries(patch: Record<string, unknown>) {
@@ -724,6 +879,26 @@ function rowColumnNames(deps: DispatcherDeps): Set<string> {
   return columnNames(deps.columnsStore?.rowColumns);
 }
 
+/** The assistant uses the "*" sentinel to mean "select every eligible
+ *  option" without the backend having to know the client's hidden columns. */
+const SIDE_COLOR_ALL_SENTINEL = "*";
+
+function isSelectAllSentinel(values: string[]): boolean {
+  return values.length > 0 && values.every((item) => item === SIDE_COLOR_ALL_SENTINEL);
+}
+
+/** Eligible RowSideColors = all .var columns minus hidden columns and id
+ *  columns. Mirrors `rowSideColorOptions` in VisualizationSettings.vue so the
+ *  "select all" sentinel resolves to exactly the rendered checkboxes. */
+function eligibleRowSideColors(deps: DispatcherDeps): string[] {
+  const hidden = new Set(deps.hiddenColumns || []);
+  const idColumns = new Set(["gene_id", "transcript_id", "id"]);
+  if (deps.idColumn) idColumns.add(deps.idColumn);
+  return (deps.columnsStore?.rowColumns || [])
+    .map((col) => col.column_name)
+    .filter((name) => !hidden.has(name) && !idColumns.has(name));
+}
+
 function obsColumnNames(deps: DispatcherDeps): Set<string> {
   const names = new Set<string>();
   for (const source of [deps.columnsStore?.colColumns, deps.columnsStore?.filterableColColumns, deps.columnsStore?.orderableColColumns]) {
@@ -767,7 +942,9 @@ function obsColumnValue(field: string, allowEmpty = false) {
 
 function rowColumnArrayValue(field: string) {
   return (value: unknown, deps: DispatcherDeps): string[] => {
-    const values = stringArrayValue(field)(value).map((item) => resolveColumnName(item, deps.columnsStore?.rowColumns));
+    const raw = stringArrayValue(field)(value);
+    if (isSelectAllSentinel(raw)) return eligibleRowSideColors(deps);
+    const values = raw.map((item) => resolveColumnName(item, deps.columnsStore?.rowColumns));
     const options = rowColumnNames(deps);
     return values.map((item) => ensureKnownColumn(item, options, field, "row/.var"));
   };
@@ -782,13 +959,19 @@ function nullableRowColumnArrayValue(field: string) {
 
 function colColumnArrayValue(field: string) {
   return (value: unknown, deps: DispatcherDeps): string[] => {
-    const values = stringArrayValue(field)(value).map((item) => resolveColumnName(item, [
-      ...(deps.columnsStore?.colColumns || []),
-      ...(deps.columnsStore?.filterableColColumns || []),
-      ...(deps.columnsStore?.orderableColColumns || []),
-    ]));
-    const options = obsColumnNames(deps);
-    return values.map((item) => ensureKnownColumn(item, options, field, "sample/.obs"));
+    // ColSideColors options in the Visualization Settings come EXCLUSIVELY
+    // from `colColumns` (e.g. default_trait / Group / Condition checkboxes),
+    // NOT from the broader filterable/orderable .obs columns. Resolve and
+    // validate strictly against that set so the assistant can only pick a
+    // side-color that actually exists as a checkbox — never a hallucinated
+    // or filter-only .obs column hiding behind a similar Display Name.
+    const colOptions = deps.columnsStore?.colColumns || [];
+    const raw = stringArrayValue(field)(value);
+    if (isSelectAllSentinel(raw)) return colOptions.map((c) => c.column_name);
+    const values = raw.map((item) => resolveColumnName(item, colOptions));
+    const options = columnNames(colOptions);
+    const validated = values.map((item) => ensureKnownColumn(item, options, field, "ColSideColors"));
+    return [...new Set(validated)];
   };
 }
 

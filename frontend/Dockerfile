@@ -20,8 +20,16 @@ ENV VITE_DATA_TYPE=${VITE_DATA_TYPE}
 ARG VITE_ALLOWED_HOSTS=""
 ENV VITE_ALLOWED_HOSTS=${VITE_ALLOWED_HOSTS}
 
+# Build argument for photo display mode
+ARG VITE_PHOTO_DISPLAY_MODE="circular"
+ENV VITE_PHOTO_DISPLAY_MODE=${VITE_PHOTO_DISPLAY_MODE}
+
+# Build argument for footer build date; defaults to the UTC build date when unset
+ARG VITE_BUILD_DATE=""
+ENV VITE_BUILD_DATE=${VITE_BUILD_DATE}
+
 # Skips TypeScript strict type-checking for faster builds
-RUN npm run build-only
+RUN if [ -z "$VITE_BUILD_DATE" ]; then export VITE_BUILD_DATE="$(date -u +%F)"; fi && npm run build-only
 
 FROM nginx:stable-alpine
 COPY --from=build-stage /app/dist /usr/share/nginx/html

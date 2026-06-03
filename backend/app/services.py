@@ -747,11 +747,23 @@ class GenXBrowserService:
         logger.info("Started background global bin precomputation after config reload")
 
     def _resolve_axis_column(self, axis, column_name: str) -> Optional[str]:
-        """Resolve a configured column name to the actual AnnData axis column."""
+        """Resolve a configured column name to the actual AnnData axis column.
+
+        Handles the common case where H5AD columns use spaces (e.g. ``pct unmapped``)
+        while config keys normalise those to underscores (``pct_unmapped``).  Both
+        sides are lowercased and spaces/underscores are collapsed to underscores for
+        the comparison, but the *actual* column name present in the axis is returned
+        so downstream ``adata.obs[actual]`` lookups work correctly.
+        """
         h5ad_col = self._to_h5ad_column_name(column_name)
         for candidate in (h5ad_col, column_name):
             if candidate in axis.columns:
                 return candidate
+        # Fallback: normalise spaces ↔ underscores (case-insensitive)
+        normalised = column_name.lower().replace(' ', '_')
+        for actual_col in axis.columns:
+            if actual_col.lower().replace(' ', '_') == normalised:
+                return actual_col
         return None
 
     def _get_configured_metadata_columns(
@@ -1720,18 +1732,14 @@ class GenXBrowserService:
                 continue
             
             # Check .var
-            if h5ad_col in adata.var.columns:
-                col_values = pd.to_numeric(adata.var[h5ad_col], errors='coerce').dropna()
-                values.extend(col_values.tolist())
-            elif column_name in adata.var.columns:
-                col_values = pd.to_numeric(adata.var[column_name], errors='coerce').dropna()
+            actual_var = self._resolve_axis_column(adata.var, column_name)
+            actual_obs = self._resolve_axis_column(adata.obs, column_name)
+            if actual_var is not None:
+                col_values = pd.to_numeric(adata.var[actual_var], errors='coerce').dropna()
                 values.extend(col_values.tolist())
             # Check .obs
-            elif h5ad_col in adata.obs.columns:
-                col_values = pd.to_numeric(adata.obs[h5ad_col], errors='coerce').dropna()
-                values.extend(col_values.tolist())
-            elif column_name in adata.obs.columns:
-                col_values = pd.to_numeric(adata.obs[column_name], errors='coerce').dropna()
+            elif actual_obs is not None:
+                col_values = pd.to_numeric(adata.obs[actual_obs], errors='coerce').dropna()
                 values.extend(col_values.tolist())
             # Check if sample ID
             elif column_name in adata.obs_names:
@@ -1775,6 +1783,20 @@ class GenXBrowserService:
 
         # Collect all numeric display column names across every species
         numeric_columns: Set[str] = set()
+        col_defs = self.config_manager.get_column_definitions()
+        # Build a reverse lookup: normalised(raw_h5ad_name) -> config_key
+        # so that columns stored with spaces in H5AD get keyed by their config name.
+        _normalised_to_config: Dict[str, str] = {}
+        for cfg_key in col_defs:
+            _normalised_to_config[cfg_key.lower().replace(' ', '_')] = cfg_key
+
+        def _column_key(col: str) -> str:
+            """Return the config key for a raw H5AD column name, falling back to display name."""
+            cfg_key = _normalised_to_config.get(col.lower().replace(' ', '_'))
+            if cfg_key:
+                return cfg_key
+            return self._to_display_column_name(col)
+
         for species_code in all_species:
             adata = self.registry.load(species_code)
             if adata is None:
@@ -1782,11 +1804,11 @@ class GenXBrowserService:
             for col in adata.obs.columns:
                 dtype = str(adata.obs[col].dtype)
                 if self._get_column_type(dtype, col) in ('bigint', 'double precision'):
-                    numeric_columns.add(self._to_display_column_name(col))
+                    numeric_columns.add(_column_key(col))
             for col in adata.var.columns:
                 dtype = str(adata.var[col].dtype)
                 if self._get_column_type(dtype, col) in ('bigint', 'double precision'):
-                    numeric_columns.add(self._to_display_column_name(col))
+                    numeric_columns.add(_column_key(col))
 
         if not numeric_columns:
             logger.info("No numeric metadata columns found for global bin precomputation")

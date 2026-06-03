@@ -980,6 +980,12 @@ def warmup_runtime_cache(service, cm) -> Dict[str, Any]:
         "mtime": mtime,
         "datasets": [
             {
+                # `name` is the canonical dataset identifier that MUST be passed
+                # to `tables` in every tool call and action block (build_deeplink,
+                # count_rows, resolve_value, deeplink/select_tables blocks, …).
+                # The short `code` is legacy/internal only — never pass it.
+                "name": t.get("table_name") or t.get("full_name") or t.get("code"),
+                "species_name": t.get("species_name") or t.get("full_name") or t.get("table_name"),
                 "code": t.get("code"),
                 "label": t.get("table_name") or t.get("full_name") or t.get("code"),
                 "n_samples": t.get("n_samples"),
@@ -1092,9 +1098,11 @@ _VIEW_CONTROLS: Dict[str, List[Dict[str, Any]]] = {
         {"key": "sequencePreviewLength", "type": "integer", "min": 20, "max": 1000,
          "store_action": "setSequencePreviewLength"},
         {"key": "rowSideColors",   "type": "multi_select_var_column",
-         "store_action": "setRowSideColors"},
+         "store_action": "setRowSideColors",
+         "note": "ONLY values from this control's `options` are valid. Never invent a column."},
         {"key": "colSideColors",   "type": "multi_select_obs_column",
-         "store_action": "setColSideColors"},
+         "store_action": "setColSideColors",
+         "note": "ONLY values from this control's `options` are valid (the exact ColSideColors checkboxes in Visualization Settings). Never invent a column or use a raw .obs column that is not listed."},
         {"key": "rowOrder.name",   "type": "select_var_column", "store_action": "setRowOrderName"},
         {"key": "rowOrder.order",  "type": "enum", "options": ["asc", "desc"],
          "store_action": "toggleRowOrder"},
@@ -1248,10 +1256,17 @@ def tool_list_view_settings(
     if v not in allowed:
         return {"error": f"Unknown view '{view}'", "allowed": sorted(allowed)}
 
-    # Resolve the tables in scope: if the caller didn't pass any, use every
-    # enabled species so the assistant gets the full instance picture.
+    # Resolve the tables in scope: if the caller didn't pass any (or passed the
+    # "all" sentinel the frontend/action-blocks use), use every enabled species
+    # so the assistant gets the full instance picture. Without this, an "all"
+    # token resolves to NO codes and every column/option list comes back empty —
+    # which makes the assistant think nothing is selectable and hallucinate a
+    # SideColor/column that isn't in the curated Visualization Settings.
     raw_tables = list(tables or [])
-    if not raw_tables:
+    _wants_all = (not raw_tables) or any(
+        str(t).strip().lower() in ("all", "*", "alle") for t in raw_tables
+    )
+    if _wants_all:
         try:
             entries = service.get_tables(include_disabled=False)
             raw_tables = [
@@ -1320,11 +1335,66 @@ def tool_list_view_settings(
     common_var = set.intersection(*var_col_sets) if var_col_sets else set()
     common_obs = set.intersection(*obs_col_sets) if obs_col_sets else set()
 
+    # SideColors / column-order selectors do NOT accept arbitrary raw .var /
+    # .obs columns — only the CURATED, config-defined metadata columns that
+    # the Visualization Settings actually expose as checkboxes/dropdowns. The
+    # frontend builds these from the column config (collapsing the default
+    # trait's source column into the `default_trait` pseudo-column), so we
+    # must advertise exactly that set here. Otherwise the assistant would
+    # think every raw .obs column (e.g. `tissue`, `condition`) is a valid
+    # colSideColor and hallucinate one that hides behind a similar Display
+    # Name. Intersect the curated set across the selected tables.
+    def _curated_meta_options(sample_metadata: bool) -> Tuple[set, Dict[str, str]]:
+        per_table: List[set] = []
+        details: Dict[str, str] = {}
+        for code in codes:
+            try:
+                adata = service.registry.load(code)
+            except Exception:
+                adata = None
+            if adata is None:
+                continue
+            try:
+                cols = service._get_configured_metadata_columns(
+                    adata, sample_metadata=sample_metadata,
+                )
+            except Exception:
+                cols = []
+            names: set = set()
+            for col in cols:
+                cname = str(col.get("column_name") or "")
+                if not cname:
+                    continue
+                # Collapse the default-trait source column into the pseudo key
+                # the store/UI uses, so the assistant emits the same value a
+                # human checkbox click would produce.
+                key = "default_trait" if col.get("is_default_trait") else cname
+                names.add(key)
+                details.setdefault(
+                    key,
+                    str(col.get("display_name") or display_maps.get(key, key)),
+                )
+            per_table.append(names)
+        if per_table:
+            common = set.intersection(*per_table) if len(per_table) > 1 else per_table[0]
+        else:
+            common = set()
+        return common, details
+
     display_maps = _column_display_maps(config_manager).get("internal_to_display", {})
+
+    curated_obs, curated_obs_details = _curated_meta_options(sample_metadata=True)
+    curated_var, curated_var_details = _curated_meta_options(sample_metadata=False)
 
     def _option_details(columns: set) -> List[Dict[str, str]]:
         return [
             {"name": str(col), "display_name": display_maps.get(str(col), str(col))}
+            for col in sorted(columns)
+        ]
+
+    def _curated_option_details(columns: set, details: Dict[str, str]) -> List[Dict[str, str]]:
+        return [
+            {"name": str(col), "display_name": details.get(str(col), display_maps.get(str(col), str(col)))}
             for col in sorted(columns)
         ]
 
@@ -1338,14 +1408,17 @@ def tool_list_view_settings(
             c["options"] = sorted(common_var)
             c["option_details"] = _option_details(common_var)
         elif ctype == "select_obs_column":
-            c["options"] = sorted(common_obs)
-            c["option_details"] = _option_details(common_obs)
+            # colOrder.name / customColOrder.metadataColumn — curated obs set.
+            c["options"] = sorted(curated_obs)
+            c["option_details"] = _curated_option_details(curated_obs, curated_obs_details)
         elif ctype in ("multi_select_var_column", "multi_select_var_column_nullable"):
-            c["options"] = sorted(common_var)
-            c["option_details"] = _option_details(common_var)
+            # rowSideColors / tooltipFields — curated var set (config-defined).
+            c["options"] = sorted(curated_var)
+            c["option_details"] = _curated_option_details(curated_var, curated_var_details)
         elif ctype == "multi_select_obs_column":
-            c["options"] = sorted(common_obs)
-            c["option_details"] = _option_details(common_obs)
+            # colSideColors — curated obs set ONLY (the Settings checkboxes).
+            c["options"] = sorted(curated_obs)
+            c["option_details"] = _curated_option_details(curated_obs, curated_obs_details)
         elif ctype == "multi_select_table":
             c["options"] = codes
         if c.get("key") == "oraTooltipFields":

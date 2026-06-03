@@ -22,6 +22,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def _env_flag(name: str, default: bool = True) -> bool:
+    """Interpret a boolean-like environment variable."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {'0', 'false', 'no', 'off'}
+
+
 def download_go_obo(target_path: str) -> bool:
     """
     Download GO OBO file with proper User-Agent to avoid 403 errors.
@@ -186,6 +194,7 @@ def _seed_llm_config_from_env(config_manager) -> None:
             "request_timeout_s": int(existing.get("request_timeout_s") or 60),
             "max_tokens": int(existing.get("max_tokens") or 1024),
             "temperature": float(existing.get("temperature") if existing.get("temperature") is not None else 0.2),
+            "max_tool_iterations": int(existing.get("max_tool_iterations") or 6),
         }
 
         # Auto-enable on first boot when env vars fully configure the endpoint.
@@ -206,7 +215,7 @@ def _seed_llm_config_from_env(config_manager) -> None:
 
 def _prewarm_ai_assistant(app) -> None:
     """Best-effort warmup for assistant examples and tool caches."""
-    if os.environ.get('ASSISTANT_WARMUP', 'true').lower() in {'0', 'false', 'no', 'off'}:
+    if not _env_flag('ASSISTANT_WARMUP', True):
         logger.info("AI assistant warmup disabled by ASSISTANT_WARMUP")
         return
 
@@ -226,6 +235,21 @@ def _prewarm_ai_assistant(app) -> None:
                 generate_suggestions(service, cm, n=10, seed=seed)
 
             schema = assistant_tools.tool_list_schema(service, cm, max_values_per_col=0)
+            # The live chat path (`_build_assistant_context` in routes.py)
+            # asks for `max_values_per_col=5` and builds the project overview.
+            # The schema cache is keyed by that argument, so warming with 0
+            # alone left the first real prompt to rebuild the expensive
+            # per-column value Counters from scratch. Prime the exact same
+            # entrypoints the request uses so the first prompt is cache-hot.
+            try:
+                assistant_tools.tool_list_schema(service, cm, max_values_per_col=5)
+            except Exception as warm_exc:  # noqa: BLE001
+                logger.debug("schema(5) warmup skipped: %s", warm_exc)
+            try:
+                from .overview import build_overview as _build_overview
+                _build_overview(service, cm)
+            except Exception as warm_exc:  # noqa: BLE001
+                logger.debug("overview warmup skipped: %s", warm_exc)
             species = [str(s) for s in (pool.get("species") or []) if s]
             if not species:
                 species = [
@@ -286,17 +310,20 @@ def create_app():
     
     # Initialize GenXBrowser service (wrapper over h5ad-lib)
     app.h5ad_service = GenXBrowserService(app.config_manager)
-    try:
-        from . import assistant_tools
-        warm = assistant_tools.warmup_runtime_cache(app.h5ad_service, app.config_manager)
-        logger.info(
-            "Assistant warmup cached %d dataset(s), %d var column(s), %d obs column(s)",
-            len(warm.get("datasets", [])),
-            len(warm.get("structural_columns", {}).get("var", [])),
-            len(warm.get("structural_columns", {}).get("obs", [])),
-        )
-    except Exception as e:
-        logger.warning("Assistant warmup skipped: %s", e)
+    if _env_flag('ASSISTANT_WARMUP', True):
+        try:
+            from . import assistant_tools
+            warm = assistant_tools.warmup_runtime_cache(app.h5ad_service, app.config_manager)
+            logger.info(
+                "Assistant warmup cached %d dataset(s), %d var column(s), %d obs column(s)",
+                len(warm.get("datasets", [])),
+                len(warm.get("structural_columns", {}).get("var", [])),
+                len(warm.get("structural_columns", {}).get("obs", [])),
+            )
+        except Exception as e:
+            logger.warning("Assistant warmup skipped: %s", e)
+    else:
+        logger.info("Skipping startup assistant schema warmup (ASSISTANT_WARMUP disabled)")
 
     # Seed LLM assistant configuration from environment variables on first boot.
     # Persisted values in project_config.json take precedence once the admin
@@ -353,11 +380,17 @@ def create_app():
     # Pre-compute global histogram bins in background so sliders are usable before
     # any dataset is selected, and after every config/metadata refresh.
     import threading
-    threading.Thread(target=app.h5ad_service.precompute_global_bins, daemon=True).start()
-    logger.info("Started background global bin precomputation")
+    if _env_flag('GLOBAL_BINS_WARMUP', True):
+        threading.Thread(target=app.h5ad_service.precompute_global_bins, daemon=True).start()
+        logger.info("Started background global bin precomputation")
+    else:
+        logger.info("Skipping background global bin precomputation (GLOBAL_BINS_WARMUP disabled)")
 
-    threading.Thread(target=_prewarm_ai_assistant, args=(app,), daemon=True).start()
-    logger.info("Started AI assistant warmup")
+    if _env_flag('ASSISTANT_WARMUP', True):
+        threading.Thread(target=_prewarm_ai_assistant, args=(app,), daemon=True).start()
+        logger.info("Started AI assistant warmup")
+    else:
+        logger.info("Skipping background AI assistant warmup (ASSISTANT_WARMUP disabled)")
 
     # Register routes
     register_routes(app)
