@@ -880,13 +880,17 @@ function computeMetrics(dataRef: any, calcOption: string, codeMap?: Record<strin
       const speciesCode = codeMap?.[groupName] ?? null
 
         const groupMap = buildSampleGroupMap(groupName)
+        // Build a set of known sample IDs from the metadata store.
+        // This is more reliable than /\d+$/ which fails for accession IDs that
+        // end with letters (e.g. EC sample IDs like "EC_HUSCY", "EC_HUSCZ").
+        const knownSampleIds = new Set(Object.keys(groupMap))
         const perGene = Object.fromEntries(genes.flatMap((gene) => {
           const tissueExpression: Record<string, number[]> = {}
           const normalizationTissue: Record<string, number[]> = {}
           const sampleData: Record<string, Array<{ sampleName: string; value: number }>> = {}
 
           const sampleKeys = Object.keys(gene).filter(
-            k => /\d+$/.test(k) && typeof gene[k] === "number"
+            k => typeof gene[k] === "number" && (knownSampleIds.size === 0 || knownSampleIds.has(k))
           )
 
           for (const k of sampleKeys) {
