@@ -90,6 +90,9 @@ export function useDatasetEmptinessFilter(
           const scopedGeneFilters = Object.fromEntries(
             Object.entries(geneFilterPayload).filter(([key]) => !disabled[key]),
           );
+          for (const [key, custom] of Object.entries(filtersStore.getCustomFiltersForDataset(tn))) {
+            if (!disabled[key]) scopedGeneFilters[key] = custom.filter;
+          }
           const { data } = await axios.post<{
             count: number;
             sample_count: number;

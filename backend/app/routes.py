@@ -233,6 +233,17 @@ def parse_filters(filters, get_columns_func=None, source="meta", *, allowed_colu
             for col in all_columns
             if col.get("type", "text").lower() in filter_parser.ALLOWED_TYPES
         }
+    else:
+        allowed_columns = dict(allowed_columns)
+
+    # Alias dataset-local "custom" filter chain terms ("<column>::chain::<id>") onto
+    # their real column's type so `parse_filter_query` doesn't silently drop them.
+    for key in filters.keys():
+        if key in allowed_columns:
+            continue
+        base = filter_parser.strip_chain_suffix(key)
+        if base != key and base in allowed_columns:
+            allowed_columns[key] = allowed_columns[base]
 
     logger.debug(f"[parse_filters] source={source}, incoming filters keys: {list(filters.keys())}")
 

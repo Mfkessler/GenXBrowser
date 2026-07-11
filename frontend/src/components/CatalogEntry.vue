@@ -492,9 +492,11 @@ const effectiveChain = computed(() => filtersStore.getEffectiveChainPerDataset(p
 // The store "slot" the effective chain is actually being read from (mirrors FilterChainModal):
 // null when inheriting the global chain, this dataset's id once it has a local override.
 const chainKeyForRead = computed(() => (hasLocalChain.value ? props.tableName : null));
+// Dataset-only custom filter terms (added via the modal's "+" button) — never sidebar-backed.
+const customFiltersForCard = computed(() => filtersStore.getCustomFiltersForDataset(props.tableName));
 const chainChipColumns = computed(() => {
   const order = effectiveChain.value.columns;
-  const activeSet = new Set(activeChainKeys.value);
+  const activeSet = new Set([...activeChainKeys.value, ...Object.keys(customFiltersForCard.value)]);
   return [
     ...order.filter((column) => activeSet.has(column)),
     ...activeChainKeys.value.filter((column) => !order.includes(column)),
@@ -520,8 +522,17 @@ const chainChipItems = computed<ChainChipItem[]>(() => {
   return items;
 });
 
+function isCustomChip(column: string): boolean {
+  return column in customFiltersForCard.value;
+}
+
+function realColumnForChip(column: string): string {
+  return customFiltersForCard.value[column]?.column ?? column;
+}
+
 function chainChipLabel(column: string): string {
-  return chainLabels.value[column] || beautifyLabel(column);
+  const real = realColumnForChip(column);
+  return chainLabels.value[real] || beautifyLabel(real);
 }
 
 function isNotColumn(column: string): boolean {
@@ -534,6 +545,7 @@ function isDisabledColumn(column: string): boolean {
 
 function chipClasses(column: string): string[] {
   if (isDisabledColumn(column)) return ["bg-gray-100", "text-gray-400", "border-gray-200"];
+  if (isCustomChip(column)) return ["bg-purple-50", "text-purple-700", "border-purple-200"];
   return hasLocalChain.value
     ? ["bg-amber-50", "text-amber-700", "border-amber-200"]
     : ["bg-sky-50", "text-sky-700", "border-sky-200"];
@@ -541,6 +553,7 @@ function chipClasses(column: string): string[] {
 
 function chipTooltip(column: string): string {
   if (isDisabledColumn(column)) return "Excluded from this dataset's filter chain";
+  if (isCustomChip(column)) return "Custom filter term — only applies to this dataset, not shown in the sidebar";
   return hasLocalChain.value ? "Local filter chain override" : "Inherited from the global filter chain";
 }
 

@@ -61,6 +61,9 @@ export function useFilterSeparation() {
       const base = geneFilters.value;
       const dsFilter = filtersStore.datasetIdFilters[tableName];
       const merged = dsFilter ? { ...base, [filtersStore.idColumnName]: dsFilter } : { ...base };
+      for (const [key, custom] of Object.entries(filtersStore.getCustomFiltersForDataset(tableName))) {
+        merged[key] = custom.filter;
+      }
       const disabled = filtersStore.getDisabledColumnsForDataset(tableName);
       for (const column of Object.keys(disabled)) {
         if (disabled[column]) delete merged[column];
@@ -79,6 +82,9 @@ export function useFilterSeparation() {
       const base = filters.value;
       const dsFilter = filtersStore.datasetIdFilters[tableName];
       const merged = dsFilter ? { ...base, [filtersStore.idColumnName]: dsFilter } : { ...base };
+      for (const [key, custom] of Object.entries(filtersStore.getCustomFiltersForDataset(tableName))) {
+        merged[key] = custom.filter;
+      }
       const disabled = filtersStore.getDisabledColumnsForDataset(tableName);
       for (const column of Object.keys(disabled)) {
         if (disabled[column]) delete merged[column];

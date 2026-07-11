@@ -1410,11 +1410,12 @@ class GenXBrowserService:
             return result[combined]
         
         for col, filter_spec in filters.items():
-            pg_col = self._to_display_column_name(col)
-            h5ad_col = self._to_h5ad_column_name(col)
+            real_col = filter_parser.strip_chain_suffix(col)
+            pg_col = self._to_display_column_name(real_col)
+            h5ad_col = self._to_h5ad_column_name(real_col)
             
             actual_col = None
-            for candidate in [pg_col, h5ad_col, col]:
+            for candidate in [pg_col, h5ad_col, real_col]:
                 if candidate in result.columns:
                     actual_col = candidate
                     break
@@ -1642,9 +1643,10 @@ class GenXBrowserService:
         return stack[0] if stack else pd.Series(True, index=index)
 
     def _resolve_filter_column(self, df: pd.DataFrame, col: str) -> Optional[str]:
-        pg_col = self._to_display_column_name(col)
-        h5ad_col = self._to_h5ad_column_name(col)
-        for candidate in [pg_col, h5ad_col, col]:
+        real_col = filter_parser.strip_chain_suffix(col)
+        pg_col = self._to_display_column_name(real_col)
+        h5ad_col = self._to_h5ad_column_name(real_col)
+        for candidate in [pg_col, h5ad_col, real_col]:
             if candidate in df.columns:
                 return candidate
         return None

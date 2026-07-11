@@ -12,6 +12,22 @@ const FILTER_CHAIN_STORAGE_KEY = "genxbrowser-filter-chain-operators";
 const FILTER_CHAIN_GROUPS_STORAGE_KEY = "genxbrowser-filter-chain-groups";
 const FILTER_CHAIN_NOTS_STORAGE_KEY = "genxbrowser-filter-chain-nots";
 
+/**
+ * Dataset-local "custom" filter chain terms (added via the "+" button in
+ * FilterChainModal.vue) are NOT sidebar-backed, so they get their own unique key
+ * in the wire `filters` dict even when several terms target the same real
+ * metadata column (e.g. two independent TF Family terms: MIKC + WRKY). Must match
+ * `CHAIN_TERM_SEP`/`strip_chain_suffix` in backend/app/filter_parser.py.
+ */
+const CHAIN_TERM_SEP = "::chain::";
+
+function generateChainTermKey(column: string): string {
+  const id = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : Math.random().toString(36).slice(2);
+  return `${column}${CHAIN_TERM_SEP}${id}`;
+}
+
 export interface FilterValue {
   value: string;
   /** How multiple values combine. Default "or". */
@@ -20,6 +36,13 @@ export interface FilterValue {
   exact?: boolean;
   /** When true, keep only rows/samples with a non-empty, non-null metadata value. */
   has_value?: boolean;
+}
+
+/** A dataset-local filter term added via the chain modal's "+" button — targets a
+ *  real metadata `column` but is never shown in (or driven by) the sidebar. */
+export interface CustomChainFilter {
+  column: string;
+  filter: FilterValue;
 }
 
 export interface FilterChainPayload {
@@ -80,6 +103,12 @@ export interface FiltersState {
    * the global chain.
    */
   localDatasetChains: Record<string, FilterChainState>;
+  /**
+   * Dataset-local "custom" filter terms added via the chain modal's "+" button,
+   * keyed by datasetId then by synthetic term key (see `generateChainTermKey`).
+   * These never appear in — or come from — the sidebar.
+   */
+  localCustomFilters: Record<string, Record<string, CustomChainFilter>>;
 }
 
 function hasLocalStorage(): boolean {
@@ -115,6 +144,7 @@ export const useFiltersStore = defineStore("filters", {
     filterChainHydrated: false,
     filterChainVersion: 0,
     localDatasetChains: {},
+    localCustomFilters: {},
   }),
   getters: {
     /**
@@ -127,13 +157,24 @@ export const useFiltersStore = defineStore("filters", {
       const merged: Record<string, FilterValue> = dsFilter
         ? { ...state.filters, [state.idColumnName]: dsFilter }
         : { ...state.filters };
+      const customFilters = state.localCustomFilters[tableName];
+      if (customFilters) {
+        for (const [key, custom] of Object.entries(customFilters)) {
+          merged[key] = custom.filter;
+        }
+      }
       const disabled = state.localDatasetChains[tableName]?.disabled;
-      if (!disabled) return merged;
-      for (const column of Object.keys(disabled)) {
-        if (disabled[column]) delete merged[column];
+      if (disabled) {
+        for (const column of Object.keys(disabled)) {
+          if (disabled[column]) delete merged[column];
+        }
       }
       return merged;
     },
+    /** Dataset-local custom filter terms (added via the chain modal's "+" button) for a dataset. */
+    getCustomFiltersForDataset: (state) => (datasetId?: string | null): Record<string, CustomChainFilter> => (
+      (datasetId && state.localCustomFilters[datasetId]) || {}
+    ),
     activeFilterKeys: (state): string[] => Object.entries(state.filters)
       .filter(([, filter]) => isActiveFilter(filter))
       .map(([key]) => key),
@@ -270,6 +311,67 @@ export const useFiltersStore = defineStore("filters", {
       const copy = { ...this.localDatasetChains };
       delete copy[datasetId];
       this.localDatasetChains = copy;
+      // Custom (dataset-only) terms only make sense alongside a local chain — drop them too.
+      if (this.localCustomFilters[datasetId]) {
+        const customCopy = { ...this.localCustomFilters };
+        delete customCopy[datasetId];
+        this.localCustomFilters = customCopy;
+      }
+      this.filterChainVersion += 1;
+    },
+    /**
+     * Adds a brand-new, dataset-only filter TERM for `column` — it never appears in (or
+     * comes from) the sidebar. Auto-creates the dataset's local chain if it doesn't exist
+     * yet. Returns the generated synthetic key (`"<column>::chain::<id>"`), which callers
+     * should append to their working `columns` order (see FilterChainModal.vue).
+     */
+    addCustomChainFilter(datasetId: string, column: string, filter: FilterValue): string {
+      this.ensureLocalChain(datasetId);
+      const key = generateChainTermKey(column);
+      this.localCustomFilters = {
+        ...this.localCustomFilters,
+        [datasetId]: {
+          ...(this.localCustomFilters[datasetId] || {}),
+          [key]: { column, filter },
+        },
+      };
+      const chain = this.localDatasetChains[datasetId];
+      if (!chain.columns.includes(key)) {
+        this.localDatasetChains = {
+          ...this.localDatasetChains,
+          [datasetId]: { ...chain, columns: [...chain.columns, key] },
+        };
+      }
+      this.filterChainVersion += 1;
+      return key;
+    },
+    /** Completely removes a dataset-only custom filter term (unlike disabling, it's gone for good). */
+    removeCustomChainFilter(datasetId: string, key: string) {
+      const forDataset = this.localCustomFilters[datasetId];
+      if (!forDataset || !(key in forDataset)) return;
+      const nextForDataset = { ...forDataset };
+      delete nextForDataset[key];
+      this.localCustomFilters = { ...this.localCustomFilters, [datasetId]: nextForDataset };
+
+      const chain = this.localDatasetChains[datasetId];
+      if (chain) {
+        const groups = { ...chain.groups };
+        delete groups[key];
+        const nots = { ...chain.nots };
+        delete nots[key];
+        const disabled = { ...chain.disabled };
+        delete disabled[key];
+        this.localDatasetChains = {
+          ...this.localDatasetChains,
+          [datasetId]: {
+            ...chain,
+            columns: chain.columns.filter((column) => column !== key),
+            groups,
+            nots,
+            disabled,
+          },
+        };
+      }
       this.filterChainVersion += 1;
     },
     getPairOperator(left: string, right: string, datasetId?: string | null): FilterChainOperator {
@@ -565,6 +667,8 @@ export const useFiltersStore = defineStore("filters", {
             this.filterChainNots = value as FiltersState['filterChainNots'];
           } else if (key === 'localDatasetChains') {
             this.localDatasetChains = value as FiltersState['localDatasetChains'];
+          } else if (key === 'localCustomFilters') {
+            this.localCustomFilters = value as FiltersState['localCustomFilters'];
           } else {
             return;
           }
@@ -583,6 +687,7 @@ export const useFiltersStore = defineStore("filters", {
         filterChainGroups: { ...this.filterChainGroups },
         filterChainNots: { ...this.filterChainNots },
         localDatasetChains: { ...this.localDatasetChains },
+        localCustomFilters: { ...this.localCustomFilters },
         filterChainVersion: this.filterChainVersion,
       };
     },

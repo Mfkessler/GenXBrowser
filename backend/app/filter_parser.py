@@ -25,6 +25,19 @@ ALLOWED_TYPES = frozenset({"text", "array", "bigint", "double precision", "boole
 
 GoTermExpander = Callable[[str, List[str], bool], Tuple[List[str], bool]]
 
+# Dataset-local "custom" filter chain terms (added via the "+" button in
+# FilterChainModal.vue) are NOT sidebar-backed, so they need their own unique
+# key in the wire `filters` dict even when several terms target the same real
+# metadata column (e.g. two independent TF Family terms: MIKC + WRKY). The
+# frontend encodes them as ``"<realColumn>::chain::<id>"``; this suffix must be
+# stripped to resolve the real column for type lookups / DataFrame access.
+CHAIN_TERM_SEP = "::chain::"
+
+
+def strip_chain_suffix(column: str) -> str:
+    """Return the real metadata column name for a (possibly synthetic) filter key."""
+    return str(column).split(CHAIN_TERM_SEP, 1)[0]
+
 
 def _parse_bool(value: Any) -> Optional[bool]:
     if isinstance(value, bool):

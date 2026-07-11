@@ -167,7 +167,10 @@
                   NOT
                 </button>
                 <div class="min-w-0 flex-1">
-                  <div class="truncate text-sm font-medium text-gray-900" :class="{ 'line-through': disabledFor(element) }">{{ labelFor(element) }}</div>
+                  <div class="truncate text-sm font-medium text-gray-900" :class="{ 'line-through': disabledFor(element) }">
+                    {{ labelFor(element) }}
+                    <span v-if="isCustomColumn(element)" class="ml-1 rounded bg-purple-100 px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-purple-700">custom</span>
+                  </div>
                   <div class="truncate text-xs text-gray-500">{{ disabledFor(element) ? 'Excluded from this dataset' : summaryFor(element) }}</div>
                 </div>
                 <button
@@ -181,6 +184,21 @@
                   @click.stop="toggleCloseGroup(element)"
                 >
                   )
+                </button>
+                <!-- "-" remove — custom (dataset-only) terms have no sidebar entry to
+                     remove them from, so they get their own permanent-delete button. -->
+                <button
+                  v-if="isCustomColumn(element)"
+                  type="button"
+                  class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded border border-red-200 bg-red-50 text-red-600 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  :disabled="!canEdit"
+                  :aria-label="`Remove the custom filter term ${labelFor(element)} completely`"
+                  v-tooltip="'Remove this custom filter term completely'"
+                  @click.stop="removeCustomFilter(element)"
+                >
+                  <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 12h12" />
+                  </svg>
                 </button>
               </div>
 
@@ -205,6 +223,65 @@
               </div>
             </div>
           </div>
+
+          <!-- "+" add a dataset-only custom filter term (never shown in the sidebar) -->
+          <div v-if="datasetId" class="mt-3">
+            <button
+              v-if="!addingCustomFilter"
+              type="button"
+              class="inline-flex items-center gap-1.5 rounded-md border border-dashed border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 transition-colors hover:border-primary-400 hover:text-primary-700"
+              aria-label="Add a dataset-only custom filter term"
+              v-tooltip="'Add an extra filter term that only applies to this dataset — it will not appear in the sidebar'"
+              @click="openAddCustomFilter"
+            >
+              <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+              </svg>
+              Add custom filter
+            </button>
+            <div v-else class="space-y-2 rounded-md border border-purple-200 bg-purple-50 p-3">
+              <div class="flex items-center gap-2">
+                <select
+                  v-model="newCustomColumn"
+                  class="min-w-0 flex-1 rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm"
+                  aria-label="Select the field for the new custom filter"
+                >
+                  <option value="" disabled>Select a field…</option>
+                  <option v-for="col in customFilterColumnOptions" :key="col.column_name" :value="col.column_name">
+                    {{ col.display_name || col.column_name }}
+                  </option>
+                </select>
+                <button
+                  type="button"
+                  class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-gray-500 hover:bg-purple-100"
+                  aria-label="Cancel adding custom filter"
+                  @click="cancelAddCustomFilter"
+                >
+                  <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 6l12 12M18 6L6 18" />
+                  </svg>
+                </button>
+              </div>
+              <component
+                :is="newCustomFilterComponent"
+                v-if="newCustomColumn"
+                v-model="newCustomValue"
+                :label="newCustomColumnLabel"
+                :id="newCustomColumn"
+                :type="newCustomColumnType"
+              />
+              <div class="flex justify-end">
+                <button
+                  type="button"
+                  class="rounded-md bg-purple-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  :disabled="!canConfirmAddCustomFilter"
+                  @click="confirmAddCustomFilter"
+                >
+                  Add to chain
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div class="flex justify-end border-t border-gray-200 px-5 py-3">
@@ -225,7 +302,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useFiltersStore, type FilterChainGroup, type FilterValue } from "@/stores/filters";
+import { useColumnsStore } from "@/stores/columns";
 import { getDisplayName } from "@/shared/metadataFields";
+import { beautifyLabel } from "@/shared/utils";
+import TextFilter from "./TextFilter.vue";
+import BooleanFilter from "./BooleanFilter.vue";
 
 const props = defineProps<{
   open: boolean;
@@ -243,6 +324,7 @@ const emit = defineEmits<{
 }>();
 
 const filtersStore = useFiltersStore();
+const columnsStore = useColumnsStore();
 const localColumns = ref<string[]>([]);
 const draggedIndex = ref<number | null>(null);
 const localGroups = ref<Record<string, FilterChainGroup>>({});
@@ -260,15 +342,28 @@ const chainKey = computed<string | null>(() => (props.datasetId && localized.val
 // Editing is allowed for the global chain, or for a dataset chain that has been localized.
 const canEdit = computed(() => !props.datasetId || localized.value);
 
+// Dataset-only custom filter terms (added via the "+" button) for the current dataset.
+const customFiltersForDataset = computed(() => filtersStore.getCustomFiltersForDataset(props.datasetId ?? null));
+
+function isCustomColumn(column: string): boolean {
+  return column in customFiltersForDataset.value;
+}
+
+function realColumnFor(column: string): string {
+  return customFiltersForDataset.value[column]?.column ?? column;
+}
+
 function loadChainState() {
   filtersStore.syncFilterChainColumns(activeColumns.value);
   // Use the raw chain (not `buildFilterChainPayload`, which strips disabled columns for
   // the actual query) so disabled rows still render in the modal and can be re-enabled.
   const chain = filtersStore.getEffectiveChainPerDataset(chainKey.value);
-  const activeSet = new Set(activeColumns.value);
+  const customKeys = Object.keys(customFiltersForDataset.value);
+  const allActive = [...activeColumns.value, ...customKeys.filter((key) => !activeColumns.value.includes(key))];
+  const allActiveSet = new Set(allActive);
   localColumns.value = [
-    ...chain.columns.filter((column) => activeSet.has(column)),
-    ...activeColumns.value.filter((column) => !chain.columns.includes(column)),
+    ...chain.columns.filter((column) => allActiveSet.has(column)),
+    ...allActive.filter((column) => !chain.columns.includes(column)),
   ];
   localGroups.value = filtersStore.getFilterChainGroups(localColumns.value, chainKey.value);
 }
@@ -401,11 +496,75 @@ function toggleNotFor(column: string) {
 }
 
 function labelFor(column: string): string {
-  return getDisplayName(column, props.labels[column]);
+  const real = realColumnFor(column);
+  return getDisplayName(real, props.labels[real]);
 }
 
 function summaryFor(column: string): string {
+  if (isCustomColumn(column)) {
+    return String(customFiltersForDataset.value[column]?.filter.value ?? "");
+  }
   const value = props.filters[column]?.value;
   return String(value ?? "");
+}
+
+// --- "+" add a dataset-only custom filter term (never shown in the sidebar) ---
+const addingCustomFilter = ref(false);
+const newCustomColumn = ref("");
+const newCustomValue = ref<FilterValue | null>(null);
+
+// Only text/array (fuzzy-search, matches the sidebar) and boolean columns are offered —
+// numeric range filters need a histogram fetch that doesn't make sense in this mini-form.
+const customFilterColumnOptions = computed(() => (
+  columnsStore.rowColumns.filter((col) => (
+    ["text", "array", "boolean"].includes((col.type || "").toLowerCase())
+  ))
+));
+
+const newCustomColumnType = computed(() => (
+  customFilterColumnOptions.value.find((col) => col.column_name === newCustomColumn.value)?.type ?? "text"
+));
+
+const newCustomColumnLabel = computed(() => {
+  const found = customFilterColumnOptions.value.find((col) => col.column_name === newCustomColumn.value);
+  return found?.display_name || beautifyLabel(newCustomColumn.value);
+});
+
+const newCustomFilterComponent = computed(() => (
+  newCustomColumnType.value.toLowerCase() === "boolean" ? BooleanFilter : TextFilter
+));
+
+const canConfirmAddCustomFilter = computed(() => {
+  if (!newCustomColumn.value || !newCustomValue.value) return false;
+  const v = newCustomValue.value;
+  return !!(v.has_value || String(v.value ?? "").trim() !== "");
+});
+
+function openAddCustomFilter() {
+  addingCustomFilter.value = true;
+  newCustomColumn.value = "";
+  newCustomValue.value = null;
+}
+
+function cancelAddCustomFilter() {
+  addingCustomFilter.value = false;
+  newCustomColumn.value = "";
+  newCustomValue.value = null;
+}
+
+function confirmAddCustomFilter() {
+  if (!props.datasetId || !canConfirmAddCustomFilter.value || !newCustomValue.value) return;
+  if (!localized.value) {
+    filtersStore.localizeDatasetChain(props.datasetId, localColumns.value);
+  }
+  const key = filtersStore.addCustomChainFilter(props.datasetId, newCustomColumn.value, newCustomValue.value);
+  localColumns.value = [...localColumns.value, key];
+  cancelAddCustomFilter();
+}
+
+function removeCustomFilter(column: string) {
+  if (!props.datasetId || !canEdit.value) return;
+  filtersStore.removeCustomChainFilter(props.datasetId, column);
+  localColumns.value = localColumns.value.filter((c) => c !== column);
 }
 </script>

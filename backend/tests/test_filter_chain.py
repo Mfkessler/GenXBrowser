@@ -197,3 +197,39 @@ def test_filter_chain_not_combined_with_and():
     )
 
     assert result.index.tolist() == [2, 3]
+
+
+def test_filter_chain_supports_independent_same_column_terms():
+    """Dataset-local "custom" chain terms (frontend '+' button) target the same real
+    column as a sidebar filter but carry a unique '<column>::chain::<id>' key so both
+    can be independent, separately combinable terms (e.g. TF Family == MIKC OR WRKY)."""
+    service = _service()
+    df = pd.DataFrame({
+        "tf_family": ["MIKC", "WRKY", "bHLH", "MIKC"],
+    })
+    filters = {
+        "tf_family": ("eq", "MIKC"),
+        "tf_family::chain::custom1": ("eq", "WRKY"),
+    }
+
+    result = service._apply_filters(
+        df,
+        filters,
+        filter_chain={
+            "columns": ["tf_family", "tf_family::chain::custom1"],
+            "operators": ["or"],
+        },
+    )
+
+    assert result.index.tolist() == [0, 1, 3]
+
+
+def test_apply_filters_resolves_custom_chain_key_without_chain_payload():
+    """A lone custom-chain term (no `filter_chain` payload / only 1 active filter) must
+    still resolve to the real DataFrame column via the non-chain direct-filter loop."""
+    service = _service()
+    df = pd.DataFrame({"tf_family": ["MIKC", "WRKY", "bHLH"]})
+
+    result = service._apply_filters(df, {"tf_family::chain::only": ("eq", "WRKY")})
+
+    assert result.index.tolist() == [1]
