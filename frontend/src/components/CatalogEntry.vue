@@ -399,7 +399,7 @@ watch(() => props.photo, async (newPhoto) => {
 const datasetIdPills = computed(() => {
   const dsFilter = filtersStore.datasetIdFilters[props.tableName];
   if (!dsFilter || !dsFilter.value) return [];
-  return dsFilter.value.split(",").filter(Boolean);
+  return dsFilter.value.split("|").filter(Boolean);
 });
 
 // Effective filters for this dataset: global filters merged with per-dataset ID filter
@@ -423,7 +423,7 @@ function onBatchIdFiltersApplied(values: string[]) {
     filtersStore.removeDatasetIdFilter(props.tableName);
   } else {
     filtersStore.setDatasetIdFilter(props.tableName, {
-      value: values.join(","),
+      value: values.join("|"),
     });
   }
 }
@@ -434,7 +434,7 @@ function removeIdPill(pill: string) {
     filtersStore.removeDatasetIdFilter(props.tableName);
   } else {
     filtersStore.setDatasetIdFilter(props.tableName, {
-      value: remaining.join(","),
+      value: remaining.join("|"),
     });
   }
 }
