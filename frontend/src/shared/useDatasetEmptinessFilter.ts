@@ -12,6 +12,7 @@ import { computed, onUnmounted, ref, watch, type Ref } from "vue";
 import axios from "axios";
 import { API_BASE_URL } from "@/shared/Config";
 import { useFilterSeparation } from "@/shared/useFilterSeparation";
+import { useFiltersStore } from "@/stores/filters";
 
 export interface EmptyProbeOptions {
   /** When true (default), tables with `count == 0` (no var-row match) are
@@ -25,6 +26,7 @@ export function useDatasetEmptinessFilter(
   options: EmptyProbeOptions = {},
 ) {
   const { sampleFilters, geneFilters, filterChainVersion, getFilterChainPayload } = useFilterSeparation();
+  const filtersStore = useFiltersStore();
   const hideOnEmptyVar = options.hideOnEmptyVar ?? true;
 
   // Per-table probe results. `null` = pending / unknown (treat as visible
@@ -84,14 +86,18 @@ export function useDatasetEmptinessFilter(
     const results = await Promise.all(
       tables.map(async (tn) => {
         try {
+          const disabled = filtersStore.getDisabledColumnsForDataset(tn);
+          const scopedGeneFilters = Object.fromEntries(
+            Object.entries(geneFilterPayload).filter(([key]) => !disabled[key]),
+          );
           const { data } = await axios.post<{
             count: number;
             sample_count: number;
             total_samples: number;
           }>(`${API_BASE_URL}/api/count`, {
             table_name: tn,
-            filters: geneFilterPayload,
-            filter_chain: getFilterChainPayload(geneFilterPayload),
+            filters: scopedGeneFilters,
+            filter_chain: getFilterChainPayload(scopedGeneFilters, tn),
             sample_filters: sampleFilterPayload,
           }, { signal: controller.signal });
           return { tn, count: data.count ?? 0, sample_count: data.sample_count ?? 0 };

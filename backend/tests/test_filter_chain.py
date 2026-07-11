@@ -158,3 +158,42 @@ def test_filter_samples_has_value_excludes_null_like_values():
     result = service._filter_samples(DummyAnnData(obs), {"batch": ("has_value", True)})
 
     assert result == {"S1", "S5"}
+
+
+def test_filter_chain_not_inverts_single_column():
+    service = _service()
+    df = pd.DataFrame({"tf_family": ["MIKC", "WRKY", "MIKC", "ERF"]})
+    filters = {"tf_family": ("eq", "MIKC")}
+
+    result = service._apply_filters(
+        df,
+        filters,
+        filter_chain={"columns": ["tf_family"], "operators": [], "nots": ["tf_family"]},
+    )
+
+    assert result.index.tolist() == [1, 3]
+
+
+def test_filter_chain_not_combined_with_and():
+    service = _service()
+    df = pd.DataFrame({
+        "tf_family": ["MIKC", "MIKC", "WRKY", "ERF"],
+        "go_terms": ["GO:1", "GO:2", "GO:1", "GO:1"],
+    })
+    filters = {
+        "tf_family": ("eq", "MIKC"),
+        "go_terms": ("eq", "GO:1"),
+    }
+
+    # NOT tf_family AND go_terms == GO:1 -> rows where tf_family != MIKC and go_terms == GO:1
+    result = service._apply_filters(
+        df,
+        filters,
+        filter_chain={
+            "columns": ["tf_family", "go_terms"],
+            "operators": ["and"],
+            "nots": ["tf_family"],
+        },
+    )
+
+    assert result.index.tolist() == [2, 3]

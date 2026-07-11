@@ -67,7 +67,7 @@
       </div>
     </div>
 
-    <GlobalFilterChainModal
+    <FilterChainModal
       :open="filterChainOpen"
       :columns="activeRowFilterKeys"
       :filters="activeRowFilters"
@@ -143,7 +143,7 @@ import { useColumnsStore } from "@/stores/columns";
 import { API_BASE_URL, type Config } from "@/shared/Config";
 import { useFiltersStore, type FilterValue } from "@/stores/filters";
 import SearchFilter from "./SearchFilter.vue";
-import GlobalFilterChainModal from "./GlobalFilterChainModal.vue";
+import FilterChainModal from "./FilterChainModal.vue";
 import { getEntityLabelPlural } from "@/shared/dataTypeLabels";
 import { getDisplayName, sequenceFields } from "@/shared/metadataFields";
 
@@ -198,7 +198,8 @@ const activeRowFilters = computed(() => Object.fromEntries(
 ));
 
 const activeRowFilterKeys = computed(() => Object.keys(activeRowFilters.value));
-const showFilterChainButton = computed(() => activeRowFilterKeys.value.length >= 2);
+// A single active filter is still enough to open the chain (e.g. to negate it with NOT).
+const showFilterChainButton = computed(() => activeRowFilterKeys.value.length >= 1);
 const rowFilterLabels = computed(() => Object.fromEntries(
   filteredRowColumns.value.map((col) => [col.column_name, col.display_name]),
 ));

@@ -52,39 +52,46 @@ export function useFilterSeparation() {
   });
 
   /**
-   * Returns gene filters merged with the per-dataset ID filter for a given table.
+   * Returns gene filters merged with the per-dataset ID filter for a given table,
+   * with any columns disabled in that dataset's local filter chain stripped out.
    * Use this in analysis views that fetch data for a specific dataset.
    */
   function getMergedGeneFilters(tableName: string): ComputedRef<Record<string, FilterValue>> {
     return computed(() => {
       const base = geneFilters.value;
       const dsFilter = filtersStore.datasetIdFilters[tableName];
-      if (!dsFilter) return base;
-      return {
-        ...base,
-        [filtersStore.idColumnName]: dsFilter,
-      };
+      const merged = dsFilter ? { ...base, [filtersStore.idColumnName]: dsFilter } : { ...base };
+      const disabled = filtersStore.getDisabledColumnsForDataset(tableName);
+      for (const column of Object.keys(disabled)) {
+        if (disabled[column]) delete merged[column];
+      }
+      return merged;
     });
   }
 
   /**
-   * Returns all filters merged with the per-dataset ID filter for a given table.
+   * Returns all filters merged with the per-dataset ID filter for a given table,
+   * with any columns disabled in that dataset's local filter chain stripped out.
    * Use this in components that send unsplit filters (ORA, Phylo).
    */
   function getMergedAllFilters(tableName: string): ComputedRef<Record<string, FilterValue>> {
     return computed(() => {
       const base = filters.value;
       const dsFilter = filtersStore.datasetIdFilters[tableName];
-      if (!dsFilter) return { ...base };
-      return {
-        ...base,
-        [filtersStore.idColumnName]: dsFilter,
-      };
+      const merged = dsFilter ? { ...base, [filtersStore.idColumnName]: dsFilter } : { ...base };
+      const disabled = filtersStore.getDisabledColumnsForDataset(tableName);
+      for (const column of Object.keys(disabled)) {
+        if (disabled[column]) delete merged[column];
+      }
+      return merged;
     });
   }
 
-  function getFilterChainPayload(filterPayload: Record<string, FilterValue>): FilterChainPayload | null {
-    return filtersStore.buildFilterChainPayload(filterPayload);
+  function getFilterChainPayload(
+    filterPayload: Record<string, FilterValue>,
+    datasetId?: string | null,
+  ): FilterChainPayload | null {
+    return filtersStore.buildFilterChainPayload(filterPayload, datasetId);
   }
 
   return {

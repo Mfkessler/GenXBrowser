@@ -581,7 +581,7 @@ async function fetchAndPrepareData() {
       {
         table_name: props.tableName,
         filters: mergedGeneFilters.value,
-        filter_chain: getFilterChainPayload(mergedGeneFilters.value),
+        filter_chain: getFilterChainPayload(mergedGeneFilters.value, props.tableName),
       },
       { signal: controller.signal },
     );
@@ -605,7 +605,7 @@ async function fetchAndPrepareData() {
         {
           table_name: props.tableName,
           filters: mergedGeneFilters.value,
-          filter_chain: getFilterChainPayload(mergedGeneFilters.value),
+          filter_chain: getFilterChainPayload(mergedGeneFilters.value, props.tableName),
           sample_filters: sampleFilters.value,
           layer: visualizationStore.expressionDisplay.layer,
           transform: visualizationStore.expressionDisplay.transform,

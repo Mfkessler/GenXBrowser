@@ -815,7 +815,7 @@ async function fetchAndPrepareData() {
       table_name: props.tableName,
       column_name: visualizationStore.oraColumnName,
       filters: mergedFilters.value,
-      filter_chain: filtersStore.buildFilterChainPayload(mergedFilters.value),
+      filter_chain: filtersStore.buildFilterChainPayload(mergedFilters.value, props.tableName),
       significance: 1.000001,
       top_n: 0,
       min_count: 1,

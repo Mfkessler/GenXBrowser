@@ -169,7 +169,6 @@ import { beautifyLabel } from "@/shared/utils";
 import { getEntityIdLabel } from "@/shared/dataTypeLabels";
 import { mean, median } from "@/shared/aggregation";
 import {
-  omitFilterKey,
   buildOrthogroupOnlyFilters,
   buildOrthogroupScopedFilters,
   hasNonOrthogroupFilters,
@@ -206,16 +205,17 @@ let lastOgListFilterSig: string | null = null;
 const ORTHOGROUP_FILTER_KEY = 'ortho_id';
 
 function computeFilterSignature(): string {
-  // Sample the catalog filter context: per-dataset merged filters (minus
-  // ortho_id), sample filters, and the dataset id filters / filter-chain
-  // version.  Anything that changes the catalog-level OG list belongs
-  // here; anything that only affects the currently rendered OG (like
-  // selectedOrthogroup) does NOT.
+  // Sample the catalog filter context: per-dataset merged filters (INCLUDING
+  // ortho_id, same as Compare.vue), sample filters, and the dataset id
+  // filters / filter-chain version. This must mirror Compare.vue's common-
+  // orthogroup computation exactly, so the sidebar orthogroup filter plays
+  // whatever AND/OR role the filter chain gives it instead of being force-
+  // selected. Anything that changes the catalog-level OG list belongs here.
   const datasets = props.existingTables && props.existingTables.length > 0
     ? [...props.existingTables]
     : [props.tableName];
   const perDataset = datasets.map((t) => {
-    const f = omitFilterKey(filtersStore.getMergedFilters(t));
+    const f = filtersStore.getMergedFilters(t);
     return [t, f];
   });
   return JSON.stringify({
@@ -307,7 +307,6 @@ let activeOgListAbortController: AbortController | null = null;
 let suppressSelectedOrthogroupWatcher = false;
 let activeRenderSignature: string | null = null;
 let lastCompletedRenderSignature: string | null = null;
-let lastObservedOrthogroupFilterValue = '';
 let activeLimitController: AbortController | null = null;
 
 type PhyloLoadTraceWindow = Window & {
@@ -616,7 +615,7 @@ async function fetchData(
           {
             table_name: tableName,
             filters: requestFilters,
-            filter_chain: filtersStore.buildFilterChainPayload(requestFilters),
+            filter_chain: filtersStore.buildFilterChainPayload(requestFilters, tableName),
             sample_filters: sampleFilters.value,
             layer: visualizationStore.expressionDisplay.layer,
             transform: visualizationStore.expressionDisplay.transform,
@@ -759,13 +758,13 @@ async function fetchAllSelected(options: { keepLoading?: boolean } = {}): Promis
     const entries = await Promise.all(
       selectedDatasets.map(async (tableName) => {
         setLoadingPhaseHint("Fetching orthogroup candidates...");
-        const optionFilters = omitFilterKey(filtersStore.getMergedFilters(tableName));
+        const optionFilters = filtersStore.getMergedFilters(tableName);
         const { data: count } = await axios.post(
           `${API_BASE_URL}/api/count`,
           {
             table_name: tableName,
             filters: optionFilters,
-            filter_chain: filtersStore.buildFilterChainPayload(optionFilters),
+            filter_chain: filtersStore.buildFilterChainPayload(optionFilters, tableName),
             sample_filters: sampleFilters.value,
           },
           { signal: controller.signal },
@@ -817,13 +816,15 @@ async function fetchAllSelected(options: { keepLoading?: boolean } = {}): Promis
     }
     // else: keep existing commonOGs_array as-is
 
-    // Handle OG selection with persistence and fallback
-    // Priority: 1) initialOrthogroup from hash, 2) direct ortho_id filter,
-    // 3) current store value, 4) first available
+    // Handle OG selection with persistence and fallback — mirrors
+    // Compare.vue exactly: 1) initialOrthogroup from hash (deep link),
+    // 2) current store value, 3) first available common OG. The sidebar
+    // orthogroup filter is NOT given special priority here — it only
+    // influences which OGs end up in `commonOGs_array` (like any other
+    // filter), it never force-selects the dropdown value.
     const hashOG = props.initialOrthogroup;
-    const filterOG = activeOrthogroupFilterValue();
-    const currentSelection = hashOG || filterOG || selectedOrthogroup.value;
-    
+    const currentSelection = hashOG || selectedOrthogroup.value;
+
     suppressSelectedOrthogroupWatcher = true;
     try {
       if (commonOGs_array.value.length > 0) {
@@ -832,8 +833,6 @@ async function fetchAllSelected(options: { keepLoading?: boolean } = {}): Promis
         if (matchingOG) {
           // Use the exact case from commonOGs_array for consistency
           selectedOrthogroup.value = matchingOG;
-        } else if (filterOG) {
-          selectedOrthogroup.value = filterOG;
         } else {
           selectedOrthogroup.value = commonOGs_array.value[0];
         }
@@ -957,7 +956,7 @@ async function fetchOrthogroupDataForAllSpecies(signal?: AbortSignal) {
       const { data: count } = await axios.post(`${API_BASE_URL}/api/count`, {
         table_name: tableName,
         filters: scopedFilters,
-        filter_chain: filtersStore.buildFilterChainPayload(scopedFilters),
+        filter_chain: filtersStore.buildFilterChainPayload(scopedFilters, tableName),
       }, { signal });
 
       const rowCount = count.count;
@@ -1009,7 +1008,7 @@ async function fetchHighlightedGenesForAllSpecies(signal?: AbortSignal) {
         {
           table_name: tableName,
           filters: scopedFilters,
-          filter_chain: filtersStore.buildFilterChainPayload(scopedFilters),
+          filter_chain: filtersStore.buildFilterChainPayload(scopedFilters, tableName),
           columns: [config.visualization.id_column],
         },
         { signal },
@@ -1083,7 +1082,7 @@ async function resolvePhyloLimitMessage(signal?: AbortSignal): Promise<{ title: 
           {
             table_name: tableName,
             filters: requestFilters,
-            filter_chain: filtersStore.buildFilterChainPayload(requestFilters),
+            filter_chain: filtersStore.buildFilterChainPayload(requestFilters, tableName),
             sample_filters: sampleFilters.value,
           },
           { signal },
@@ -1141,7 +1140,7 @@ async function currentPhyloContextExceedsLimit(signal?: AbortSignal): Promise<bo
         {
           table_name: tableName,
           filters: requestFilters,
-          filter_chain: filtersStore.buildFilterChainPayload(requestFilters),
+          filter_chain: filtersStore.buildFilterChainPayload(requestFilters, tableName),
           sample_filters: sampleFilters.value,
         },
         { signal },
@@ -2274,43 +2273,18 @@ watch(
 )
 
 
-// Watch for filter, per-dataset ID filter, and table changes - refetch data
+// Watch for filter, per-dataset ID filter, and table changes - refetch data.
+// The sidebar orthogroup filter is treated like any other filter here (same
+// as Compare.vue): it only affects which OGs land in `commonOGs_array` via
+// the filter-chain query, it never force-overrides `selectedOrthogroup`.
 watch(
   [tableNameOptions, filters, () => filtersStore.datasetIdFilters, () => filtersStore.filterChainVersion],
   async () => {
     // Don't fetch while hash is still loading
     if (props.hashLoading) return;
-    const filterOrthogroup = activeOrthogroupFilterValue();
-    const orthogroupFilterWasRemoved = lastObservedOrthogroupFilterValue !== '' && filterOrthogroup === '';
-    const forceRender = Boolean(filterOrthogroup);
+    fullNewick.value = null;
 
-    if (filterOrthogroup) {
-      lastObservedOrthogroupFilterValue = filterOrthogroup;
-      fullNewick.value = null;
-      if (selectedOrthogroupKey() !== filterOrthogroup.toLowerCase()) {
-        suppressSelectedOrthogroupWatcher = true;
-        try {
-          selectedOrthogroup.value = filterOrthogroup;
-          await nextTick();
-        } finally {
-          suppressSelectedOrthogroupWatcher = false;
-        }
-      }
-    } else if (orthogroupFilterWasRemoved) {
-      lastObservedOrthogroupFilterValue = '';
-      suppressSelectedOrthogroupWatcher = true;
-      try {
-        selectedOrthogroup.value = '';
-        await nextTick();
-      } finally {
-        suppressSelectedOrthogroupWatcher = false;
-      }
-      updateUrlFromState();
-      await clearRenderedTree("orthogroup-filter-cleared", { showLimitState: true });
-      return;
-    }
-
-    if (!filterOrthogroup) {
+    if (!activeOrthogroupFilterValue()) {
       const limitController = new AbortController();
       activeLimitController?.abort();
       activeLimitController = limitController;
@@ -2332,12 +2306,12 @@ watch(
     const currentSig = computeFilterSignature();
     if (lastOgListFilterSig === currentSig) {
       tracePhyloLoad("catalog-filters-skip-current");
-      await renderTreeForSelectedOG("catalog-filters-current", { force: forceRender });
+      await renderTreeForSelectedOG("catalog-filters-current");
       return;
     }
     const ok = await fetchAllSelected({ keepLoading: true });
     if (!ok) return; // superseded by a concurrent watcher trigger
-    await renderTreeForSelectedOG("catalog-filters", { force: forceRender });
+    await renderTreeForSelectedOG("catalog-filters");
   },
   {deep: true}
 )

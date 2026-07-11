@@ -605,7 +605,7 @@ async function fetchData(tableName: string, signal?: AbortSignal) {
     const { data: responseData } = await axios.post(`${API_BASE_URL}/api/data`, {
       table_name: tableName,
       filters: getMergedGeneFilters(tableName).value,
-      filter_chain: getFilterChainPayload(getMergedGeneFilters(tableName).value),
+      filter_chain: getFilterChainPayload(getMergedGeneFilters(tableName).value, tableName),
       sample_filters: sampleFilters.value,
       layer: params.layer,
       transform: params.transform,

@@ -1372,9 +1372,14 @@ class GenXBrowserService:
         result = df.copy()
         logger.debug("[_apply_filters] Applying %d filters to DataFrame shape %s", len(filters), df.shape)
 
-        chain_columns, chain_operators, chain_groups = self._normalize_filter_chain(filters, filter_chain)
+        chain_columns, chain_operators, chain_groups, chain_nots = self._normalize_filter_chain(filters, filter_chain)
         if chain_columns:
-            masks = {col: self._filter_mask(result, col, filters[col]) for col in chain_columns}
+            masks = {}
+            for col in chain_columns:
+                mask = self._filter_mask(result, col, filters[col])
+                if col in chain_nots:
+                    mask = ~mask
+                masks[col] = mask
             combined = self._evaluate_filter_chain(
                 chain_columns,
                 chain_operators,
@@ -1490,13 +1495,13 @@ class GenXBrowserService:
     def _normalize_filter_chain(
         filters: Dict[str, Tuple[str, Any]],
         filter_chain: Optional[Dict[str, Any]],
-    ) -> Tuple[List[str], List[str], Dict[str, Dict[str, int]]]:
+    ) -> Tuple[List[str], List[str], Dict[str, Dict[str, int]], set]:
         if not filters or not isinstance(filter_chain, dict):
-            return [], [], {}
+            return [], [], {}, set()
 
         raw_columns = filter_chain.get('columns') or []
         if not isinstance(raw_columns, list):
-            return [], [], {}
+            return [], [], {}, set()
 
         seen = set()
         columns = []
@@ -1509,8 +1514,16 @@ class GenXBrowserService:
             if column not in seen:
                 columns.append(column)
 
-        if len(columns) < 2:
-            return [], [], {}
+        raw_nots = filter_chain.get('nots') or []
+        if not isinstance(raw_nots, list):
+            raw_nots = []
+        nots = {str(n) for n in raw_nots} & set(columns)
+
+        # A chain is only meaningful with 2+ columns (to combine with AND/OR),
+        # unless a single column is negated (NOT), in which case the chain
+        # path is still needed to invert its mask.
+        if len(columns) < 2 and not nots:
+            return [], [], {}, set()
 
         raw_operators = filter_chain.get('operators') or []
         if not isinstance(raw_operators, list):
@@ -1519,7 +1532,7 @@ class GenXBrowserService:
         while len(operators) < len(columns) - 1:
             operators.append('and')
         groups = GenXBrowserService._normalize_filter_chain_groups(columns, filter_chain.get('groups'))
-        return columns, operators[:len(columns) - 1], groups
+        return columns, operators[:len(columns) - 1], groups, nots
 
     @staticmethod
     def _normalize_filter_chain_groups(

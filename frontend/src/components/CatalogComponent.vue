@@ -356,10 +356,11 @@ function downloadTsvFile(filename: string, content: string) {
 
 async function downloadCatalogEntry(entry: CatalogMeta) {
   try {
+    const entryFilters = filtersStore.getMergedFilters(entry.table_name);
     const dataResp = await axios.post(`${API_BASE_URL}/api/data`, {
       table_name: entry.table_name,
-      filters: filtersStore.filters,
-      filter_chain: filtersStore.buildFilterChainPayload(filtersStore.filters),
+      filters: entryFilters,
+      filter_chain: filtersStore.buildFilterChainPayload(entryFilters, entry.table_name),
     });
     const data = Array.isArray(dataResp.data) ? dataResp.data : (dataResp.data?.data ?? []);
 

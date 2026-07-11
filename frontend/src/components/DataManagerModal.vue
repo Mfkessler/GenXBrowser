@@ -520,11 +520,13 @@ const hasMoreData = computed(() => rows.value.length < totalCount.value);
 // Refs
 const tableContainer = ref<HTMLElement | null>(null);
 
-// Compute gene filters (transcript/gene metadata columns)
+// Compute gene filters (transcript/gene metadata columns), stripping any columns
+// disabled in this dataset's local filter chain.
 const geneFilters = computed(() => {
   const geneColNames = new Set(columnsStore.rowColumns.map(c => c.column_name));
+  const disabled = filtersStore.getDisabledColumnsForDataset(props.tableName);
   return Object.fromEntries(
-    Object.entries(filtersStore.filters).filter(([key]) => geneColNames.has(key))
+    Object.entries(filtersStore.filters).filter(([key]) => geneColNames.has(key) && !disabled[key])
   );
 });
 
@@ -651,7 +653,7 @@ async function copyColumnValues(columnName: string) {
       table_name: props.tableName,
       columns: [columnName], // Only fetch the column we need
       filters: geneFilters.value,
-      filter_chain: filtersStore.buildFilterChainPayload(geneFilters.value),
+      filter_chain: filtersStore.buildFilterChainPayload(geneFilters.value, props.tableName),
       sample_filters: sampleFilters.value,
       limit: 100000, // Get all data
       offset: 0,
@@ -803,7 +805,7 @@ async function fetchTotalCount() {
     const requestBody: Record<string, unknown> = {
       table_name: props.tableName,
       filters: geneFilters.value,
-      filter_chain: filtersStore.buildFilterChainPayload(geneFilters.value),
+      filter_chain: filtersStore.buildFilterChainPayload(geneFilters.value, props.tableName),
     };
     
     // Add gene ID filter if search is active
@@ -838,7 +840,7 @@ async function handleExport() {
       table_name: props.tableName,
       columns: columns,
       filters: geneFilters.value,
-      filter_chain: filtersStore.buildFilterChainPayload(geneFilters.value),
+      filter_chain: filtersStore.buildFilterChainPayload(geneFilters.value, props.tableName),
       sample_filters: sampleFilters.value,
       limit: 100000, // Get all data (high limit)
       offset: 0,

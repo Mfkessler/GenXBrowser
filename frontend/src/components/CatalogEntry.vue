@@ -182,7 +182,77 @@
           </svg>
         </button>
         </span>
+        <!-- Edit Filter Chain Button (Amber) — only relevant once at least one row filter is active -->
+        <button
+          v-if="activeChainKeys.length > 0"
+          class="cursor-pointer rounded-full border-1 border-amber-600 bg-amber-100 hover:bg-amber-600 text-amber-600 hover:text-amber-100 p-2 min-w-10 min-h-10 flex items-center justify-center"
+          aria-label="Edit Filter Chain for this dataset"
+          @click.stop="openFilterChainModal"
+          v-tooltip="hasLocalChain ? 'Edit local Filter Chain' : 'Edit Filter Chain (inherits global by default)'"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            class="w-4.5 h-4.5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            viewBox="0 0 24 24"
+          >
+            <path stroke-linecap="round" stroke-linejoin="round" d="M10 13a5 5 0 0 0 7.54.54l2-2a5 5 0 0 0-7.07-7.07l-1.15 1.15" />
+            <path stroke-linecap="round" stroke-linejoin="round" d="M14 11a5 5 0 0 0-7.54-.54l-2 2a5 5 0 0 0 7.07 7.07l1.15-1.15" />
+          </svg>
+        </button>
       </div>
+
+      <!-- Dataset-specific Filter Chain chips: inherited (globe icon, read-only) or localized,
+           with AND/OR connectors between enabled chips and a highlighted NOT marker. -->
+      <div v-if="activeChainKeys.length > 0" class="flex flex-wrap gap-1 mt-2 items-center" @click.stop>
+        <template v-for="(item, idx) in chainChipItems" :key="idx">
+          <span
+            v-if="item.type === 'op'"
+            class="inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-bold"
+            :class="item.operator === 'or'
+              ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
+              : 'border-gray-300 bg-gray-100 text-gray-600'"
+          >
+            {{ item.operator.toUpperCase() }}
+          </span>
+          <span
+            v-else
+            class="inline-flex items-center gap-1 text-xs rounded-full px-2 py-0.5 border"
+            :class="chipClasses(item.column)"
+            v-tooltip="chipTooltip(item.column)"
+          >
+            <svg v-if="!hasLocalChain" class="h-3 w-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="9" stroke-width="1.5" />
+              <path stroke-linecap="round" stroke-width="1.5" d="M3 12h18M12 3c2.5 2.7 4 6 4 9s-1.5 6.3-4 9c-2.5-2.7-4-6-4-9s1.5-6.3 4-9z" />
+            </svg>
+            <span v-if="isNotColumn(item.column)" class="font-bold text-red-600">NOT</span>
+            <span :class="{ 'line-through opacity-60': isDisabledColumn(item.column) }">{{ chainChipLabel(item.column) }}</span>
+          </span>
+        </template>
+        <button
+          v-if="hasLocalChain"
+          class="cursor-pointer inline-flex items-center text-amber-500 hover:text-red-500 text-xs ml-0.5"
+          aria-label="Reset Filter Chain to global"
+          @click.stop="resetChainToGlobal"
+          v-tooltip="'Reset to Global'"
+        >
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h5M20 20v-5h-5M4.5 9a8 8 0 0114-4.9M19.5 15a8 8 0 01-14 4.9" />
+          </svg>
+        </button>
+      </div>
+
+      <FilterChainModal
+        :open="filterChainOpen"
+        :dataset-id="props.tableName"
+        :dataset-label="beautifyLabel(props.tableName)"
+        :columns="activeChainKeys"
+        :filters="activeChainFilters"
+        :labels="chainLabels"
+        @close="filterChainOpen = false"
+      />
 
       <!-- Per-dataset ID filter chips -->
       <div v-if="datasetIdPills.length > 0" class="flex flex-wrap gap-1 mt-2 items-center" @click.stop>
@@ -277,6 +347,7 @@ import {useFiltersStore} from "@/stores/filters";
 import {useColumnsStore} from "@/stores/columns";
 import {beautifyLabel} from "@/shared/utils";
 import BatchInputModal from "./BatchInputModal.vue";
+import FilterChainModal from "./FilterChainModal.vue";
 import { getProcessedPhoto, generateInitialsPlaceholder } from "@/utils/imageProcessor";
 import { filterMetadataRows, uniqueMetadataValues, type MetadataFilterValue, type MetadataRow } from "@/shared/sampleMetadataFilters";
 
@@ -404,6 +475,82 @@ const datasetIdPills = computed(() => {
 
 // Effective filters for this dataset: global filters merged with per-dataset ID filter
 const effectiveFilters = computed(() => filtersStore.getMergedFilters(props.tableName));
+
+// --- Dataset-specific Filter Chain (local override of the global chain) ---
+const rowFilterColumnNames = computed(() => new Set(columnsStore.rowColumns.map((c) => c.column_name)));
+const activeChainFilters = computed(() => Object.fromEntries(
+  Object.entries(filtersStore.filters).filter(([key, filter]) => (
+    rowFilterColumnNames.value.has(key) && filter && (filter.has_value || String(filter.value ?? "").trim() !== "")
+  )),
+));
+const activeChainKeys = computed(() => Object.keys(activeChainFilters.value));
+const chainLabels = computed(() => Object.fromEntries(
+  columnsStore.rowColumns.map((col) => [col.column_name, col.display_name]),
+));
+const hasLocalChain = computed(() => filtersStore.hasLocalChain(props.tableName));
+const effectiveChain = computed(() => filtersStore.getEffectiveChainPerDataset(props.tableName));
+// The store "slot" the effective chain is actually being read from (mirrors FilterChainModal):
+// null when inheriting the global chain, this dataset's id once it has a local override.
+const chainKeyForRead = computed(() => (hasLocalChain.value ? props.tableName : null));
+const chainChipColumns = computed(() => {
+  const order = effectiveChain.value.columns;
+  const activeSet = new Set(activeChainKeys.value);
+  return [
+    ...order.filter((column) => activeSet.has(column)),
+    ...activeChainKeys.value.filter((column) => !order.includes(column)),
+  ];
+});
+
+type ChainChipItem =
+  | { type: "chip"; column: string }
+  | { type: "op"; operator: "and" | "or" };
+
+// Builds the chip + connector sequence: an AND/OR connector is inserted between each
+// pair of consecutive ENABLED chips (disabled/excluded columns don't participate).
+const chainChipItems = computed<ChainChipItem[]>(() => {
+  const items: ChainChipItem[] = [];
+  let previousEnabledColumn: string | null = null;
+  for (const column of chainChipColumns.value) {
+    if (!isDisabledColumn(column) && previousEnabledColumn) {
+      items.push({ type: "op", operator: filtersStore.getPairOperator(previousEnabledColumn, column, chainKeyForRead.value) });
+    }
+    items.push({ type: "chip", column });
+    if (!isDisabledColumn(column)) previousEnabledColumn = column;
+  }
+  return items;
+});
+
+function chainChipLabel(column: string): string {
+  return chainLabels.value[column] || beautifyLabel(column);
+}
+
+function isNotColumn(column: string): boolean {
+  return !!effectiveChain.value.nots[column];
+}
+
+function isDisabledColumn(column: string): boolean {
+  return !!effectiveChain.value.disabled[column];
+}
+
+function chipClasses(column: string): string[] {
+  if (isDisabledColumn(column)) return ["bg-gray-100", "text-gray-400", "border-gray-200"];
+  return hasLocalChain.value
+    ? ["bg-amber-50", "text-amber-700", "border-amber-200"]
+    : ["bg-sky-50", "text-sky-700", "border-sky-200"];
+}
+
+function chipTooltip(column: string): string {
+  if (isDisabledColumn(column)) return "Excluded from this dataset's filter chain";
+  return hasLocalChain.value ? "Local filter chain override" : "Inherited from the global filter chain";
+}
+
+const filterChainOpen = ref(false);
+function openFilterChainModal() {
+  filterChainOpen.value = true;
+}
+function resetChainToGlobal() {
+  filtersStore.resetDatasetChain(props.tableName);
+}
 
 function openIdFilterModal() {
   showBatchModal.value = true;
@@ -594,7 +741,7 @@ watch(
         {
           table_name: props.tableName,
           filters: newFilters,
-          filter_chain: filtersStore.buildFilterChainPayload(newFilters),
+          filter_chain: filtersStore.buildFilterChainPayload(newFilters, props.tableName),
         },
       );
       filteredCount.value = response.data.count;
