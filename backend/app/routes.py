@@ -503,7 +503,10 @@ def get_row_count():
             return jsonify({"error": "Invalid 'table_name'"}), 400
         
         # Parse and apply gene-level (var) filters via the existing helper.
-        parsed_filters = parse_filters(filters, service.get_all_columns)
+        # include_hidden=True: filtering must work even for columns hidden from
+        # the generic sidebar filter list (e.g. gene_id, used by the dedicated
+        # ID-filter feature).
+        parsed_filters = parse_filters(filters, lambda **kw: service.get_all_columns(include_hidden=True, **kw))
         count = service.get_row_count(table_name, parsed_filters, filter_chain=filter_chain)
 
         # Compute the post-filter sample count via the registry directly so
@@ -520,7 +523,7 @@ def get_row_count():
             else:
                 parsed_sample = parse_filters(
                     sample_filters,
-                    lambda **kw: service.get_all_columns(table_name=table_name, **kw),
+                    lambda **kw: service.get_all_columns(table_name=table_name, include_hidden=True, **kw),
                     source="column_meta",
                 )
                 allowed = service._filter_samples(adata, parsed_sample) if parsed_sample else None
@@ -570,9 +573,12 @@ def list_data():
         if not is_valid:
             return jsonify({"error": err}), 400
         
-        # Parse filters - pass table_name to get correct columns
-        parsed_filters = parse_filters(filters, lambda **kw: service.get_all_columns(table_name=table_name, **kw))
-        parsed_sample_filters = parse_filters(sample_filters, lambda **kw: service.get_all_columns(table_name=table_name, **kw), source="column_meta") if sample_filters else {}
+        # Parse filters - pass table_name to get correct columns.
+        # include_hidden=True: filtering must work even for columns hidden from
+        # the generic sidebar filter list (e.g. gene_id, used by the dedicated
+        # ID-filter feature).
+        parsed_filters = parse_filters(filters, lambda **kw: service.get_all_columns(table_name=table_name, include_hidden=True, **kw))
+        parsed_sample_filters = parse_filters(sample_filters, lambda **kw: service.get_all_columns(table_name=table_name, include_hidden=True, **kw), source="column_meta") if sample_filters else {}
         
         # Keep request logs compact; full filter payloads can be large.
         logger.debug(
@@ -1125,12 +1131,13 @@ def calculate_ora():
         validate_table_name([table_name], service.get_tables)
         validate_column_by_type(
             column_name,
-            lambda source=None: service.get_all_columns(table_name=table_name, source=source) if source else service.get_all_columns(table_name=table_name),
+            lambda source=None: service.get_all_columns(table_name=table_name, source=source, include_hidden=True) if source else service.get_all_columns(table_name=table_name, include_hidden=True),
             allowed_types=('text', 'array')
         )
         
-        # Get column metadata
-        columns_meta = service.get_all_columns(table_name)
+        # Get column metadata (include_hidden=True: the ORA target column may be
+        # hidden from the sidebar filter list, e.g. gene_id)
+        columns_meta = service.get_all_columns(table_name, include_hidden=True)
         column_meta = next((c for c in columns_meta if c['column_name'] == column_name), None)
         if not column_meta:
             return jsonify({'error': f'Column {column_name} not found'}), 404
@@ -1149,7 +1156,7 @@ def calculate_ora():
         # Parse filters for subset
         parsed_filters = parse_filters(
             filters_dict,
-            lambda source=None: service.get_all_columns(table_name=table_name, source=source) if source else service.get_all_columns(table_name=table_name),
+            lambda source=None: service.get_all_columns(table_name=table_name, source=source, include_hidden=True) if source else service.get_all_columns(table_name=table_name, include_hidden=True),
             source="meta"
         )
         
@@ -1261,7 +1268,10 @@ def cluster_data():
         
         # Parse filters using the same logic as /api/data so frontend FilterValue
         # objects ({value, match_mode, exact}) are converted to internal (op, val) tuples.
-        get_cols = lambda **kw: service.get_all_columns(table_name=table_name, **kw)
+        # include_hidden=True: filtering must work even for columns hidden from
+        # the generic sidebar filter list (e.g. gene_id, used by the dedicated
+        # ID-filter feature).
+        get_cols = lambda **kw: service.get_all_columns(table_name=table_name, include_hidden=True, **kw)
         parsed_filters = parse_filters(filters, get_cols) if filters else {}
         parsed_sample_filters = parse_filters(sample_filters, get_cols, source="column_meta") if sample_filters else {}
 

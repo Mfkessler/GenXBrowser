@@ -771,14 +771,23 @@ class GenXBrowserService:
         adata: Any,
         *,
         sample_metadata: bool,
+        include_hidden: bool = False,
     ) -> List[Dict[str, Any]]:
-        """Return visible metadata columns backed by the current config."""
+        """Return metadata columns backed by the current config.
+
+        By default only columns marked ``visible: true`` are returned (used
+        for UI column listings). Pass ``include_hidden=True`` to also include
+        columns hidden from the UI — required when this list is used to
+        validate/parse incoming filters, since a column being hidden from the
+        generic sidebar toggle list must not make it unfilterable via the
+        dedicated ID-filter feature or the API.
+        """
         column_defs = self.config_manager.get_column_definitions()
         configured_columns: List[Dict[str, Any]] = []
         default_trait_column = self.config_manager.get_config().get('default_trait_column')
 
         for column_name, col_def in column_defs.items():
-            if not col_def.get('visible', True):
+            if not include_hidden and not col_def.get('visible', True):
                 continue
 
             if sample_metadata:
@@ -938,9 +947,20 @@ class GenXBrowserService:
         self,
         source: Optional[str] = None,
         table_name: Optional[str] = None,
-        is_meta: Optional[bool] = None
+        is_meta: Optional[bool] = None,
+        include_hidden: bool = False
     ) -> List[Dict]:
-        """Get column metadata matching frontend format."""
+        """Get column metadata matching frontend format.
+
+        ``include_hidden`` controls whether columns configured with
+        ``visible: false`` (e.g. the id/gene_id column, which is deliberately
+        hidden from the generic sidebar filter-chain list) are included.
+        Filter-validation call sites (``parse_filters`` et al.) must pass
+        ``include_hidden=True`` so that the dedicated ID-filter feature keeps
+        working regardless of that column's UI visibility; the plain
+        ``/api/columns`` listing endpoint keeps the default (``False``) so
+        hidden columns stay out of the sidebar toggle list.
+        """
         columns = []
         seen: Set[str] = set()
         
@@ -960,7 +980,7 @@ class GenXBrowserService:
             
             if source == "column_meta":
                 obs_candidates = []
-                for col_info in self._get_configured_metadata_columns(adata, sample_metadata=True):
+                for col_info in self._get_configured_metadata_columns(adata, sample_metadata=True, include_hidden=include_hidden):
                     actual_name = col_info['actual_name']
                     if col_info['column_name'] in seen or actual_name is None:
                         continue
@@ -1008,7 +1028,7 @@ class GenXBrowserService:
                 # Gene metadata from .var.columns SECOND
                 if is_meta is None or is_meta is True:
                     meta_candidates = []
-                    for col_info in self._get_configured_metadata_columns(adata, sample_metadata=False):
+                    for col_info in self._get_configured_metadata_columns(adata, sample_metadata=False, include_hidden=include_hidden):
                         if col_info['column_name'] in seen:
                             continue
                         seen.add(col_info['column_name'])
