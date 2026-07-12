@@ -303,7 +303,7 @@
 import { computed, ref, watch } from "vue";
 import { useFiltersStore, type FilterChainGroup, type FilterValue } from "@/stores/filters";
 import { useColumnsStore } from "@/stores/columns";
-import { getDisplayName } from "@/shared/metadataFields";
+import { getDisplayName, sequenceFields } from "@/shared/metadataFields";
 import { beautifyLabel } from "@/shared/utils";
 import TextFilter from "./TextFilter.vue";
 import BooleanFilter from "./BooleanFilter.vue";
@@ -515,9 +515,12 @@ const newCustomValue = ref<FilterValue | null>(null);
 
 // Only text/array (fuzzy-search, matches the sidebar) and boolean columns are offered —
 // numeric range filters need a histogram fetch that doesn't make sense in this mini-form.
+// Sequence metadata (protein/RNA sequences, Newick trees) is excluded, mirroring the
+// sidebar's exclusion
 const customFilterColumnOptions = computed(() => (
   columnsStore.rowColumns.filter((col) => (
     ["text", "array", "boolean"].includes((col.type || "").toLowerCase())
+    && !sequenceFields.includes(col.column_name)
   ))
 ));
 
