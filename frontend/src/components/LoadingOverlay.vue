@@ -60,6 +60,15 @@ const props = withDefaults(
     primaryStatus?: string;
     currentPhaseHint?: string;
     cancellable?: boolean;
+    /**
+     * When true, the overlay always spans the full viewport width and
+     * ignores the app sidebar offset. Use this for overlays rendered inside
+     * modals that are teleported to <body> and already cover the sidebar
+     * (e.g. DataManagerModal, OverlayTable), otherwise a stripe to the left
+     * of the sidebar boundary is left uncovered, letting background content
+     * flash through underneath.
+     */
+    fullViewport?: boolean;
   }>(),
   {
     size: 'lg',
@@ -67,6 +76,7 @@ const props = withDefaults(
     primaryStatus: undefined,
     currentPhaseHint: undefined,
     cancellable: false,
+    fullViewport: false,
   }
 );
 
@@ -92,6 +102,7 @@ onUnmounted(() => {
 });
 
 const overlayStyle = computed(() => {
+  if (props.fullViewport) return { left: '0px' };
   const sidebarWidth = sidebarOpen?.value && viewportWidth.value >= 768 ? 320 : 0;
   return { left: `${sidebarWidth}px` };
 });

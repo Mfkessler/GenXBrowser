@@ -7,6 +7,7 @@
     <!-- Modal content -->
     <div
       class="relative bg-white rounded-md border-1 border-gray-300 w-full max-h-[90vh] overflow-hidden p-6 z-10 flex flex-col"
+      :class="{ 'min-h-[420px]': initialLoading }"
     >
       <!-- Header Row: Title + Close Button -->
       <div class="flex items-center justify-between mb-4">
@@ -21,6 +22,10 @@
           &times;
         </button>
       </div>
+
+      <!-- Everything below is masked while the initial fetch is in flight so the
+           table shell/control bar never partially render behind the loading overlay. -->
+      <template v-if="!initialLoading">
 
       <!-- Filter Status Bar -->
       <div v-if="hasActiveSampleFilters" class="mb-4 p-3 bg-primary-50 border border-primary-200 rounded-md flex items-center justify-between">
@@ -243,7 +248,7 @@
 
       <!-- Data Table -->
       <div class="overflow-auto max-h-[55vh] border border-gray-300 rounded-md">
-        <LoadingOverlay v-if="loading" size="md" />
+        <LoadingOverlay v-if="loading" size="md" full-viewport />
         <table v-else-if="paginatedRows.length > 0" class="text-sm text-left text-gray-700 table-fixed w-full">
           <thead class="text-xs text-gray-700 uppercase bg-gray-50 sticky top-0">
             <tr>
@@ -297,6 +302,16 @@
           </div>
         </div>
       </div>
+
+      </template>
+
+      <LoadingOverlay
+        v-if="initialLoading"
+        size="md"
+        full-viewport
+        primaryStatus="Loading data..."
+        currentPhaseHint="Preparing Sample Manager"
+      />
     </div>
 
     <!-- Export Modal -->
@@ -372,6 +387,7 @@ const selectedColumns = ref<string[]>([]);
 const searchInput = ref("");
 const parsedSampleIds = ref<string[]>([]);
 const loading = ref(false);
+const initialLoading = ref(true);
 const showColumnDropdown = ref(false);
 const showExportModal = ref(false);
 const exporting = ref(false);
@@ -726,6 +742,7 @@ async function fetchData() {
     allColumns.value = [];
   } finally {
     loading.value = false;
+    initialLoading.value = false;
   }
 }
 

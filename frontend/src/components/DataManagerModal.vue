@@ -7,6 +7,7 @@
     <!-- Modal content -->
     <div
       class="relative bg-white rounded-md border-1 border-gray-300 w-full max-h-[90vh] overflow-hidden p-6 z-10 flex flex-col"
+      :class="{ 'min-h-[420px]': initialLoading }"
     >
       <!-- Header Row: Title + Close Button -->
       <div class="flex items-center justify-between mb-4">
@@ -21,6 +22,10 @@
           &times;
         </button>
       </div>
+
+      <!-- Everything below is masked while the initial fetch is in flight so the
+           table shell/control bar never partially render behind the loading overlay. -->
+      <template v-if="!initialLoading">
 
       <!-- Filter Status Bar -->
       <div v-if="hasActiveFilters" class="mb-4 p-3 bg-primary-50 border border-primary-200 rounded-md flex items-center justify-between">
@@ -373,9 +378,12 @@
         </div>
       </div>
 
+      </template>
+
       <LoadingOverlay
         v-if="initialLoading || (loading && currentOffset === 0)"
         size="md"
+        full-viewport
         primaryStatus="Loading data..."
         currentPhaseHint="Preparing Data Manager"
       />
@@ -383,6 +391,7 @@
       <LoadingOverlay
         v-if="exporting"
         size="md"
+        full-viewport
         primaryStatus="Loading export data..."
         currentPhaseHint="Fetching all matching rows for export"
         cancellable
