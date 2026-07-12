@@ -529,14 +529,19 @@ const hasMoreData = computed(() => rows.value.length < totalCount.value);
 // Refs
 const tableContainer = ref<HTMLElement | null>(null);
 
-// Compute gene filters (transcript/gene metadata columns), merging in any dataset-local
-// custom filter terms and stripping any columns disabled in this dataset's local chain.
+// Compute gene filters (transcript/gene metadata columns), merging in the dataset's
+// individual "Filter Transcript IDs" chip and any dataset-local custom filter terms,
+// and stripping any columns disabled in this dataset's local chain.
 const geneFilters = computed(() => {
   const geneColNames = new Set(columnsStore.rowColumns.map(c => c.column_name));
   const disabled = filtersStore.getDisabledColumnsForDataset(props.tableName);
   const merged = Object.fromEntries(
     Object.entries(filtersStore.filters).filter(([key]) => geneColNames.has(key) && !disabled[key])
   );
+  const dsFilter = filtersStore.datasetIdFilters[props.tableName];
+  if (dsFilter && !disabled[filtersStore.idColumnName]) {
+    merged[filtersStore.idColumnName] = dsFilter;
+  }
   for (const [key, custom] of Object.entries(filtersStore.getCustomFiltersForDataset(props.tableName))) {
     if (!disabled[key]) merged[key] = custom.filter;
   }
