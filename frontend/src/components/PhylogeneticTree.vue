@@ -994,21 +994,41 @@ async function fetchHighlightedGenesForAllSpecies(signal?: AbortSignal) {
 
   const originalCaseOrthogroup = orthogroupCaseMap.value[selectedOrthogroupKey()] || selectedOrthogroup.value;
 
+  // Whether ANY dataset carries active filters beyond the orthogroup itself — either a
+  // global sidebar filter (shared across every dataset via state.filters) or a
+  // dataset-local ID override (e.g. a per-dataset Transcript ID batch filter, which only
+  // exists for that one dataset). If nobody has extra criteria this is the plain "OG only"
+  // default state, so highlighting stays hidden everywhere, unchanged from before.
+  const anyDatasetHasExtraFilters = allDatasets.some((tableName) => {
+    const merged = filtersStore.getMergedFilters(tableName);
+    return hasNonOrthogroupFilters(buildOrthogroupScopedFilters(merged, originalCaseOrthogroup));
+  });
+
+  if (!anyDatasetHasExtraFilters) {
+    highlightedGeneIds.value = {};
+    return;
+  }
+
   const entries = await Promise.all(
     allDatasets.map(async (tableName) => {
       const mergedFilters = filtersStore.getMergedFilters(tableName);
       const scopedFilters = buildOrthogroupScopedFilters(mergedFilters, originalCaseOrthogroup);
 
-      if (!hasNonOrthogroupFilters(scopedFilters)) {
-        return { tableName, geneIds: new Set<string>() };
-      }
+      // A dataset with no filters of its own (e.g. Arabidopsis/Rice while only Tomato has a
+      // local Transcript ID override) trivially satisfies its remaining (empty) criteria —
+      // every leaf belonging to the orthogroup should pass. Query orthogroup-only for those
+      // datasets instead of short-circuiting to an empty set, which used to mark them as
+      // failing the filter regardless of the sister dataset's local constraints.
+      const effectiveFilters = hasNonOrthogroupFilters(scopedFilters)
+        ? scopedFilters
+        : buildOrthogroupOnlyFilters(originalCaseOrthogroup);
 
       const response = await axios.post(
         `${API_BASE_URL}/api/data`,
         {
           table_name: tableName,
-          filters: scopedFilters,
-          filter_chain: filtersStore.buildFilterChainPayload(scopedFilters, tableName),
+          filters: effectiveFilters,
+          filter_chain: filtersStore.buildFilterChainPayload(effectiveFilters, tableName),
           columns: [config.visualization.id_column],
         },
         { signal },
