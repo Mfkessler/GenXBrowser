@@ -314,20 +314,31 @@ watch(
   () => props.isOpen,
   (open) => {
     if (open) {
+      const existing = props.currentValues ? [...props.currentValues] : [];
+
       // Multi-select mode: Initialize with current filter values (synchronization!)
       if (hasAvailableOptions.value) {
-        selectedOptions.value = props.currentValues ? [...props.currentValues] : [];
+        selectedOptions.value = existing;
         optionSearch.value = "";
+        hasValidated.value = false;
+        matchedValues.value = [];
+        discardedValues.value = [];
+        parsedTokens.value = [];
       } else {
-        // Text input mode: reset state
+        // Text input mode: reactively pre-populate with the values already
+        // applied to this column, so re-opening the modal never loses (or
+        // silently clears) an active filter — e.g. 100 previously pasted
+        // transcript IDs remain visible until the user explicitly edits or
+        // clears them.
         selectedOptions.value = [];
         optionSearch.value = "";
+        inputText.value = existing.join("\n");
+        parsedTokens.value = existing;
+        matchedValues.value = existing;
+        discardedValues.value = [];
+        detectedSeparator.value = "newline";
+        hasValidated.value = existing.length > 0;
       }
-      // Don't reset inputText to allow re-validation
-      hasValidated.value = false;
-      matchedValues.value = [];
-      discardedValues.value = [];
-      parsedTokens.value = [];
     }
   }
 );

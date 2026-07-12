@@ -287,6 +287,17 @@ const columnsStore = useColumnsStore();
 
 const isArrayType = computed(() => (props.type || '').toLowerCase() === 'array');
 
+// Any text-based sample (.obs) column is eligible for the standardized
+// checkbox choice-list batch modal (not just the default trait column).
+// Numeric/boolean/array columns keep the raw paste-box behavior.
+const isSampleTextColumn = computed(() => {
+  const columnName = props.id || props.label;
+  return (
+    (props.type || '').toLowerCase() === 'text' &&
+    columnsStore.filterableColColumns.some((c) => c.column_name === columnName)
+  );
+});
+
 const isDragging = ref(false);
 // Match mode for multiple selected values: "or" (default) or "and".
 const matchMode = ref<'or' | 'and'>('or');
@@ -314,11 +325,17 @@ const beautifiedLabel = computed(() => beautifyLabel(props.label) ?? "Filter");
 // Get available options for batch modal (e.g., tissue types)
 const availableOptionsForBatch = computed(() => {
   const columnName = props.id || props.label;
-  // Check if this is a tissue column with pre-cached values
+  // Check if this is the default trait column with pre-cached values
   if (columnsStore.defaultTraitColumnName === columnName) {
     return columnsStore.traitValues;
   }
-  // Return undefined for regular text input mode
+  // Any other text-based sample column: use its cached distinct values
+  // (populated on demand by ensureBatchOptionsLoaded before the modal opens).
+  if (isSampleTextColumn.value) {
+    const cached = columnsStore.getDistinctValues(columnName);
+    return cached.length > 0 ? cached : undefined;
+  }
+  // Return undefined for regular text input mode (e.g. .var columns, arrays)
   return undefined;
 });
 
@@ -570,9 +587,38 @@ async function ensureTissueValuesLoaded() {
 }
 
 async function handleOpenBatchModal() {
-  // Ensure tissue values are loaded before opening modal
-  await ensureTissueValuesLoaded();
+  // Ensure choice-list values are loaded before opening modal
+  await ensureBatchOptionsLoaded();
   showBatchModal.value = true;
+}
+
+/**
+ * Load distinct values for the choice-list batch modal, when applicable.
+ * The default trait column keeps its dedicated per-table loading logic;
+ * any other text-based sample column is fetched generically via /api/col.
+ */
+async function ensureBatchOptionsLoaded() {
+  const columnName = props.id || props.label;
+
+  if (columnsStore.defaultTraitColumnName === columnName) {
+    await ensureTissueValuesLoaded();
+    return;
+  }
+
+  if (!isSampleTextColumn.value) return;
+  if (columnsStore.getDistinctValues(columnName).length > 0) return;
+
+  try {
+    const response = await axios.get(`${API_BASE_URL}/api/col`, {
+      params: { column_name: columnName },
+    });
+    const terms = (response.data?.terms || []) as string[];
+    if (terms.length > 0) {
+      columnsStore.setDistinctValues(columnName, [...terms].sort());
+    }
+  } catch (err) {
+    console.warn(`Could not load distinct values for ${columnName}:`, err);
+  }
 }
 
 function handleBatchModalClose() {
