@@ -1,6 +1,49 @@
 // src/shared/colorscales.ts
 import * as d3 from "d3";
 
+/**
+ * Plotly.js-compatible colorscale vector: an array of [stop, color] pairs
+ * where stop is normalized to [0, 1]. Used both as documentation of the exact
+ * intended gradient and as the source of truth for the D3 interpolator below.
+ */
+export type PlotlyColorStop = [number, string];
+
+/**
+ * Default Z-Score diverging scale: custom Blue-White-Red gradient
+ * (inverted RdBu), zero anchored exactly at white (#f7f7f7).
+ */
+export const BLUE_WHITE_RED_PLOTLY_SCALE: PlotlyColorStop[] = [
+  [0.0, "#053061"], // Extreme Down-regulation (Deep Blue)
+  [0.15, "#2166ac"],
+  [0.35, "#92c5de"],
+  [0.5, "#f7f7f7"], // Zero Point (Neutral/White)
+  [0.65, "#f4a582"],
+  [0.85, "#b2182b"],
+  [1.0, "#67001f"], // Extreme Up-regulation (Deep Red)
+];
+
+/** Classic microarray Green-Black-Red gradient, zero anchored at black. */
+export const GREEN_BLACK_RED_PLOTLY_SCALE: PlotlyColorStop[] = [
+  [0.0, "#00cc44"],
+  [0.5, "#000000"],
+  [1.0, "#ff3333"],
+];
+
+/**
+ * Build a `(t: number) => string` interpolator (matching d3's
+ * `interpolateXxx` shape) from a Plotly-style [stop, color] vector, so custom
+ * gradients can be dropped into COLORSCALES alongside the built-in d3 scales.
+ */
+function fromPlotlyColorStops(stops: PlotlyColorStop[]): (t: number) => string {
+  const scale = d3
+    .scaleLinear<string>()
+    .domain(stops.map(([stop]) => stop))
+    .range(stops.map(([, color]) => color))
+    .interpolate(d3.interpolateRgb)
+    .clamp(true);
+  return (t: number) => scale(t);
+}
+
 export const COLORSCALES = {
   VIRIDIS: d3.interpolateViridis,
   BLUES: d3.interpolateBlues,
@@ -29,7 +72,68 @@ export const COLORSCALES = {
   YLGN: d3.interpolateYlGn,
   YLORBR: d3.interpolateYlOrBr,
   YLORRD: d3.interpolateYlOrRd,
+  // Diverging (tri-color, zero-centered) scales
+  RDBU: d3.interpolateRdBu,
+  RDYLBU: d3.interpolateRdYlBu,
+  RDYLGN: d3.interpolateRdYlGn,
+  PIYG: d3.interpolatePiYG,
+  PRGN: d3.interpolatePRGn,
+  PUOR: d3.interpolatePuOr,
+  RDGY: d3.interpolateRdGy,
+  SPECTRAL: d3.interpolateSpectral,
+  BRBG: d3.interpolateBrBG,
+  // Custom diverging scales (exact publication-grade gradients)
+  BLUEWHITERED: fromPlotlyColorStops(BLUE_WHITE_RED_PLOTLY_SCALE),
+  GREENBLACKRED: fromPlotlyColorStops(GREEN_BLACK_RED_PLOTLY_SCALE),
 };
+
+/**
+ * Friendly display labels for ColorScale dropdown entries whose key doesn't
+ * beautify well on its own (single all-caps word). Falls back to
+ * `beautifyLabel(key)` for anything not listed here.
+ */
+export const COLORSCALE_LABELS: Partial<Record<keyof typeof COLORSCALES, string>> = {
+  BLUEWHITERED: "BlueWhiteRed (Default)",
+  GREENBLACKRED: "GreenBlackRed",
+  PIYG: "ColorblindFriendly (PiYG)",
+  BRBG: "BrBG",
+};
+
+/**
+ * Keys in COLORSCALES that are diverging (tri-color, neutral-midpoint) scales.
+ * These are the only scales considered safe for zero-centered data such as
+ * Z-Scores, where the neutral middle color must represent 0.
+ */
+export const DIVERGING_COLORSCALES = new Set<string>([
+  "BLUEWHITERED",
+  "GREENBLACKRED",
+  "CUBEHELIXDEFAULT",
+  "RDBU",
+  "RDYLBU",
+  "RDYLGN",
+  "PIYG",
+  "PRGN",
+  "PUOR",
+  "RDGY",
+  "SPECTRAL",
+  "BRBG",
+]);
+
+export const DEFAULT_DIVERGING_COLORSCALE = "BLUEWHITERED";
+
+
+/**
+ * Compute a symmetric, zero-centered [min, max] domain from raw data bounds:
+ * bound = max(|min|, |max|); domain = [-bound, bound].
+ * Used for Z-Score color mapping so a diverging scale's neutral midpoint
+ * always lands exactly on 0, regardless of data skew.
+ */
+export function getZeroCenteredDomain(minVal: number, maxVal: number): [number, number] {
+  const safeMin = Number.isFinite(minVal) ? minVal : 0;
+  const safeMax = Number.isFinite(maxVal) ? maxVal : 0;
+  const bound = Math.max(Math.abs(safeMin), Math.abs(safeMax)) || 1;
+  return [-bound, bound];
+}
 
 /**
  * Maximally distinct color palette using CIE Lab color space principles.

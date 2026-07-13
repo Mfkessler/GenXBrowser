@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { DEFAULT_TRAIT_COLUMN, normalizeDefaultTraitColumn, normalizeDefaultTraitColumns } from "@/shared/defaultTrait";
+import { DIVERGING_COLORSCALES, DEFAULT_DIVERGING_COLORSCALE } from "@/shared/Colorscales";
 
 export interface ExpressionDisplayState {
   optionId: string; // 'tpm', 'tmm', 'getmm', 'log2', 'zscore', 'raw'
@@ -270,6 +271,11 @@ export const useVisualizationStore = defineStore("visualization", {
         layer,
         transform
       };
+      // Z-Score requires a zero-centered diverging color scale so the neutral
+      // midpoint maps to 0. Force-switch away from sequential scales.
+      if (transform === 'zscore' && !DIVERGING_COLORSCALES.has(this.colorScale)) {
+        this.colorScale = DEFAULT_DIVERGING_COLORSCALE;
+      }
     },
     toggleLegend() {
       this.legend = !this.legend;

@@ -895,7 +895,7 @@ import { useVisualizationStore } from "@/stores/visualization";
 import CheckboxSelector from "./CheckboxSelector.vue";
 import CollapseWrapper from "./CollapseWrapper.vue";
 import InfoTooltip from "./InfoTooltip.vue";
-import { COLORSCALES } from "@/shared/Colorscales";
+import { COLORSCALES, COLORSCALE_LABELS, DIVERGING_COLORSCALES } from "@/shared/Colorscales";
 import { useColumnsStore } from "@/stores/columns";
 import { API_BASE_URL, type Config } from "@/shared/Config";
 import type { MetaFormat } from "@/shared/MetaFormat";
@@ -1214,13 +1214,21 @@ function setGroupingColumn(columnName: string) {
   }
 }
 
-// Convert COLORSCALES keys into a Record<string, string> for DropdownMenu options
-const colorScaleDropdownOptions = Object.keys(COLORSCALES).reduce(
-  (acc, key) => {
-    acc[key] = beautifyLabel(key);
-    return acc;
-  },
-  {} as Record<string, string>,
+// Convert COLORSCALES keys into a Record<string, string> for DropdownMenu options.
+// While the Z-Score expression layer is active, only zero-centered diverging
+// scales are offered — sequential (two-color) scales cannot represent a
+// meaningful "0 = neutral" midpoint.
+const isZScoreActive = computed(() => store.expressionDisplay.transform === "zscore");
+
+const colorScaleDropdownOptions = computed<Record<string, string>>(() =>
+  Object.keys(COLORSCALES).reduce(
+    (acc, key) => {
+      if (isZScoreActive.value && !DIVERGING_COLORSCALES.has(key)) return acc;
+      acc[key] = COLORSCALE_LABELS[key as keyof typeof COLORSCALES] ?? beautifyLabel(key);
+      return acc;
+    },
+    {} as Record<string, string>,
+  ),
 );
 
 // Remove old COLORRANGES definition (now replaced by Expression)

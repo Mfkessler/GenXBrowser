@@ -260,7 +260,7 @@ import {
 } from "vue";
 
 import DropdownMenu from "./DropdownMenu.vue";
-import {COLORSCALES} from "@/shared/Colorscales";
+import {COLORSCALES, getZeroCenteredDomain} from "@/shared/Colorscales";
 import {useColumnsStore} from "@/stores/columns";
 import {API_BASE_URL, type Config} from "@/shared/Config";
 import {useFiltersStore} from "@/stores/filters";
@@ -1510,11 +1510,20 @@ async function renderHeatmap(): Promise<boolean> {
       )
       .filter((v) => !isNaN(v));
 
+    // Z-Score data must use a symmetric, zero-centered domain so the diverging
+    // color scale's neutral midpoint always lands exactly on 0.
+    const isZScoreDisplay = visualizationStore.expressionDisplay.transform === "zscore";
+    const rawMin = d3.min(allCellVals) ?? 0;
+    const rawMax = d3.max(allCellVals) ?? 1;
+    const colorDomain: [number, number] = isZScoreDisplay
+      ? getZeroCenteredDomain(rawMin, rawMax)
+      : [rawMin, rawMax];
+
     const colorScale = d3
       .scaleSequential(
         COLORSCALES[visualizationStore.colorScale] as (t: number) => string,
       )
-      .domain([d3.min(allCellVals) ?? 0, d3.max(allCellVals) ?? 1]);
+      .domain(colorDomain);
 
   // Calculate label thinning for readability
   // Approximate height/width per label to determine skip interval

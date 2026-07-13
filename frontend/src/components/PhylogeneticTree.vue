@@ -150,7 +150,7 @@ import {
 } from "@/utils/phyloLayout";
 import { API_BASE_URL } from "@/shared/Config.ts";
 import { fetchAnalysisLimits } from "@/shared/landingApi";
-import { COLORSCALES } from "@/shared/Colorscales.ts";
+import { COLORSCALES, getZeroCenteredDomain } from "@/shared/Colorscales.ts";
 import type { MetaFormat } from "@/shared/MetaFormat.ts";
 import type { RowType } from "@/shared/RowType.ts";
 import { assign } from "lodash-es";
@@ -1369,8 +1369,14 @@ async function initPhylotree(
       })
     })
   }
-  const minVal = d3.min(allValues) ?? 0
-  const maxVal = d3.max(allValues) ?? 1
+  const rawMinVal = d3.min(allValues) ?? 0
+  const rawMaxVal = d3.max(allValues) ?? 1
+  // Z-Score data must use a symmetric, zero-centered domain so the diverging
+  // color scale's neutral midpoint always lands exactly on 0.
+  const isZScoreDisplay = visualizationStore.expressionDisplay.transform === 'zscore'
+  const [minVal, maxVal] = isZScoreDisplay
+    ? getZeroCenteredDomain(rawMinVal, rawMaxVal)
+    : [rawMinVal, rawMaxVal]
   const color = d3
     .scaleSequential(COLORSCALES[visualizationStore.colorScale] as (t: number) => string)
     .domain([minVal, maxVal])

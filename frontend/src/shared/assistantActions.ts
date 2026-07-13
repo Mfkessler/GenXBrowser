@@ -96,6 +96,8 @@ const COLOR_SCALES = new Set([
   "TURBO", "INFERNO", "MAGMA", "PLASMA", "CIVIDIS", "WARM", "COOL",
   "CUBEHELIXDEFAULT", "BUGN", "BUPU", "GNBU", "ORRD", "PUBUGN", "PUBU",
   "PURD", "RDPU", "YLGNBU", "YLGN", "YLORBR", "YLORRD",
+  "RDBU", "RDYLBU", "RDYLGN", "PIYG", "PRGN", "PUOR", "RDGY", "SPECTRAL", "BRBG",
+  "BLUEWHITERED", "GREENBLACKRED",
 ]);
 
 const EXPRESSION_OPTIONS: Record<string, { layer: string | null; transform: "raw" | "log2" | "zscore" }> = {
