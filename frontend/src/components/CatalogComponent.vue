@@ -148,7 +148,13 @@ import { type OverlayConfig } from "@/shared/OverlayConfig";
 import OverlayTable from "@/components/OverlayTable.vue";
 import { jsonToTsv, beautifyLabel } from "@/shared/utils";
 import { fetchAnalysisLimits } from "@/shared/landingApi";
-import { getMirroredCardStyle, readCardBoxSize, type CardBoxSize } from "@/shared/dashboardCardSizing";
+import {
+  getMirroredCardStyle,
+  measureOccupiedHeight,
+  readCardBoxSize,
+  subtractDynamicRegionsHeight,
+  type CardBoxSize,
+} from "@/shared/dashboardCardSizing";
 
 type AnalysisLimitView = "heatmap" | "phylo" | "ora" | "compare";
 
@@ -192,6 +198,10 @@ function disconnectDatasetCardObserver() {
   datasetCardResizeObserver = null;
 }
 
+// Analysis cards mirror the dataset card's STRUCTURAL size only (photo, title, counts,
+// action buttons) — never the dynamically-growing filter-chain/ID-filter chip rows that
+// get appended below as filters are applied (`data-card-dynamic-region` in
+// CatalogEntry.vue). Otherwise adding a filter chip would grow every Analysis card too.
 function updateDatasetCardSize() {
   const datasetCard = datasetGridRef.value?.querySelector<HTMLElement>('[data-card-role="dataset"]');
   if (!datasetCard) {
@@ -199,7 +209,14 @@ function updateDatasetCardSize() {
     return;
   }
 
-  datasetCardSize.value = readCardBoxSize(datasetCard.getBoundingClientRect());
+  const cardRect = datasetCard.getBoundingClientRect();
+  const dynamicRegions = datasetCard.querySelectorAll<HTMLElement>('[data-card-dynamic-region]');
+  const dynamicRegionHeights = Array.from(dynamicRegions).map((region) => (
+    measureOccupiedHeight(region.getBoundingClientRect(), window.getComputedStyle(region))
+  ));
+  const coreHeight = subtractDynamicRegionsHeight(cardRect.height, dynamicRegionHeights);
+
+  datasetCardSize.value = readCardBoxSize({ width: cardRect.width, height: coreHeight });
 }
 
 function observeDatasetCard() {

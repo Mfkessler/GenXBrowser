@@ -317,6 +317,14 @@ const props = defineProps<{
   datasetId?: string | null;
   /** Human-readable dataset name shown in the modal header, e.g. "Arabidopsis thaliana". */
   datasetLabel?: string;
+  /**
+   * The Transcript ID column key (`filtersStore.idColumnName`) when this dataset has an
+   * active primary ID filter (set via the card's "Filter Transcript IDs" button), else
+   * null/undefined. Included as a first-class native chain row (AND/OR, NOT, reorder) —
+   * unlike `columns`, it is never fed into the GLOBAL filter-chain column sync, since the
+   * ID filter only ever exists per-dataset.
+   */
+  idColumn?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -359,7 +367,17 @@ function loadChainState() {
   // the actual query) so disabled rows still render in the modal and can be re-enabled.
   const chain = filtersStore.getEffectiveChainPerDataset(chainKey.value);
   const customKeys = Object.keys(customFiltersForDataset.value);
-  const allActive = [...activeColumns.value, ...customKeys.filter((key) => !activeColumns.value.includes(key))];
+  // The primary Transcript ID filter is native (not "custom") but, like custom terms, must
+  // never be fed into `syncFilterChainColumns` above (that call is GLOBAL-scoped and shared
+  // across every dataset, whereas the ID filter is always per-dataset).
+  const idKey = props.idColumn && !activeColumns.value.includes(props.idColumn) && !customKeys.includes(props.idColumn)
+    ? props.idColumn
+    : null;
+  const allActive = [
+    ...activeColumns.value,
+    ...customKeys.filter((key) => !activeColumns.value.includes(key)),
+    ...(idKey ? [idKey] : []),
+  ];
   const allActiveSet = new Set(allActive);
   localColumns.value = [
     ...chain.columns.filter((column) => allActiveSet.has(column)),
@@ -369,7 +387,7 @@ function loadChainState() {
 }
 
 watch(
-  () => [props.open, props.columns.join("\u0000"), props.datasetId ?? "", localized.value],
+  () => [props.open, props.columns.join("\u0000"), props.datasetId ?? "", localized.value, props.idColumn ?? ""],
   () => {
     if (!props.open) return;
     loadChainState();
@@ -503,6 +521,10 @@ function labelFor(column: string): string {
 function summaryFor(column: string): string {
   if (isCustomColumn(column)) {
     return String(customFiltersForDataset.value[column]?.filter.value ?? "");
+  }
+  if (props.idColumn && column === props.idColumn) {
+    const idFilter = props.datasetId ? filtersStore.datasetIdFilters[props.datasetId] : undefined;
+    return String(idFilter?.value ?? "");
   }
   const value = props.filters[column]?.value;
   return String(value ?? "");

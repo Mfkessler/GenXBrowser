@@ -182,9 +182,10 @@
           </svg>
         </button>
         </span>
-        <!-- Edit Filter Chain Button (Amber) — only relevant once at least one row filter is active -->
+        <!-- Edit Filter Chain Button (Amber) — relevant once at least one row filter (or the
+             primary Transcript ID filter) is active, so the ID filter can also get NOT/AND-OR/reorder. -->
         <button
-          v-if="activeChainKeys.length > 0"
+          v-if="hasChainableFilters"
           class="cursor-pointer rounded-full border-1 border-amber-600 bg-amber-100 hover:bg-amber-600 text-amber-600 hover:text-amber-100 p-2 min-w-10 min-h-10 flex items-center justify-center"
           aria-label="Edit Filter Chain for this dataset"
           @click.stop="openFilterChainModal"
@@ -205,8 +206,10 @@
       </div>
 
       <!-- Dataset-specific Filter Chain chips: inherited (globe icon, read-only) or localized,
-           with AND/OR connectors between enabled chips and a highlighted NOT marker. -->
-      <div v-if="activeChainKeys.length > 0" class="flex flex-wrap gap-1 mt-2 items-center" @click.stop>
+           with AND/OR connectors between enabled chips and a highlighted NOT marker. Marked as a
+           `data-card-dynamic-region` since it grows as filters are chained — Analysis card sizing
+           (CatalogComponent.vue) excludes this region so it never mirrors that growth. -->
+      <div v-if="chainChipItems.length > 0 || hasLocalChain" data-card-dynamic-region class="flex flex-wrap gap-1 mt-2 items-center" @click.stop>
         <template v-for="(item, idx) in chainChipItems" :key="idx">
           <span
             v-if="item.type === 'op'"
@@ -251,11 +254,13 @@
         :columns="activeChainKeys"
         :filters="activeChainFilters"
         :labels="chainLabels"
+        :id-column="primaryIdChainColumn"
         @close="filterChainOpen = false"
       />
 
-      <!-- Per-dataset ID filter chips -->
-      <div v-if="datasetIdPills.length > 0" class="flex flex-wrap gap-1 mt-2 items-center" @click.stop>
+      <!-- Per-dataset ID filter chips. Marked as a `data-card-dynamic-region` (see above) so its
+           growth never affects Analysis card sizing. -->
+      <div v-if="datasetIdPills.length > 0" data-card-dynamic-region class="flex flex-wrap gap-1 mt-2 items-center" @click.stop>
         <!-- First chip shown in full -->
         <span
           class="inline-flex items-center gap-0.5 bg-purple-50 text-purple-700 border border-purple-200 text-xs rounded-full px-2 py-0.5"
@@ -494,9 +499,29 @@ const effectiveChain = computed(() => filtersStore.getEffectiveChainPerDataset(p
 const chainKeyForRead = computed(() => (hasLocalChain.value ? props.tableName : null));
 // Dataset-only custom filter terms (added via the modal's "+" button) — never sidebar-backed.
 const customFiltersForCard = computed(() => filtersStore.getCustomFiltersForDataset(props.tableName));
+
+// The primary Transcript ID filter (set via the purple "Filter Transcript IDs" button +
+// BatchInputModal) is a native filter-chain block once active, so it can be reordered /
+// AND-OR'd / negated via the modal — but per UI scoping rules it keeps showing ONLY through
+// its existing purple pill chips on the card, never as a chip in the chain row below.
+const primaryIdChainColumn = computed(() => (
+  datasetIdPills.value.length > 0 ? filtersStore.idColumnName : null
+));
+// Whether the "Edit Filter Chain" button/row should be offered at all: any active sidebar
+// row filter, OR the primary Transcript ID filter alone (so it too can be negated/reordered).
+const hasChainableFilters = computed(() => activeChainKeys.value.length > 0 || datasetIdPills.value.length > 0);
+
+// Any Transcript ID related chain entry (the native primary slot, or a custom Transcript ID
+// term added via the modal's "+" button) must stay modal-only — never rendered as a card chip.
+function isIdRelatedChainColumn(column: string): boolean {
+  if (column === filtersStore.idColumnName) return true;
+  return customFiltersForCard.value[column]?.column === filtersStore.idColumnName;
+}
+
 const chainChipColumns = computed(() => {
-  const order = effectiveChain.value.columns;
-  const activeSet = new Set([...activeChainKeys.value, ...Object.keys(customFiltersForCard.value)]);
+  const order = effectiveChain.value.columns.filter((column) => !isIdRelatedChainColumn(column));
+  const customKeysForCard = Object.keys(customFiltersForCard.value).filter((column) => !isIdRelatedChainColumn(column));
+  const activeSet = new Set([...activeChainKeys.value, ...customKeysForCard]);
   return [
     ...order.filter((column) => activeSet.has(column)),
     ...activeChainKeys.value.filter((column) => !order.includes(column)),
