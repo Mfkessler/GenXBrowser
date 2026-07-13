@@ -20,7 +20,7 @@ import pandas as pd
 
 # h5ad-lib imports
 from h5ad_lib.core.registry import SpeciesRegistry
-from h5ad_lib.config.manager import ConfigManager
+from h5ad_lib.config.manager import ConfigManager, ID_COLUMN_NAME
 from h5ad_lib.filters.storage import FilterStore
 
 try:
@@ -781,13 +781,28 @@ class GenXBrowserService:
         validate/parse incoming filters, since a column being hidden from the
         generic sidebar toggle list must not make it unfilterable via the
         dedicated ID-filter feature or the API.
+
+        The canonical id column (``ID_COLUMN_NAME``, i.e. ``gene_id`` — see
+        ``h5ad_lib.config.manager``) is ALWAYS included in the gene-metadata
+        (``.var``) listing, regardless of a ``visible: false`` entry — or no
+        ``column_definitions`` entry at all — for that column. It backs the
+        dedicated "Filter Transcript IDs" feature and the Filter Chain's native
+        ID block, so hiding it here would silently break both. `ConfigManager`
+        already self-heals this at load/save time, but this is kept as a
+        defense-in-depth check for any config source that bypasses it (e.g.
+        test fakes). It is still kept out of the generic sidebar via the
+        frontend's own `sidebarExcludedRowColumns`, so forcing it visible here
+        does not reintroduce sidebar clutter.
         """
         column_defs = self.config_manager.get_column_definitions()
         configured_columns: List[Dict[str, Any]] = []
         default_trait_column = self.config_manager.get_config().get('default_trait_column')
+        id_column_name = None if sample_metadata else ID_COLUMN_NAME
+        seen_columns: Set[str] = set()
 
         for column_name, col_def in column_defs.items():
-            if not include_hidden and not col_def.get('visible', True):
+            is_id_column = bool(id_column_name) and column_name == id_column_name
+            if not include_hidden and not is_id_column and not col_def.get('visible', True):
                 continue
 
             if sample_metadata:
@@ -798,13 +813,14 @@ class GenXBrowserService:
                     continue
                 dtype = str(adata.obs[actual_col].dtype)
             else:
-                if col_def.get('is_sample_metadata', False) or not col_def.get('is_meta', False):
+                if col_def.get('is_sample_metadata', False) or (not col_def.get('is_meta', False) and not is_id_column):
                     continue
                 actual_col = self._resolve_axis_column(adata.var, column_name)
-                if actual_col is None and column_name not in VIRTUAL_GENE_COLUMNS:
+                if actual_col is None and column_name not in VIRTUAL_GENE_COLUMNS and not is_id_column:
                     continue
                 dtype = str(adata.var[actual_col].dtype) if actual_col is not None else 'object'
 
+            seen_columns.add(column_name)
             configured_columns.append({
                 'column_name': column_name,
                 'display_name': col_def.get('display_name', column_name),
@@ -813,6 +829,22 @@ class GenXBrowserService:
                 'order': col_def.get('order', 9999),
                 'is_default_trait': sample_metadata and column_name == default_trait_column,
             })
+
+        # The id column has no `column_definitions` entry at all (e.g. never explicitly
+        # imported/configured) — synthesize one so it still always appears.
+        if id_column_name and id_column_name not in seen_columns:
+            actual_col = self._resolve_axis_column(adata.var, id_column_name)
+            if actual_col is not None or id_column_name in VIRTUAL_GENE_COLUMNS:
+                dtype = str(adata.var[actual_col].dtype) if actual_col is not None else 'object'
+                beautify = getattr(self.config_manager, '_beautify_name', None)
+                configured_columns.append({
+                    'column_name': id_column_name,
+                    'display_name': beautify(id_column_name) if beautify else id_column_name.replace('_', ' ').title(),
+                    'actual_name': actual_col,
+                    'type': self._get_column_type(dtype, actual_col or id_column_name),
+                    'order': 9999,
+                    'is_default_trait': False,
+                })
 
         configured_columns.sort(key=lambda item: (item['order'], item['column_name']))
         return configured_columns

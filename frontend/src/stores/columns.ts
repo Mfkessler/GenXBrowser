@@ -4,6 +4,8 @@ import axios from "axios";
 import { type MetaFormat } from "@/shared/MetaFormat";
 import { API_BASE_URL } from "@/shared/Config";
 import { DEFAULT_TRAIT_COLUMN } from "@/shared/defaultTrait";
+import { getEntityLabel } from "@/shared/dataTypeLabels";
+import { useFiltersStore } from "@/stores/filters";
 
 export interface ColumnsState {
   rowColumns: MetaFormat[];
@@ -34,7 +36,22 @@ export const useColumnsStore = defineStore("columns", {
   }),
   actions: {
     setRowColumns(columns: MetaFormat[]) {
-      this.rowColumns = columns.filter(c => !c.is_default_trait);
+      // The id/row-identifier column's display name is always driven by the frontend's
+      // own Genes/Isoforms terminology (VITE_DATA_TYPE, see dataTypeLabels.ts) — e.g.
+      // "Transcript" everywhere this app is deployed with VITE_DATA_TYPE=Isoforms — rather
+      // than whatever generic fallback name the backend config happens to have (it has no
+      // knowledge of VITE_DATA_TYPE at all; see ConfigManager.ID_COLUMN_NAME). This keeps
+      // it consistent with every other Gene/Transcript label in the app (getEntityLabel*),
+      // and fixes it showing as the backend's literal "Gene ID" auto-fallback on instances
+      // configured for Isoforms terminology.
+      const idColumnName = useFiltersStore().idColumnName;
+      this.rowColumns = columns
+        .filter(c => !c.is_default_trait)
+        .map(c => (
+          c.column_name === idColumnName
+            ? { ...c, display_name: getEntityLabel() }
+            : c
+        ));
     },
     setColColumns(columns: MetaFormat[]) {
       // Filter out hidden internal columns

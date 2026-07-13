@@ -182,10 +182,9 @@
           </svg>
         </button>
         </span>
-        <!-- Edit Filter Chain Button (Amber) — relevant once at least one row filter (or the
-             primary Transcript ID filter) is active, so the ID filter can also get NOT/AND-OR/reorder. -->
+        <!-- Edit Filter Chain Button (Amber) — always available so a custom filter chain
+             (incl. Transcript ID terms) can be built even before any filter is active. -->
         <button
-          v-if="hasChainableFilters"
           class="cursor-pointer rounded-full border-1 border-amber-600 bg-amber-100 hover:bg-amber-600 text-amber-600 hover:text-amber-100 p-2 min-w-10 min-h-10 flex items-center justify-center"
           aria-label="Edit Filter Chain for this dataset"
           @click.stop="openFilterChainModal"
@@ -502,26 +501,18 @@ const customFiltersForCard = computed(() => filtersStore.getCustomFiltersForData
 
 // The primary Transcript ID filter (set via the purple "Filter Transcript IDs" button +
 // BatchInputModal) is a native filter-chain block once active, so it can be reordered /
-// AND-OR'd / negated via the modal — but per UI scoping rules it keeps showing ONLY through
-// its existing purple pill chips on the card, never as a chip in the chain row below.
+// AND-OR'd / negated via the modal. Its full value list keeps showing via the dedicated
+// purple pill chips on the card (below); it ALSO participates in the amber/sky chain chip
+// row like any other block, so its boolean position (AND/OR/NOT) relative to other active
+// filters — including additional Transcript ID terms added via "Add custom filter" — is
+// visible directly on the card.
 const primaryIdChainColumn = computed(() => (
   datasetIdPills.value.length > 0 ? filtersStore.idColumnName : null
 ));
-// Whether the "Edit Filter Chain" button/row should be offered at all: any active sidebar
-// row filter, OR the primary Transcript ID filter alone (so it too can be negated/reordered).
-const hasChainableFilters = computed(() => activeChainKeys.value.length > 0 || datasetIdPills.value.length > 0);
-
-// Any Transcript ID related chain entry (the native primary slot, or a custom Transcript ID
-// term added via the modal's "+" button) must stay modal-only — never rendered as a card chip.
-function isIdRelatedChainColumn(column: string): boolean {
-  if (column === filtersStore.idColumnName) return true;
-  return customFiltersForCard.value[column]?.column === filtersStore.idColumnName;
-}
 
 const chainChipColumns = computed(() => {
-  const order = effectiveChain.value.columns.filter((column) => !isIdRelatedChainColumn(column));
-  const customKeysForCard = Object.keys(customFiltersForCard.value).filter((column) => !isIdRelatedChainColumn(column));
-  const activeSet = new Set([...activeChainKeys.value, ...customKeysForCard]);
+  const order = effectiveChain.value.columns;
+  const activeSet = new Set([...activeChainKeys.value, ...Object.keys(customFiltersForCard.value)]);
   return [
     ...order.filter((column) => activeSet.has(column)),
     ...activeChainKeys.value.filter((column) => !order.includes(column)),

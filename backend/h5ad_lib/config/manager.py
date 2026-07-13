@@ -59,6 +59,14 @@ DEFAULT_ARRAY_COLUMNS = {
     "ipr_desc", "pfam_desc",
 }
 
+# The canonical Transcript ID / row-identifier column. Every dataset prepared via
+# genxprep materializes it as a real `.var["gene_id"]` column (see
+# `genxprep/builder.py`: ``var["gene_id"] = var.index``), and it backs the frontend's
+# dedicated "Filter Transcript IDs" feature + the Filter Chain's native ID block.
+# It must NEVER be hidden (missing or `visible: false`) from `column_definitions` —
+# see `ConfigManager._ensure_id_column_visible()` — or those features silently break.
+ID_COLUMN_NAME = "gene_id"
+
 # Default meta columns (shown in Genes tab)
 DEFAULT_META_COLUMNS = {
     "gene_id", "description", "description_long", "ortho_id", "hog",
@@ -158,6 +166,8 @@ class ConfigManager:
                 self._ensure_virtual_columns()
                 # Back-fill array_separator for columns that pre-date the field
                 self._ensure_array_separators()
+                # The id column can never be hidden/removed (see docstring)
+                self._ensure_id_column_visible()
             except Exception as e:
                 logger.error(f"Failed to load config: {e}")
                 self._config = self._get_empty_config()
@@ -177,6 +187,50 @@ class ConfigManager:
         """Drop deprecated admin frontend display settings from config."""
         if isinstance(self._config, dict):
             self._config.pop("frontend_settings", None)
+
+    def _ensure_id_column_visible(self) -> None:
+        """Force the canonical id column (`ID_COLUMN_NAME`, i.e. ``gene_id``) to always
+        stay ``visible: true`` in ``column_definitions`` — creating the entry if it's
+        missing entirely.
+
+        It backs the frontend's dedicated "Filter Transcript IDs" feature and the
+        Filter Chain's native ID block; hiding or removing it (via a manually-edited
+        config file, an old export that never imported it, or the generic
+        column-visibility toggle) silently breaks both. It is still correctly kept out
+        of the generic sidebar via the frontend's own `sidebarExcludedRowColumns`, so
+        forcing it here can never reintroduce sidebar clutter.
+        """
+        col_defs = self._config.setdefault("column_definitions", {})
+        col_def = col_defs.get(ID_COLUMN_NAME)
+        changed = False
+        if col_def is None:
+            col_defs[ID_COLUMN_NAME] = {
+                "display_name": self._beautify_name(ID_COLUMN_NAME),
+                "type": "text",
+                "is_array": False,
+                "array_separator": ",",
+                "is_meta": True,
+                "is_sample_metadata": False,
+                "visible": True,
+                "sortable": True,
+                "order": max((v.get("order", -1) for v in col_defs.values()), default=-1) + 1,
+            }
+            changed = True
+            logger.warning(
+                "Config had no '%s' column definition — adding one (it cannot be "
+                "removed/hidden; see ConfigManager._ensure_id_column_visible).",
+                ID_COLUMN_NAME,
+            )
+        elif not col_def.get("visible", True):
+            col_def["visible"] = True
+            changed = True
+            logger.warning(
+                "Config had '%s' marked visible:false — forcing it back to visible:true "
+                "(it cannot be hidden; see ConfigManager._ensure_id_column_visible).",
+                ID_COLUMN_NAME,
+            )
+        if changed:
+            self._save_config()
 
     def _migrate_config(self) -> None:
         """Auto-migrate old configs that used legacy display column names.
@@ -551,6 +605,9 @@ class ConfigManager:
             try:
                 self._config = dict(new_config)
                 self._strip_deprecated_frontend_settings()
+                # The id column can never be hidden/removed, no matter which caller
+                # (admin API, full config replace, etc.) sent the update.
+                self._ensure_id_column_visible()
                 self._save_config()
                 return True
             except Exception as e:
