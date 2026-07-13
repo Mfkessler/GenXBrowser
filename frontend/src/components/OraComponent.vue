@@ -1548,7 +1548,7 @@ async function drawDotPlot() {
   // INVERTED domain: high q-values -> 0 (dark), low q-values -> 1 (yellow)
   const colorScale = d3
     .scaleSequentialLog(
-      COLORSCALES[visualizationStore.colorScale] as (t: number) => string,
+      COLORSCALES[visualizationStore.oraColorScale] as (t: number) => string,
     )
     .domain([maxQValueSafe, minQValueSafe])  // INVERTED: max to min
     .clamp(true);
@@ -1914,7 +1914,7 @@ watch(
   [
     () => visualizationStore.legend,
     () => visualizationStore.oraRowSideColor,
-    () => visualizationStore.colorScale,
+    () => visualizationStore.oraColorScale,
     () => visualizationStore.oraOrder,
   ],
   async () => {

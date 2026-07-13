@@ -57,6 +57,10 @@ export interface VisualizationState {
     sampleNames: string[];
   };
   colorScale: string;
+  // ORA q-value legend uses its own sequential color scale, independent of the
+  // Heatmap/PhyloTree `colorScale` (which can be force-switched to a
+  // zero-centered diverging scale when Z-Score is active).
+  oraColorScale: string;
   expressionDisplay: ExpressionDisplayState;
   legend: boolean;
   oraRowSideColor: boolean;
@@ -140,6 +144,7 @@ function getDefaultState(): VisualizationState {
       sampleNames: [],
     },
     colorScale: "VIRIDIS",
+    oraColorScale: "VIRIDIS",
     expressionDisplay: {
       optionId: "tpm",  // Must match EXPRESSION_OPTIONS id - TPM as default for heatmap
       layer: "tpm",
@@ -264,6 +269,9 @@ export const useVisualizationStore = defineStore("visualization", {
     },
     setColorScale(scale: string) {
       this.colorScale = scale;
+    },
+    setOraColorScale(scale: string) {
+      this.oraColorScale = scale;
     },
     setExpressionDisplay(optionId: string, layer: string | null, transform: 'raw' | 'log2' | 'zscore') {
       this.expressionDisplay = {
@@ -516,6 +524,7 @@ export const useVisualizationStore = defineStore("visualization", {
           sampleNames: [...this.customColOrder.sampleNames],
         },
         colorScale: this.colorScale,
+        oraColorScale: this.oraColorScale,
         expressionDisplay: { ...this.expressionDisplay },
         legend: this.legend,
         oraRowSideColor: this.oraRowSideColor,

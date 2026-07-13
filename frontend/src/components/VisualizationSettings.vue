@@ -237,7 +237,7 @@
               ColorScale
             </h3>
             <DropdownMenu
-              v-model="store.colorScale"
+              v-model="activeColorScale"
               :options="colorScaleDropdownOptions"
               class="items-center mb-4"
             />
@@ -1217,8 +1217,23 @@ function setGroupingColumn(columnName: string) {
 // Convert COLORSCALES keys into a Record<string, string> for DropdownMenu options.
 // While the Z-Score expression layer is active, only zero-centered diverging
 // scales are offered — sequential (two-color) scales cannot represent a
-// meaningful "0 = neutral" midpoint.
-const isZScoreActive = computed(() => store.expressionDisplay.transform === "zscore");
+// meaningful "0 = neutral" midpoint. ORA has no Z-Score concept (its q-value
+// legend uses its own independent `oraColorScale`), so it must never be
+// affected by leftover Z-Score state from Heatmap/PhyloTree.
+const isZScoreActive = computed(() => props.context !== "ora" && store.expressionDisplay.transform === "zscore");
+
+// ORA's q-value legend uses a dedicated, always-sequential color scale
+// (Viridis default), fully decoupled from the Heatmap/PhyloTree `colorScale`.
+const activeColorScale = computed({
+  get: () => (props.context === "ora" ? store.oraColorScale : store.colorScale),
+  set: (value: string) => {
+    if (props.context === "ora") {
+      store.setOraColorScale(value);
+    } else {
+      store.setColorScale(value);
+    }
+  },
+});
 
 const colorScaleDropdownOptions = computed<Record<string, string>>(() =>
   Object.keys(COLORSCALES).reduce(
