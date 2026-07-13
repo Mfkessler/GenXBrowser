@@ -1511,6 +1511,26 @@ async function renderPlot() {
     raw: "Raw Counts",
   };
 
+  // Z-Score is polarity-sensitive: force a symmetric, zero-centered Y-axis
+  // ([-bound, bound] where bound = max(|min|, |max|)) plus a distinct dashed
+  // zero baseline, so positive/negative deviations are visually balanced.
+  // Any other expression mode keeps Plotly's default tight-fit axis.
+  const isZScoreDisplay = expressionDisplayOption.value === "zscore" || expressionDisplayOption.value === "zscore-tpm";
+  let yAxisRange: [number, number] | undefined;
+  if (isZScoreDisplay) {
+    const allYValues: number[] = [];
+    traces.forEach((trace) => {
+      const y = (trace as any)?.y;
+      if (Array.isArray(y)) {
+        y.forEach((v: unknown) => {
+          if (typeof v === "number" && Number.isFinite(v)) allYValues.push(v);
+        });
+      }
+    });
+    const bound = Math.max(...allYValues.map((v) => Math.abs(v)), 0) || 1;
+    yAxisRange = [-bound, bound];
+  }
+
   const containerWidth = plotContainer.value.clientWidth || cardWrapper.value?.clientWidth || 800;
   const isMobilePlot = containerWidth < 520;
   const responsiveHeight = isMobilePlot
@@ -1546,7 +1566,25 @@ async function renderPlot() {
       zeroline: true,
       zerolinecolor: "#e0e0e0",
       gridcolor: "#f0f0f0",
+      ...(yAxisRange ? { range: yAxisRange } : {}),
     } as any,
+    // Distinct dashed zero baseline, shown only for the Z-Score view so
+    // positive/negative deviations read as visually balanced around 0.
+    shapes: isZScoreDisplay
+      ? [
+          {
+            type: "line",
+            xref: "paper",
+            x0: 0,
+            x1: 1,
+            yref: "y",
+            y0: 0,
+            y1: 0,
+            line: { color: "#9ca3af", width: 1.5, dash: "dash" },
+            layer: "below",
+          },
+        ]
+      : [],
     legend: {
       orientation: "h",
       yanchor: "bottom",
