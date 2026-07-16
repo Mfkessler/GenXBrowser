@@ -1186,14 +1186,20 @@ class GenXBrowserService:
                 sample_cols.append(pg_col)
         
         # IMPORTANT: Add filter columns to metadata_cols so we can filter on them
-        # Even if they're not in the requested columns list
+        # Even if they're not in the requested columns list. Dataset-local
+        # "custom" filter chain terms carry a synthetic "<col>::chain::<id>"
+        # key (see filter_parser.CHAIN_TERM_SEP) — strip it to resolve the
+        # real .var column, otherwise the lookup below always misses and the
+        # filter silently never gets applied when its column isn't already
+        # part of the explicitly requested columns list.
         if filters:
             for filter_col in filters.keys():
-                h5ad_col = self._to_h5ad_column_name(filter_col)
-                if filter_col not in metadata_cols:
-                    if h5ad_col in adata.var.columns or filter_col in adata.var.columns:
-                        metadata_cols.append(filter_col)
-                        logger.info(f"[get_data] Added filter column to metadata: {filter_col}")
+                real_filter_col = filter_parser.strip_chain_suffix(filter_col)
+                h5ad_col = self._to_h5ad_column_name(real_filter_col)
+                if real_filter_col not in metadata_cols:
+                    if h5ad_col in adata.var.columns or real_filter_col in adata.var.columns:
+                        metadata_cols.append(real_filter_col)
+                        logger.info(f"[get_data] Added filter column to metadata: {real_filter_col}")
         
         # Add metadata columns
         for pg_col in metadata_cols:
