@@ -4,58 +4,22 @@
       <div ref="suggestionAnchorRef" class="flex rounded-md">
         <!-- Input Field -->
         <div
-          class="flex-grow px-3 py-2 border-1 rounded-md bg-gray-50 focus:outline-none focus-within:ring-2 focus-within:ring-primary-500"
-          :class="[isDragging ? 'border-primary-500' : 'border-gray-300']"
-          @dragover.prevent="handleDragOver"
-          @dragleave.prevent="handleDragLeave"
-          @drop.prevent="onFileDrop"
+          class="flex-grow px-3 py-2 border-1 border-gray-300 rounded-md bg-gray-50 focus:outline-none focus-within:ring-2 focus-within:ring-primary-500"
         >
           <input
-            v-if="!uploadedFile"
             :id="id"
             v-model="localInput"
             @keyup.enter="addPills"
             @focus="onSearchFocus"
             @blur="onSearchBlur"
-            :placeholder="`Enter ${beautifiedLabel} or drag file`"
+            :placeholder="`Enter ${beautifiedLabel}`"
             type="text"
             class="w-full text-gray-700 outline-none bg-transparent"
             autocomplete="off"
           />
-          <div v-else class="flex items-center">
-            <svg
-              class="w-5 h-5 mr-2 text-gray-700"
-              fill="currentColor"
-              viewBox="0 0 20 20"
-            >
-              <path
-                d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z"
-              />
-            </svg>
-            <span class="text-sm text-blue-700">{{ uploadedFile.name }}</span>
-            <button
-              @click="removeUploadedFile"
-              class="cursor-pointer ml-2 w-6 h-6 rounded-full flex items-center justify-center hover:bg-red-100"
-              aria-label="Remove file"
-              v-tooltip="'Remove file'"
-            >
-              <svg
-                class="w-5 h-5 text-red-700"
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-              >
-                <path
-                  fill-rule="evenodd"
-                  d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
-                  clip-rule="evenodd"
-                />
-              </svg>
-            </button>
-          </div>
         </div>
         <!-- Add Button -->
-        <div class="relative flex items-center" v-if="!uploadedFile">
+        <div class="relative flex items-center">
             <button
               aria-label="Add filter term"
               @click="addPills"
@@ -106,9 +70,6 @@
       </div>
     </Teleport>
     <!-- Error Message -->
-    <p v-if="errorMessage" class="text-red-500 text-sm mt-1">
-      {{ errorMessage }}
-    </p>
     <!-- Pills (compact display) -->
     <div v-if="pillItems.length > 0" class="flex items-center gap-2 mt-2 max-w-full overflow-hidden">
       <!-- First pill (abbreviated if too long) -->
@@ -298,7 +259,6 @@ const isSampleTextColumn = computed(() => {
   );
 });
 
-const isDragging = ref(false);
 // Match mode for multiple selected values: "or" (default) or "and".
 const matchMode = ref<'or' | 'and'>('or');
 // Whether to require exact value matches. Default true. When false,
@@ -309,8 +269,6 @@ const showDropdown = ref(false);
 const showBatchModal = ref(false);
 
 const localInput = ref("");
-const uploadedFile = ref<File | null>(null);
-const errorMessage = ref("");
 const pillItems = ref<string[]>([]);
 
 // Tooltip state
@@ -423,7 +381,7 @@ function addSuggestion(term: string) {
 }
 
 const fetchSuggestions = debounce(async (val: string) => {
-  if (val && val.length >= 2 && !uploadedFile.value) {
+  if (val && val.length >= 2) {
     try {
       // Use GO API for GO term filters
       if (isGoTermFilter.value) {
@@ -462,21 +420,12 @@ const fetchSuggestions = debounce(async (val: string) => {
 }, 100);
 
 //Handle pills
-function parsePills(input: string): string[] {
-  return input
-    .replace(/['"]/g, "")
-    .split(/[\n;|]/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
 function addPills() {
   if (!localInput.value) return;
   const term = localInput.value.trim();
   if (!term) return;
   pillItems.value = [...new Set([...pillItems.value, term])].sort();
   localInput.value = "";
-  errorMessage.value = "";
 }
 
 function removePill(pill: string) {
@@ -630,53 +579,6 @@ function reset() {
   matchMode.value = 'or';
   exact.value = true;
   hasValue.value = false;
-}
-
-//Handle file dragging
-function handleDragOver() {
-  isDragging.value = true;
-}
-
-function handleDragLeave() {
-  isDragging.value = false;
-}
-
-function onFileDrop(e: DragEvent) {
-  isDragging.value = false;
-  const files = e.dataTransfer?.files;
-  if (files && files.length > 0) {
-    handleFile(files[0]);
-  }
-}
-
-async function handleFile(file: File) {
-  if (file.type !== "text/plain") {
-    errorMessage.value = "Please upload a .txt file";
-    return;
-  }
-  uploadedFile.value = file;
-  errorMessage.value = "";
-
-  try {
-    // Use the modern File API if available
-    const content = await file.text();
-
-    // Replace newlines, semicolons, and commas with a single comma, remove quotes
-    const pills = parsePills(content);
-
-    // Merge with existing pills, remove duplicates, and sort
-    pillItems.value = Array.from(
-      new Set([...pillItems.value, ...pills]),
-    ).sort();
-  } catch {
-    errorMessage.value = "Error reading file";
-    uploadedFile.value = null;
-    pillItems.value = [];
-  }
-}
-
-function removeUploadedFile() {
-  uploadedFile.value = null;
 }
 
 function onSearchFocus() {

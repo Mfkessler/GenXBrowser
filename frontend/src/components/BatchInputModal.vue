@@ -97,17 +97,29 @@
       <div v-else>
         <!-- Instructions -->
         <p class="text-sm text-gray-600 mb-3">
-          Paste multiple values below. Supported separators: comma, newline, semicolon, pipe, or space.
+          Paste multiple values below, or drag &amp; drop a text file onto the box.
+          Supported separators: comma, newline, semicolon, pipe, or space.
           The dominant separator will be auto-detected.
         </p>
 
-        <!-- Textarea -->
-        <div class="mb-4">
+        <!-- Textarea (also acts as file drop zone) -->
+        <div class="mb-4 relative">
           <textarea
             v-model="inputText"
-            placeholder="Paste your values here (e.g., ID1, ID2, ID3 or one per line)"
-            class="w-full h-40 p-3 border border-gray-300 rounded-md bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 resize-y text-sm font-mono"
+            placeholder="Paste your values here (e.g., ID1, ID2, ID3 or one per line), or drop a text file"
+            class="w-full h-40 p-3 border rounded-md bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 resize-y text-sm font-mono"
+            :class="isDraggingFile ? 'border-primary-500 ring-2 ring-primary-500' : 'border-gray-300'"
+            @dragover.prevent="handleDragOver"
+            @dragleave.prevent="handleDragLeave"
+            @drop.prevent="handleFileDrop"
           ></textarea>
+          <div
+            v-if="isDraggingFile"
+            class="pointer-events-none absolute inset-0 flex items-center justify-center bg-primary-50/80 border-2 border-dashed border-primary-500 rounded-md text-primary-700 text-sm font-medium"
+          >
+            Drop file to import
+          </div>
+          <p v-if="fileError" class="text-red-500 text-xs mt-1">{{ fileError }}</p>
         </div>
 
         <!-- Validate Button -->
@@ -250,6 +262,10 @@ const matchedValues = ref<string[]>([]);
 const discardedValues = ref<string[]>([]);
 const detectedSeparator = ref<string>("comma");
 
+// File drop state (textarea acts as a drop zone for plain-text files)
+const isDraggingFile = ref(false);
+const fileError = ref("");
+
 const columnsStore = useColumnsStore();
 
 const beautifiedLabel = computed(() => {
@@ -315,6 +331,8 @@ watch(
   (open) => {
     if (open) {
       const existing = props.currentValues ? [...props.currentValues] : [];
+      isDraggingFile.value = false;
+      fileError.value = "";
 
       // Multi-select mode: Initialize with current filter values (synchronization!)
       if (hasAvailableOptions.value) {
@@ -346,14 +364,20 @@ watch(
 /**
  * Detect the dominant separator in the input text.
  * Returns the separator with the highest count.
+ *
+ * Leading/trailing whitespace (e.g. the trailing newline most text editors
+ * add at the end of a file) is stripped before counting, so a single-line,
+ * comma-separated file doesn't get misdetected as newline-separated just
+ * because of an incidental EOF newline.
  */
 function detectDominantSeparator(text: string): string {
+  const trimmed = text.trim();
   const separators = {
-    newline: (text.match(/\n/g) || []).length,
-    comma: (text.match(/,/g) || []).length,
-    semicolon: (text.match(/;/g) || []).length,
-    pipe: (text.match(/\|/g) || []).length,
-    space: (text.match(/[\t ]+/g) || []).length,
+    newline: (trimmed.match(/\n/g) || []).length,
+    comma: (trimmed.match(/,/g) || []).length,
+    semicolon: (trimmed.match(/;/g) || []).length,
+    pipe: (trimmed.match(/\|/g) || []).length,
+    space: (trimmed.match(/[\t ]+/g) || []).length,
   };
 
   // Find the separator with the highest count
@@ -401,6 +425,37 @@ function parseInputText(text: string, separator: string): string[] {
     .split(regex)
     .map((item) => item.trim().replace(/['"]/g, ""))
     .filter(Boolean);
+}
+
+/**
+ * Handle drag-over/leave/drop for the textarea drop zone. Any file that can
+ * be read as plain text is accepted (no extension restriction) — its
+ * contents replace the textarea value and are fed straight into the same
+ * validate/parse/separator-detection pipeline used for pasted text.
+ */
+function handleDragOver(e: DragEvent) {
+  if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+  isDraggingFile.value = true;
+}
+
+function handleDragLeave() {
+  isDraggingFile.value = false;
+}
+
+async function handleFileDrop(e: DragEvent) {
+  isDraggingFile.value = false;
+  const file = e.dataTransfer?.files?.[0];
+  if (!file) return;
+
+  fileError.value = "";
+
+  try {
+    const content = await file.text();
+    inputText.value = content;
+    await validateInput();
+  } catch {
+    fileError.value = "Could not read file as text.";
+  }
 }
 
 /**
@@ -511,6 +566,7 @@ function applyFilters() {
   parsedTokens.value = [];
   selectedOptions.value = [];
   optionSearch.value = "";
+  fileError.value = "";
   emit("close");
 }
 </script>
