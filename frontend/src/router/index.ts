@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from "vue-router";
+import { destroyAllTooltips } from "@/shared/tooltipDirective";
 
 const CatalogView = () => import("@/views/CatalogView.vue");
 const AboutView = () => import("@/views/AboutView.vue");
@@ -36,6 +37,13 @@ const router = createRouter({
       component: PhylogeneticTreeView,
     },
   ],
+});
+
+// Views (and any modal opened from within one) are torn down on navigation.
+// Force-destroy any lingering hover tooltip so a leftover node never survives
+// a route change, even if its host element didn't unmount cleanly.
+router.afterEach(() => {
+  destroyAllTooltips();
 });
 
 export default router;

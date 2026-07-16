@@ -60,6 +60,7 @@ prepare/config.yml
 # ---------- Copilot Instructions ----------
 backend/.github/copilot-instructions.md
 frontend/.github/copilot-instructions.md
+.github/copilot-instructions.md
 
 # ---------- Test Artifacts ----------
 frontend/playwright-report/

@@ -30,6 +30,7 @@ interface TooltipState {
   arrowEl: HTMLElement | null;
   showTimer: ReturnType<typeof setTimeout> | null;
   hideTimer: ReturnType<typeof setTimeout> | null;
+  removeTimer: ReturnType<typeof setTimeout> | null;
   text: string;
   placement: Placement;
   onMouseEnter: () => void;
@@ -46,10 +47,50 @@ interface TooltipState {
 }
 
 const TOOLTIP_STATES = new WeakMap<HTMLElement, TooltipState>();
+// Enumerable companion to the WeakMap above — needed so `destroyAllTooltips()`
+// can force-clean every active tooltip when a modal/view is torn down without
+// going through this element's own `unmounted` hook (e.g. a parent removed via
+// a non-Vue-tracked path, or a route change while a tooltip is mid-transition).
+const ACTIVE_ELEMENTS = new Set<HTMLElement>();
 const SHOW_DELAY = 150;
 const HIDE_DELAY = 50;
 const LONG_TOUCH_DELAY = 550;
 const TOUCH_FOCUS_SUPPRESS_MS = 800;
+
+/** Fully tears down a tooltip's DOM node, timers, and autoUpdate listener. */
+function destroyTooltipState(el: HTMLElement, state: TooltipState) {
+  if (state.showTimer) clearTimeout(state.showTimer);
+  if (state.hideTimer) clearTimeout(state.hideTimer);
+  if (state.removeTimer) clearTimeout(state.removeTimer);
+  if (state.touchTimer) clearTimeout(state.touchTimer);
+  state.showTimer = null;
+  state.hideTimer = null;
+  state.removeTimer = null;
+  state.touchTimer = null;
+
+  if (state.cleanup) {
+    state.cleanup();
+    state.cleanup = null;
+  }
+  if (state.tooltipEl?.parentNode) {
+    state.tooltipEl.parentNode.removeChild(state.tooltipEl);
+  }
+  ACTIVE_ELEMENTS.delete(el);
+}
+
+/**
+ * Safety net for cases where a tooltip's trigger element is removed/hidden
+ * without this directive's own `unmounted` hook firing (e.g. a parent modal
+ * torn down by a non-reactive DOM operation, or a route change). Call this
+ * whenever a modal/view closes to guarantee no orphaned tooltip is left
+ * floating at its default top-left position.
+ */
+export function destroyAllTooltips() {
+  for (const el of Array.from(ACTIVE_ELEMENTS)) {
+    const state = TOOLTIP_STATES.get(el);
+    if (state) destroyTooltipState(el, state);
+  }
+}
 
 function createTooltipEl(): { tooltipEl: HTMLElement; arrowEl: HTMLElement } {
   const tooltipEl = document.createElement("div");
@@ -76,6 +117,16 @@ function updatePosition(
   arrowEl: HTMLElement,
   placement: Placement,
 ) {
+  // Defensive: if the trigger (or its own tooltip node) is no longer attached
+  // to the document — e.g. its host modal was torn down without this
+  // directive's `unmounted` hook running — force-destroy instead of
+  // computing/leaving the tooltip pinned at its default top-left position.
+  if (!triggerEl.isConnected || !tooltipEl.isConnected) {
+    const state = TOOLTIP_STATES.get(triggerEl);
+    if (state) destroyTooltipState(triggerEl, state);
+    return;
+  }
+
   computePosition(triggerEl, tooltipEl, {
     strategy: "fixed",
     placement,
@@ -86,6 +137,11 @@ function updatePosition(
       arrowMiddleware({ element: arrowEl }),
     ],
   }).then(({ x, y, placement: finalPlacement, middlewareData }) => {
+    if (!triggerEl.isConnected || !tooltipEl.isConnected) {
+      const state = TOOLTIP_STATES.get(triggerEl);
+      if (state) destroyTooltipState(triggerEl, state);
+      return;
+    }
     Object.assign(tooltipEl.style, {
       left: `${x}px`,
       top: `${y}px`,
@@ -114,6 +170,12 @@ function updatePosition(
         ...(opposingSide !== "right" && { right: "" }),
       });
     }
+  }).catch(() => {
+    // If positioning fails (e.g. the reference got detached mid-calculation),
+    // destroy rather than leave the tooltip visible at its unpositioned
+    // top-left default.
+    const state = TOOLTIP_STATES.get(triggerEl);
+    if (state) destroyTooltipState(triggerEl, state);
   });
 }
 
@@ -128,7 +190,11 @@ function showTooltip(el: HTMLElement) {
   }
 
   state.showTimer = setTimeout(() => {
-    if (!state.text) return;
+    // The trigger may have been removed from the DOM while this delayed show
+    // was pending (e.g. its host modal closed) without this directive's
+    // `unmounted` hook running for it. Bail out rather than creating/showing
+    // a tooltip for a dead element.
+    if (!state.text || !el.isConnected) return;
 
     // Create tooltip if needed
     if (!state.tooltipEl) {
@@ -152,6 +218,7 @@ function showTooltip(el: HTMLElement) {
     if (!state.tooltipEl.parentNode) {
       document.body.appendChild(state.tooltipEl);
     }
+    ACTIVE_ELEMENTS.add(el);
 
     // Position the tooltip and keep it in sync with scroll/resize
     if (state.cleanup) {
@@ -161,13 +228,23 @@ function showTooltip(el: HTMLElement) {
     state.cleanup = autoUpdate(
       el,
       state.tooltipEl,
-      () => updatePosition(el, state.tooltipEl!, state.arrowEl!, state.placement),
+      () => {
+        // autoUpdate keeps firing on scroll/resize/mutation while the
+        // tooltip is visible — use each tick as an extra chance to notice
+        // the trigger going away and self-destruct instead of drifting to
+        // the unpositioned top-left default.
+        if (!el.isConnected) {
+          destroyTooltipState(el, state);
+          return;
+        }
+        updatePosition(el, state.tooltipEl!, state.arrowEl!, state.placement);
+      },
     );
     updatePosition(el, state.tooltipEl, state.arrowEl!, state.placement);
 
     // Show with animation
     requestAnimationFrame(() => {
-      if (state.tooltipEl) {
+      if (state.tooltipEl && el.isConnected) {
         state.tooltipEl.style.opacity = "1";
       }
     });
@@ -192,11 +269,16 @@ function hideTooltip(el: HTMLElement) {
     }
     if (state.tooltipEl) {
       state.tooltipEl.style.opacity = "0";
-      // Remove from DOM after transition
-      setTimeout(() => {
+      // Remove from DOM after transition. Tracked on state so a later
+      // `unmounted`/`destroyTooltipState` call can cancel it instead of it
+      // firing independently against an already-handled element.
+      if (state.removeTimer) clearTimeout(state.removeTimer);
+      state.removeTimer = setTimeout(() => {
+        state.removeTimer = null;
         if (state.tooltipEl?.parentNode) {
           state.tooltipEl.parentNode.removeChild(state.tooltipEl);
         }
+        ACTIVE_ELEMENTS.delete(el);
       }, 150);
     }
   }, HIDE_DELAY);
@@ -268,6 +350,7 @@ export const vTooltip: Directive<HTMLElement> = {
       arrowEl: null,
       showTimer: null,
       hideTimer: null,
+      removeTimer: null,
       text,
       placement,
       onMouseEnter,
@@ -316,11 +399,6 @@ export const vTooltip: Directive<HTMLElement> = {
     const state = TOOLTIP_STATES.get(el);
     if (!state) return;
 
-    // Clear timers
-    if (state.showTimer) clearTimeout(state.showTimer);
-    if (state.hideTimer) clearTimeout(state.hideTimer);
-    if (state.touchTimer) clearTimeout(state.touchTimer);
-
     // Remove event listeners
     el.removeEventListener("mouseenter", state.onMouseEnter);
     el.removeEventListener("mouseleave", state.onMouseLeave);
@@ -330,13 +408,8 @@ export const vTooltip: Directive<HTMLElement> = {
     el.removeEventListener("touchend", state.onTouchEnd);
     el.removeEventListener("touchcancel", state.onTouchCancel);
 
-    // Remove tooltip element
-    if (state.tooltipEl?.parentNode) {
-      state.tooltipEl.parentNode.removeChild(state.tooltipEl);
-    }
-
-    // Cleanup
-    if (state.cleanup) state.cleanup();
+    // Clear timers, stop autoUpdate, and remove any live tooltip node.
+    destroyTooltipState(el, state);
     TOOLTIP_STATES.delete(el);
   },
 };
