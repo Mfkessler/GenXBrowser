@@ -379,6 +379,18 @@ def test_list_view_settings_marks_unavailable_layers():
     assert "VIRIDIS" in color_ctrl["options"]
 
 
+def test_list_view_settings_ignores_non_string_layer_keys():
+    """Loader-internal layer keys must not break GAIA capability discovery."""
+    svc = _make_fake_service()
+    svc.registry.load("CS").layers = {None: object(), "getmm": object()}
+
+    res = tools.tool_list_view_settings(svc, view="heatmap", tables=["CS"])
+
+    assert res["available_layers"] == ["X", "getmm"]
+    by_id = {option["id"]: option for option in res["expression_options"]}
+    assert by_id["zscore"]["available"] is True
+
+
 def test_list_view_settings_exposes_new_visualization_controls():
     svc = _make_fake_service()
     heatmap = tools.tool_list_view_settings(svc, view="heatmap", tables=["CS"])

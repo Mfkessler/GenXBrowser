@@ -1289,9 +1289,15 @@ def tool_list_view_settings(
             adata = None
         if adata is None:
             continue
+        # The H5AD loader may preserve a prior primary matrix under the
+        # non-selectable ``None`` key. Only named string layers are valid UI
+        # selections and sortable capability identifiers.
         layers = {"X"}
         try:
-            layers.update(set(adata.layers.keys()))
+            layers.update(
+                layer for layer in adata.layers.keys()
+                if isinstance(layer, str) and layer
+            )
         except Exception:
             pass
         layer_sets.append(layers)
