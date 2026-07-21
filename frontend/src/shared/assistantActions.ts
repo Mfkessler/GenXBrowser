@@ -190,6 +190,7 @@ export class ActionRegistry {
 
 export function createAssistantActionDispatcher(deps: DispatcherDeps) {
   const registry = new ActionRegistry()
+    .register("state_token", applyStateToken)
     .register("viz_update", applyVizUpdate)
     .register("add_filter", applyAddFilter)
     .register("remove_filter", applyRemoveFilter)
@@ -401,6 +402,46 @@ function applyVizUpdate(action: AssistantAction, deps: DispatcherDeps): Dispatch
     mutated: true,
     summary: summaryParts.join(", "),
   };
+}
+
+async function applyStateToken(action: AssistantAction, deps: DispatcherDeps): Promise<DispatchResult> {
+  const token = action.spec;
+  const filters = token.filters;
+  const vizPatches = token.viz_patches;
+  const urlPath = typeof token.url_path === "string" ? token.url_path : "";
+  if (!filters || typeof filters !== "object" || Array.isArray(filters)) {
+    throw new Error("state_token.filters must be a complete filter-state object");
+  }
+  if (!vizPatches || typeof vizPatches !== "object" || Array.isArray(vizPatches)) {
+    throw new Error("state_token.viz_patches must be an object");
+  }
+  if (deps.filtersStore.replaceState) {
+    deps.filtersStore.replaceState(filters as Record<string, unknown>);
+  } else {
+    deps.filtersStore.clearFilters();
+    const nested = (filters as Record<string, unknown>).filters;
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+      for (const [column, value] of Object.entries(nested)) {
+        deps.filtersStore.setFilter(column, value as FilterValue);
+      }
+    }
+  }
+  if (urlPath && urlPath !== deps.route.fullPath) {
+    await deps.router.push(urlPath).catch(() => undefined);
+    await nextFrame();
+  }
+  if (Object.keys(vizPatches).length > 0) {
+    applyVizUpdate({ kind: "viz_update", status: "pending", spec: { patch: vizPatches } }, deps);
+  }
+  const triggerActions = Array.isArray(token.trigger_actions) ? token.trigger_actions : [];
+  for (const trigger of triggerActions) {
+    const name = String(trigger);
+    if (!["export_png", "export_svg", "open_data_manager"].includes(name)) {
+      throw new Error(`unsupported state-token trigger: ${name}`);
+    }
+    window.dispatchEvent(new CustomEvent("genx:assistant-trigger", { detail: { action: name } }));
+  }
+  return { mutated: true, summary: `state token applied${triggerActions.length ? `; ${triggerActions.join(", ")}` : ""}` };
 }
 
 function expressionActionFromPatch(patch: Record<string, unknown>, deps: DispatcherDeps): AssistantAction | null {

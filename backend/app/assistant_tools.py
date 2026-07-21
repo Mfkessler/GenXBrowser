@@ -2377,6 +2377,137 @@ def tool_build_deeplink(
 
 
 # ---------------------------------------------------------------------------
+# Unified assistant contract
+# ---------------------------------------------------------------------------
+
+def build_instance_manifest(service, config_manager=None) -> Dict[str, Any]:
+    """Build static capabilities injected into every assistant request."""
+    schema = tool_list_schema(service, config_manager, max_values_per_col=0)
+    datasets: List[Dict[str, Any]] = []
+    columns: Dict[str, Dict[str, Dict[str, Any]]] = {"var": {}, "obs": {}}
+    for table in schema.get("tables") or []:
+        dataset_id = table.get("table_name") or table.get("code")
+        if dataset_id:
+            datasets.append({
+                "id": dataset_id,
+                "code": table.get("code"),
+                "label": table.get("display_label") or table.get("full_name") or dataset_id,
+                "layers": table.get("layers") or [],
+            })
+        for namespace, key in (("var", "var_columns"), ("obs", "obs_columns")):
+            for column in table.get(key) or []:
+                name = column.get("name")
+                if name:
+                    columns[namespace][name] = {
+                        "key": name,
+                        "label": column.get("display_name") or name,
+                        "type": column.get("column_type") or column.get("dtype") or "text",
+                        "array_separator": column.get("array_separator"),
+                    }
+    views: Dict[str, Any] = {}
+    for view in ("heatmap", "compare", "phylo", "ora", "catalog"):
+        settings = tool_list_view_settings(service, config_manager, view=view, tables=["all"])
+        views[view] = {
+            "controls": [
+                {key: value for key, value in control.items() if key in {"key", "type", "options", "min", "max"}}
+                for control in settings.get("controls") or []
+            ],
+            "expression_options": [
+                option["id"] for option in settings.get("expression_options") or []
+                if option.get("available")
+            ],
+            "trigger_actions": ["export_png", "export_svg", "open_data_manager"],
+        }
+    return {
+        "datasets": datasets,
+        "columns": {namespace: sorted(items.values(), key=lambda item: item["key"])
+                    for namespace, items in columns.items()},
+        "views": views,
+    }
+
+
+def tool_search_metadata(service, config_manager=None, *, query: str,
+                         column: Optional[str] = None, tables: Optional[List[str]] = None,
+                         limit: int = 20) -> Dict[str, Any]:
+    """Find verified metadata values, optionally constrained to one column."""
+    if not str(query or "").strip():
+        return {"error": "query is required"}
+    result = tool_resolve_value(service, config_manager, query=query, tables=tables, max_hits=limit)
+    if column:
+        requested = str(column).strip().lower()
+        result["hits"] = [
+            hit for hit in result.get("hits") or []
+            if str(hit.get("column") or "").lower() == requested
+            or str(hit.get("display_name") or "").lower() == requested
+        ]
+    return result
+
+
+def tool_compute_analytics(service, config_manager=None, *, operation: str,
+                           tables: Optional[List[str]] = None,
+                           filters: Optional[Dict[str, Any]] = None,
+                           target_column: Optional[str] = None) -> Dict[str, Any]:
+    """Count, rank, or summarize metadata using one filter payload."""
+    operation = str(operation or "").lower()
+    source = filters if isinstance(filters, dict) else {}
+    flat = _deeplink_flat_filters(source) or source.get("global") or source
+    codes = _resolve_species_codes(service, tables)
+    if not codes:
+        return {"error": "tables must name at least one loaded dataset"}
+    var_filters: Dict[str, Any] = {}
+    obs_filters: Dict[str, Any] = {}
+    for code in codes:
+        try:
+            adata = service.registry.load(code)
+        except Exception:
+            continue
+        known = set(adata.var.columns) | set(adata.obs.columns)
+        for name, value in flat.items():
+            resolved = _resolve_column_name(config_manager, str(name), known)
+            if resolved in adata.var.columns:
+                var_filters[resolved] = value
+            elif resolved in adata.obs.columns:
+                obs_filters[resolved] = value
+    if operation == "count":
+        return tool_count_rows(service, config_manager, tables=tables, var_filters=var_filters, obs_filters=obs_filters)
+    if operation == "rank":
+        if not target_column:
+            return {"error": "target_column is required for rank"}
+        return tool_top_groups(service, config_manager, tables=tables, group_column=target_column, var_filters=var_filters)
+    if operation == "stats":
+        if not target_column:
+            return {"error": "target_column is required for stats"}
+        return tool_summary_stats(service, config_manager, tables=tables, column=target_column,
+                                  namespace="obs", var_filters=var_filters, obs_filters=obs_filters)
+    return {"error": "operation must be count, rank, or stats"}
+
+
+def tool_build_state_token(service, config_manager=None, *, view: str,
+                           tables: Optional[List[str]] = None,
+                           filters: Optional[Dict[str, Any]] = None,
+                           viz_patches: Optional[Dict[str, Any]] = None,
+                           trigger_actions: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Validate a complete target state and return one frontend state token."""
+    actions = [str(item) for item in (trigger_actions or []) if str(item)]
+    invalid = sorted(set(actions) - {"export_png", "export_svg", "open_data_manager"})
+    if invalid:
+        return {"error": "unsupported trigger action(s): " + ", ".join(invalid)}
+    deeplink = tool_build_deeplink(
+        service, config_manager, view=view, tables=tables or [],
+        filters=filters if isinstance(filters, dict) else {},
+        visualizations=viz_patches if isinstance(viz_patches, dict) else {},
+    )
+    if deeplink.get("error"):
+        return deeplink
+    return {"ok": True, "state_token": {
+        "view": deeplink["view"], "tables": deeplink["tables"],
+        "filters": filters if isinstance(filters, dict) else {},
+        "viz_patches": viz_patches if isinstance(viz_patches, dict) else {},
+        "trigger_actions": actions, "url_path": deeplink["url_path"],
+    }}
+
+
+# ---------------------------------------------------------------------------
 # OpenAI tool-calling schema
 # ---------------------------------------------------------------------------
 
@@ -2610,7 +2741,7 @@ _ACTION_BLOCK_SCHEMAS: Dict[str, Any] = {
     },
 }
 
-_TOOL_SCHEMAS: List[Dict[str, Any]] = [
+_LEGACY_TOOL_SCHEMAS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
@@ -3008,9 +3139,67 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
 ]
 
 
+_TOOL_SCHEMAS: List[Dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_metadata",
+            "description": "Find verified metadata values and their internal column keys.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "column": {"type": "string"},
+                    "tables": {"type": "array", "items": {"type": "string"}},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "compute_analytics",
+            "description": "Compute count, rank, or numeric stats after applying the supplied filters.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["count", "rank", "stats"]},
+                    "tables": {"type": "array", "items": {"type": "string"}},
+                    "filters": {"type": "object", "additionalProperties": True},
+                    "target_column": {"type": "string"},
+                },
+                "required": ["operation", "tables", "filters"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "build_state_token",
+            "description": "Validate the complete target UI state and return a state_token for the frontend.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "view": {"type": "string", "enum": ["heatmap", "compare", "phylo", "ora", "catalog"]},
+                    "tables": {"type": "array", "items": {"type": "string"}},
+                    "filters": {"type": "object", "additionalProperties": True},
+                    "viz_patches": {"type": "object", "additionalProperties": True},
+                    "trigger_actions": {"type": "array", "items": {"type": "string", "enum": ["export_png", "export_svg", "open_data_manager"]}},
+                },
+                "required": ["view", "tables", "filters"],
+                "additionalProperties": False,
+            },
+        },
+    },
+]
+
+
 def openai_schema() -> List[Dict[str, Any]]:
-    """Return the tool definitions in OpenAI tool-calling shape."""
-    # Return a deep copy so callers can't mutate the shared list.
+    """Return exactly the three modern unified tool definitions."""
     return json.loads(json.dumps(_TOOL_SCHEMAS))
 
 
@@ -3019,21 +3208,9 @@ def _get_dispatch():
         return {k: v for k, v in kwargs.items() if k != "client_context"}
 
     return {
-        "state_summary": lambda service, cm, **kw: tool_state_summary(service, cm),
-        "get_available_datasets": lambda service, cm, **kw: tool_get_available_datasets(service, cm),
-        "list_schema": lambda service, cm, **kw: tool_list_schema(service, cm, **_tool_args(kw)),
-        "get_dataset_schema": lambda service, cm, **kw: tool_get_dataset_schema(service, cm, **_tool_args(kw)),
-        "get_active_view_state": lambda service, cm, **kw: tool_get_active_view_state(service, client_context=kw.get("client_context")),
-        "update_dataset_visibility": lambda service, cm, **kw: tool_update_dataset_visibility(service, **_tool_args(kw), client_context=kw.get("client_context")),
-        "list_view_settings": lambda service, cm, **kw: tool_list_view_settings(service, cm, **_tool_args(kw)),
-        "resolve_value": lambda service, cm, **kw: tool_resolve_value(service, cm, **_tool_args(kw)),
-        "search_go_terms": lambda service, cm, **kw: tool_search_go_terms(service, **_tool_args(kw)),
-        "list_distinct_values": lambda service, cm, **kw: tool_list_distinct_values(service, cm, **_tool_args(kw)),
-        "count_rows": lambda service, cm, **kw: tool_count_rows(service, cm, **_tool_args(kw)),
-        "top_groups": lambda service, cm, **kw: tool_top_groups(service, cm, **_tool_args(kw)),
-        "summary_stats": lambda service, cm, **kw: tool_summary_stats(service, cm, **_tool_args(kw)),
-        "common_values": lambda service, cm, **kw: tool_common_values(service, cm, **_tool_args(kw)),
-        "build_deeplink": lambda service, cm, **kw: tool_build_deeplink(service, cm, **_tool_args(kw)),
+        "search_metadata": lambda service, cm, **kw: tool_search_metadata(service, cm, **_tool_args(kw)),
+        "compute_analytics": lambda service, cm, **kw: tool_compute_analytics(service, cm, **_tool_args(kw)),
+        "build_state_token": lambda service, cm, **kw: tool_build_state_token(service, cm, **_tool_args(kw)),
     }
 
 

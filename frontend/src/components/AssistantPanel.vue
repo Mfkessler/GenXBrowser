@@ -918,6 +918,7 @@ function applyPhyloAction(action: AssistantAction) {
 }
 
 function shortActionError(action: AssistantAction): string {
+  if (action.kind === "state_token") return "State update failed";
   if (action.kind === "deeplink") return "Cannot open view";
   if (action.kind === "compute") return "Compute failed";
   if (action.kind === "viz_update") return "Update failed";
@@ -937,7 +938,7 @@ async function autoApplyActions(msg: ChatMessage, mode: AssistantAutoApplyMode =
   let mutated = false;
   const dispatcher = createAssistantActionDispatcher(dispatcherDeps());
   for (const action of msg.actions || []) {
-    if (action.kind !== "viz_update") continue;
+    if (action.kind !== "viz_update" && action.kind !== "state_token") continue;
     if (action.status && action.status !== "pending") continue;
     mutated = (await dispatcher.dispatch(action)) || mutated;
   }

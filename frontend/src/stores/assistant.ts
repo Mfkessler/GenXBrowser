@@ -5,6 +5,7 @@ import { API_BASE_URL } from "@/shared/Config";
 import { fetchFeatures, type FeatureFlags } from "@/shared/landingApi";
 
 export type ActionKind =
+  | "state_token"
   | "deeplink"
   | "viz_update"
   | "add_filter"
@@ -309,7 +310,7 @@ export const useAssistantStore = defineStore("assistant", () => {
   }
 
   async function extractAndDispatchActions(msg: ChatMessage, clientContext?: ClientContext) {
-    const re = /```(action|deeplink|viz_update|add_filter|remove_filter|clear_filters|select_tables|dataset_visibility|set_expression_display|set_filter_chain|phylo_action|compute)\s*\n([\s\S]*?)\n```/gi;
+    const re = /```(state_token|action|deeplink|viz_update|add_filter|remove_filter|clear_filters|select_tables|dataset_visibility|set_expression_display|set_filter_chain|phylo_action|compute)\s*\n([\s\S]*?)\n```/gi;
     const blocks: Array<{ tag: string; spec: Record<string, unknown>; kind: AssistantAction["kind"] }> = [];
     let m: RegExpExecArray | null;
     while ((m = re.exec(msg.content)) !== null) {

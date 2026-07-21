@@ -1116,7 +1116,9 @@ def run_agentic_turn(
             # Salvage: if the model leaked tool args as a code block instead
             # of using the tool_calls protocol, parse and dispatch them, then
             # loop once more so the model can produce a real answer.
-            leaked = _extract_leaked_tool_calls(content)
+            # Native tool calling is mandatory for supported models. Text is
+            # never reinterpreted as a tool invocation.
+            leaked: List[Tuple[str, Dict[str, Any], Tuple[int, int]]] = []
             if leaked and iteration < int(max_iterations) - 1:
                 logger.info("Salvaging %d leaked tool call(s) from assistant text", len(leaked))
                 # Append the (cleaned) assistant turn so the model sees its own draft.
@@ -1160,18 +1162,9 @@ def run_agentic_turn(
                 emitted_chars = 0
                 continue  # re-prompt with tool results included
 
-            # Final assistant message — content was already streamed via
-            # delta events above. Apply retag_action_fences as a defensive
-            # post-processing step; if it changed anything, send a
-            # `replace` delta so the client swaps the bubble's content
-            # for the cleaned-up version. Otherwise nothing more to send.
-            cleaned = _apply_coverage_corrections(
-                retag_action_fences(content), coverage_facts,
-            )
-            cleaned = _repair_deeplink_blocks_from_tool(cleaned, last_deeplink_context)
-            cleaned = _repair_phylo_request_deeplink(cleaned, requested_user_text)
-            if intercepted_action_blocks:
-                cleaned = (cleaned or "").rstrip() + "\n\n" + "\n\n".join(intercepted_action_blocks)
+            # Native function calling guarantees that tool arguments are not
+            # embedded in assistant prose; return the final text verbatim.
+            cleaned = content
             if emitted_chars == 0:
                 # Some models return content only at end-of-stream (rare).
                 yield {"type": "delta", "delta": cleaned}
@@ -1405,13 +1398,7 @@ def run_agentic_turn(
         }
         yield {"type": "done", "model": last_model, "iterations": int(max_iterations)}
         return
-    final_text = _apply_coverage_corrections(
-        retag_action_fences(final.get("content") or ""), coverage_facts,
-    )
-    final_text = _repair_deeplink_blocks_from_tool(final_text, last_deeplink_context)
-    final_text = _repair_phylo_request_deeplink(final_text, requested_user_text)
-    if intercepted_action_blocks:
-        final_text = (final_text or "").rstrip() + "\n\n" + "\n\n".join(intercepted_action_blocks)
+    final_text = final.get("content") or ""
     yield {
         "type": "delta",
         "delta": (final_text or "").rstrip() + cap_notice,

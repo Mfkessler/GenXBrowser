@@ -2522,42 +2522,35 @@ def assistant_chat():
             })
         return jsonify({"ok": True, "model": "deterministic-fast-path", "content": fast_content}), 200
 
-    # Build the rich system prompt (role + action grammar + tool policy + few-shots).
+    # Inject static capabilities once per request plus the exact live UI state.
     from .prompt_builder import build_system_prompt
-    # Slim DATA_CONTEXT to the species the user is currently looking at when
-    # the frontend tells us which tables are selected. The full catalogue is
-    # still discoverable via the `list_schema` tool.
-    selected_for_ctx: Optional[List[str]] = None
-    if isinstance(client_ctx, dict):
-        raw_sel = client_ctx.get("selected_table_names") or client_ctx.get("tables")
-        if isinstance(raw_sel, list) and raw_sel:
-            selected_for_ctx = [str(x) for x in raw_sel if x]
-
     data_ctx: Optional[Dict[str, Any]] = None
     if include_context:
         try:
-            import json as _json
-            data_ctx = _json.loads(
-                _build_assistant_context(get_service(), cm, selected_for_ctx)
-            )
+            data_ctx = assistant_tools_module.build_instance_manifest(get_service(), cm)
         except Exception:
             data_ctx = None
 
     ui_ctx: Optional[Dict[str, Any]] = None
     if isinstance(client_ctx, dict) and client_ctx:
         ui_ctx = {
-            k: client_ctx.get(k)
-            for k in ("view", "route", "tables", "filters", "visualizations",
-                      "selection", "visible_genes", "selected_table_names",
-                      "analysis_results", "active_view_state")
-            if client_ctx.get(k) is not None
+            "current_state": {
+                "active_view": client_ctx.get("view"),
+                "route": client_ctx.get("route"),
+                "selected_tables": client_ctx.get("selected_table_names") or client_ctx.get("tables") or [],
+                "active_filters": client_ctx.get("filters") or {},
+                "active_viz_settings": client_ctx.get("visualizations") or {},
+                "selection": client_ctx.get("selection"),
+                "analysis_results": client_ctx.get("analysis_results"),
+                "dataset_visibility": client_ctx.get("active_view_state"),
+            },
         }
 
     sys_prompt = build_system_prompt(
         base_prompt=cfg.get("system_prompt") or "",
         data_context=data_ctx,
         ui_context=ui_ctx,
-        include_fewshot=True,
+        include_fewshot=False,
     )
 
     final_messages: List[Dict[str, Any]] = (
