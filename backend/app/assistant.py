@@ -1067,6 +1067,7 @@ def run_agentic_turn(
     last_model: Optional[str] = None
     coverage_facts: List[Dict[str, Any]] = []
     last_deeplink_context: Optional[Dict[str, Any]] = None
+    last_state_token: Optional[Dict[str, Any]] = None
     # Action blocks rescued from mis-emitted tool_calls. Appended to the
     # final assistant content so the frontend extractor picks them up.
     intercepted_action_blocks: List[str] = []
@@ -1165,6 +1166,14 @@ def run_agentic_turn(
             # Native function calling guarantees that tool arguments are not
             # embedded in assistant prose; return the final text verbatim.
             cleaned = content
+            if last_state_token and not re.search(r"```state_token\s*\n", content, re.I):
+                cleaned = (
+                    content.rstrip()
+                    + ("\n\n" if content.strip() else "")
+                    + "```state_token\n"
+                    + json.dumps(last_state_token, ensure_ascii=False)
+                    + "\n```"
+                )
             if emitted_chars == 0:
                 # Some models return content only at end-of-stream (rare).
                 yield {"type": "delta", "delta": cleaned}
@@ -1364,6 +1373,10 @@ def run_agentic_turn(
             if name == "build_deeplink" and isinstance(result, dict):
                 if result.get("url_path") and not result.get("error"):
                     last_deeplink_context = {"args": dict(_args or {}), "result": dict(result)}
+            if name == "build_state_token" and isinstance(result, dict):
+                token = result.get("state_token")
+                if isinstance(token, dict):
+                    last_state_token = token
 
     # ── Iteration cap reached ────────────────────────────────────────────
     # The model kept requesting tools past the configured limit. Force one
@@ -1399,6 +1412,14 @@ def run_agentic_turn(
         yield {"type": "done", "model": last_model, "iterations": int(max_iterations)}
         return
     final_text = final.get("content") or ""
+    if last_state_token and not re.search(r"```state_token\s*\n", final_text, re.I):
+        final_text = (
+            final_text.rstrip()
+            + ("\n\n" if final_text.strip() else "")
+            + "```state_token\n"
+            + json.dumps(last_state_token, ensure_ascii=False)
+            + "\n```"
+        )
     yield {
         "type": "delta",
         "delta": (final_text or "").rstrip() + cap_notice,

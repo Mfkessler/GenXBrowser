@@ -201,6 +201,18 @@ describe("assistant visualization action guardrails", () => {
     expect(filters.condition).toMatchObject({ value: "", has_value: true, exact: true });
   });
 
+  it("treats a value-less assistant filter as the Sidebar has-value checkbox", async () => {
+    const deps = makeDeps();
+    const action: AssistantAction = { kind: "add_filter", spec: { column: "Condition" }, status: "pending" };
+
+    const mutated = await createAssistantActionDispatcher(deps).dispatch(action);
+
+    const filters = (deps.filtersStore.toObject?.() as { filters: Record<string, unknown> }).filters;
+    expect(mutated).toBe(true);
+    expect(action.summary).toContain("has value");
+    expect(filters.condition).toMatchObject({ value: "", has_value: true, exact: true });
+  });
+
   it("sets filter-chain operators using resolved display names", async () => {
     const deps = makeDeps();
     const dispatcher = createAssistantActionDispatcher(deps);

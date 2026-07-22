@@ -499,7 +499,12 @@ function applyAddFilter(action: AssistantAction, deps: DispatcherDeps): Dispatch
   const rawSpec = spec as { match_mode?: unknown; exact?: unknown };
   const matchMode = rawSpec.match_mode === "and" || rawSpec.match_mode === "or" ? rawSpec.match_mode : "or";
   const exact = rawSpec.exact === undefined ? true : booleanValue(rawSpec.exact);
-  const hasValue = spec.has_value === true;
+  const hasConcreteValue = Object.prototype.hasOwnProperty.call(spec, "value")
+    || Object.prototype.hasOwnProperty.call(spec, "values");
+  // A filter action with only a verified column cannot express a concrete
+  // value. Treat it as the Sidebar's "Has value" checkbox instead of
+  // reporting a successful no-op when an LLM omits the flag.
+  const hasValue = spec.has_value === true || !hasConcreteValue;
   deps.filtersStore.setFilter(column, {
     value: hasValue ? "" : normalizeFilterValue(spec.value ?? (spec as { values?: unknown }).values, columnMeta),
     match_mode: matchMode,

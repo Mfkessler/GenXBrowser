@@ -200,6 +200,16 @@
                   {{ action.url_path === route.fullPath ? '✓' : '↗' }} Open {{ action.view || "view" }}
                 </button>
 
+                <button
+                  v-else-if="action.kind === 'state_token' && action.status !== 'applied'"
+                  class="inline-flex items-center gap-1 bg-primary-700 hover:bg-primary-900 text-white text-xs font-semibold px-3 py-1.5 rounded-full cursor-pointer"
+                  @click="executeAssistantAction(action)"
+                >Apply filters</button>
+                <span
+                  v-else-if="action.kind === 'state_token' && action.status === 'applied'"
+                  class="inline-flex items-center gap-1 bg-primary-100 text-primary-900 text-xs font-semibold px-3 py-1.5 rounded-full"
+                >✓ Filters applied</span>
+
                 <span
                   v-else-if="action.kind === 'viz_update' && action.status !== 'error'"
                   class="inline-flex items-center gap-1 bg-primary-100 text-primary-800 text-xs font-semibold px-3 py-1.5 rounded-full max-w-full"
@@ -570,7 +580,7 @@ function stripActionBlocks(content: string): string {
   let out = content
     // Known action blocks (the frontend applies them via chips).
     .replace(
-      /```(?:action|deeplink|viz_update|add_filter|remove_filter|clear_filters|select_tables|dataset_visibility|set_expression_display|set_filter_chain|phylo_action|compute)\s*\n[\s\S]*?\n```/gi,
+      /```(?:state_token|action|deeplink|viz_update|add_filter|remove_filter|clear_filters|select_tables|dataset_visibility|set_expression_display|set_filter_chain|phylo_action|compute)\s*\n[\s\S]*?\n```/gi,
       "",
     )
     // Leaked tool-argument JSON that the backend salvaged.

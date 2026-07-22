@@ -2350,22 +2350,38 @@ def _assistant_fast_path_response(service, cm, user_text: str, client_ctx: Dict[
             })
         )
 
-    # Has-value shortcut: "only samples with Group", "Group has value".
+    # Has-value shortcut: "only samples with Group", "Group has value", or
+    # German requests such as "Verstecke Samples ohne Group-Metadaten".
     has_value_match = re.search(
         r"\b(?:only\s+)?(?:samples|rows|transcripts)?\s*(?:with|where)\s+(.+?)\s+(?:has\s+value|is\s+present|exists)\b|\bonly\s+(?:samples|rows|transcripts)\s+with\s+(?:a\s+)?value\s+in\s+(.+?)\s*[.!?]*$|\b(.+?)\s+has\s+value\b",
         text,
         re.I,
     )
-    if has_value_match:
-        label = (has_value_match.group(1) or has_value_match.group(2) or has_value_match.group(3) or "").strip().strip('"\'')
+    german_has_value_match = re.search(
+        r"\b(?:zeige\s+nur|filtere?|verstecke?)\s+(?:die\s+)?"
+        r"(?:samples?|proben|zeilen|transkripte?|gene)\s*,?\s*(?:die\s+)?(?:auch\s+)?"
+        r"(?:einen?|keine?n?)\s+(.+?)\s+(?:haben|hat)\b|"
+        r"\bzeige\s+nur\s+(.+?)[\s-]+(?:samples?|proben)\b",
+        text,
+        re.I,
+    )
+    if has_value_match or german_has_value_match:
+        label = (
+            (has_value_match.group(1) or has_value_match.group(2) or has_value_match.group(3) or "")
+            if has_value_match else (german_has_value_match.group(1) or german_has_value_match.group(2) or "")
+        ).strip().strip('"\'')
+        label = re.sub(r"\s*[- ]?(?:metadata|metadaten|value|wert|entry|eintrag)\s*$", "", label, flags=re.I)
+        label = label.strip().strip('"\'')
         tables = _tables_from_ctx()
         obs_col = _resolve_obs_column(label, tables)
-        column = obs_col["internal"] if obs_col else _display_to_internal(label)
-        display = obs_col["display"] if obs_col else label
-        return (
-            f"Filtering to entries where {display} has a value.\n\n"
-            + _json_block("add_filter", {"column": column, "has_value": True, "match_mode": "or", "exact": True})
-        )
+        if obs_col:
+            return (
+                f"Filtering to samples where {obs_col['display']} has a value.\n\n"
+                + _json_block("add_filter", {
+                    "column": obs_col["internal"], "has_value": True,
+                    "match_mode": "or", "exact": True,
+                })
+            )
 
     # Filter-chain shortcut: "connect both filters with and", "set filter chain to and".
     chain_match = re.search(r"\b(?:connect|combine|set)\b.*\b(?:filter\s+chain|filters?)\b.*\b(and|or)\b|\bfilter\s+chain\s+(?:to\s+)?(and|or)\b", lower)

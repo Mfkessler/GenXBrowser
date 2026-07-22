@@ -1635,8 +1635,7 @@ def tool_search_go_terms(
     """Resolve a free-form biological-process term to GO IDs.
 
     Uses the loaded GO OBO ontology (via ``current_app.go_service``) to
-    fuzzy-match human descriptions like ``"photosynthesis"`` or
-    ``"flower development"`` to their canonical ``GO:#######`` IDs and
+    fuzzy-match human descriptions to their canonical ``GO:#######`` IDs and
     definitions. This is the GO-aware counterpart to ``resolve_value`` —
     the latter scans column values verbatim and therefore cannot map a
     natural-language process name (which is NOT stored in ``go_terms``)
@@ -2233,20 +2232,13 @@ def tool_build_deeplink(
 
     if v in {"heatmap", "compare", "phylo", "ora"} and codes:
         nested = _deeplink_flat_filters(filters)
-        # Normalize {col: {value: "v1|v2", ...}} → {col: [v1, v2]}.
-        flat_filters: Dict[str, List[str]] = {}
+        # Keep complete filter specs so validation uses the exact same parser
+        # semantics as the frontend, including has_value and numeric ranges.
+        flat_filters: Dict[str, Any] = {}
         for col, spec in nested.items():
             if not isinstance(spec, dict):
                 continue
-            raw = spec.get("value")
-            if isinstance(raw, list):
-                vals = [str(x) for x in raw if str(x).strip()]
-            elif isinstance(raw, str) and raw:
-                vals = [x for x in raw.split("|") if x]
-            else:
-                vals = []
-            if vals:
-                flat_filters[col] = vals
+            flat_filters[col] = spec
 
         kept: List[str] = []
         guard_counts: List[Dict[str, Any]] = []
@@ -2426,13 +2418,88 @@ def build_instance_manifest(service, config_manager=None) -> Dict[str, Any]:
     }
 
 
+def _get_go_service():
+    """Return the application-scoped ontology service when Flask is active."""
+    try:
+        from flask import current_app  # noqa: WPS433
+        return getattr(current_app, "go_service", None)
+    except Exception:
+        return None
+
+
+def _go_columns(adata, requested_column: Optional[str]) -> List[str]:
+    """Return GO annotation columns, optionally constrained by the caller."""
+    requested = str(requested_column or "").strip().lower()
+    columns = [str(name) for name in adata.var.columns]
+    if requested:
+        return [name for name in columns if name.lower() == requested]
+    return [name for name in columns if re.search(r"(^|_)(go|gene_ontology)(_|$)", name.lower())]
+
+
 def tool_search_metadata(service, config_manager=None, *, query: str,
                          column: Optional[str] = None, tables: Optional[List[str]] = None,
                          limit: int = 20) -> Dict[str, Any]:
-    """Find verified metadata values, optionally constrained to one column."""
+    """Find verified metadata values and resolve GO descriptions to GO IDs."""
     if not str(query or "").strip():
         return {"error": "query is required"}
     result = tool_resolve_value(service, config_manager, query=query, tables=tables, max_hits=limit)
+    codes = _resolve_species_codes(service, tables)
+    query_lower = str(query).strip().lower()
+    column_hits: List[Dict[str, Any]] = []
+    go_columns: List[Tuple[str, str]] = []
+    for code in codes:
+        try:
+            adata = service.registry.load(code)
+        except Exception:
+            continue
+        if adata is not None:
+            for namespace, frame in (("var", adata.var), ("obs", adata.obs)):
+                for name in frame.columns:
+                    internal = str(name)
+                    display_name = _display_name_for(config_manager, internal)
+                    if query_lower in {internal.lower(), display_name.lower()}:
+                        column_hits.append({
+                            "table": code,
+                            "namespace": namespace,
+                            "column": internal,
+                            "display_name": display_name,
+                            "value": None,
+                            "match": "column",
+                        })
+            go_columns.extend((code, name) for name in _go_columns(adata, column))
+
+    if column_hits:
+        result["hits"] = column_hits + (result.get("hits") or [])
+
+    is_go_query = bool(re.fullmatch(r"GO:\d{7}", str(query).strip(), re.I))
+    if go_columns or is_go_query:
+        go_service = _get_go_service()
+        if go_service and getattr(go_service, "is_available", lambda: False)():
+            try:
+                ontology_hits = go_service.search_terms(query, limit=max(1, min(int(limit), 100))) or []
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("search_metadata GO resolution failed: %s", exc)
+                ontology_hits = []
+            existing = {(hit.get("column"), hit.get("value")) for hit in result.get("hits") or []}
+            for ontology_hit in ontology_hits:
+                go_id = ontology_hit.get("id") if isinstance(ontology_hit, dict) else None
+                if not go_id:
+                    continue
+                for code, go_column in go_columns:
+                    key = (go_column, go_id)
+                    if key in existing:
+                        continue
+                    result.setdefault("hits", []).append({
+                        "table": code,
+                        "namespace": "var",
+                        "column": go_column,
+                        "display_name": _display_name_for(config_manager, go_column),
+                        "value": go_id,
+                        "label": ontology_hit.get("name"),
+                        "description": ontology_hit.get("definition"),
+                        "match": "ontology",
+                    })
+                    existing.add(key)
     if column:
         requested = str(column).strip().lower()
         result["hits"] = [
@@ -2440,22 +2507,31 @@ def tool_search_metadata(service, config_manager=None, *, query: str,
             if str(hit.get("column") or "").lower() == requested
             or str(hit.get("display_name") or "").lower() == requested
         ]
+    result["hits"] = result.get("hits", [])[:max(1, min(int(limit), 100))]
+    if not result["hits"]:
+        result["status"] = "not_found"
     return result
 
 
-def tool_compute_analytics(service, config_manager=None, *, operation: str,
-                           tables: Optional[List[str]] = None,
-                           filters: Optional[Dict[str, Any]] = None,
-                           target_column: Optional[str] = None) -> Dict[str, Any]:
-    """Count, rank, or summarize metadata using one filter payload."""
-    operation = str(operation or "").lower()
+def _split_assistant_filters(
+    service,
+    config_manager,
+    codes: List[str],
+    filters: Optional[Dict[str, Any]],
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Resolve flat or explicit axis filter maps for unified assistant tools."""
     source = filters if isinstance(filters, dict) else {}
+    explicit_var = source.get("var_filters") if isinstance(source.get("var_filters"), dict) else {}
+    explicit_obs = source.get("obs_filters") if isinstance(source.get("obs_filters"), dict) else {}
     flat = _deeplink_flat_filters(source) or source.get("global") or source
-    codes = _resolve_species_codes(service, tables)
-    if not codes:
-        return {"error": "tables must name at least one loaded dataset"}
-    var_filters: Dict[str, Any] = {}
-    obs_filters: Dict[str, Any] = {}
+    if "var_filters" in source or "obs_filters" in source:
+        flat = {
+            name: value for name, value in flat.items()
+            if name not in {"var_filters", "obs_filters"}
+        }
+
+    var_filters = dict(explicit_var)
+    obs_filters = dict(explicit_obs)
     for code in codes:
         try:
             adata = service.registry.load(code)
@@ -2468,12 +2544,36 @@ def tool_compute_analytics(service, config_manager=None, *, operation: str,
                 var_filters[resolved] = value
             elif resolved in adata.obs.columns:
                 obs_filters[resolved] = value
+    return var_filters, obs_filters
+
+
+def tool_compute_analytics(service, config_manager=None, *, operation: str,
+                           tables: Optional[List[str]] = None,
+                           filters: Optional[Dict[str, Any]] = None,
+                           target_column: Optional[str] = None) -> Dict[str, Any]:
+    """Count, rank, or summarize metadata using one filter payload."""
+    operation = str(operation or "").lower()
+    source = filters if isinstance(filters, dict) else {}
+    codes = _resolve_species_codes(service, tables)
+    if not codes:
+        return {"error": "tables must name at least one loaded dataset"}
+    var_filters, obs_filters = _split_assistant_filters(service, config_manager, codes, source)
     if operation == "count":
         return tool_count_rows(service, config_manager, tables=tables, var_filters=var_filters, obs_filters=obs_filters)
     if operation == "rank":
         if not target_column:
             return {"error": "target_column is required for rank"}
-        return tool_top_groups(service, config_manager, tables=tables, group_column=target_column, var_filters=var_filters)
+        result = tool_top_groups(service, config_manager, tables=tables, group_column=target_column, var_filters=var_filters)
+        rankings = result.get("top") if isinstance(result, dict) else None
+        if not isinstance(rankings, list):
+            return result
+        top = rankings[0] if rankings else {}
+        return {
+            **result,
+            "top_value": top.get("value") if isinstance(top, dict) else None,
+            "count": top.get("count") if isinstance(top, dict) else 0,
+            "rankings": rankings,
+        }
     if operation == "stats":
         if not target_column:
             return {"error": "target_column is required for stats"}
@@ -2492,16 +2592,36 @@ def tool_build_state_token(service, config_manager=None, *, view: str,
     invalid = sorted(set(actions) - {"export_png", "export_svg", "open_data_manager"})
     if invalid:
         return {"error": "unsupported trigger action(s): " + ", ".join(invalid)}
+    raw_filters = filters if isinstance(filters, dict) else {}
+    codes = _resolve_species_codes(service, tables)
+    var_filters, obs_filters = _split_assistant_filters(service, config_manager, codes, raw_filters)
+    state_filters = raw_filters
+    if "var_filters" in raw_filters or "obs_filters" in raw_filters:
+        state_filters = {"filters": {**var_filters, **obs_filters}}
     deeplink = tool_build_deeplink(
         service, config_manager, view=view, tables=tables or [],
-        filters=filters if isinstance(filters, dict) else {},
+        filters=state_filters,
         visualizations=viz_patches if isinstance(viz_patches, dict) else {},
     )
     if deeplink.get("error"):
+        # A sample-only filter is a valid in-place Sidebar update even when
+        # opening/reloading the current view would exceed its transcript cap.
+        # Return a token without navigation so the frontend applies the filter
+        # rather than falsely reporting that the metadata column is unusable.
+        if deeplink.get("over_limit") and obs_filters and not var_filters:
+            code_to_table = _species_table_lookup(service)
+            return {"ok": True, "state_token": {
+                "view": str(view or "").lower(),
+                "tables": [code_to_table.get(code, code) for code in codes],
+                "filters": state_filters,
+                "viz_patches": viz_patches if isinstance(viz_patches, dict) else {},
+                "trigger_actions": actions,
+                "url_path": "",
+            }}
         return deeplink
     return {"ok": True, "state_token": {
         "view": deeplink["view"], "tables": deeplink["tables"],
-        "filters": filters if isinstance(filters, dict) else {},
+        "filters": state_filters,
         "viz_patches": viz_patches if isinstance(viz_patches, dict) else {},
         "trigger_actions": actions, "url_path": deeplink["url_path"],
     }}
@@ -2537,6 +2657,22 @@ _FILTER_MAP_SCHEMA: Dict[str, Any] = {
     "additionalProperties": {
         "oneOf": [_FILTER_VALUE_SCHEMA, _FILTER_SPEC_SCHEMA],
     },
+}
+
+_UNIFIED_FILTERS_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "Complete filter state. Use var_filters for transcript/gene (.var) metadata "
+        "and obs_filters for sample (.obs) metadata. Both support "
+        "{column: {has_value: true}}. Frontend-shaped {filters: {...}} and "
+        "flat column maps are also accepted."
+    ),
+    "properties": {
+        "var_filters": _FILTER_MAP_SCHEMA,
+        "obs_filters": _FILTER_MAP_SCHEMA,
+        "filters": _FILTER_MAP_SCHEMA,
+    },
+    "additionalProperties": True,
 }
 
 _STRING_ARRAY_SCHEMA: Dict[str, Any] = {"type": "array", "items": {"type": "string"}}
@@ -2879,11 +3015,8 @@ _LEGACY_TOOL_SCHEMAS: List[Dict[str, Any]] = [
         "function": {
             "name": "search_go_terms",
             "description": (
-                "MANDATORY for any user request that mentions a "
-                "Gene-Ontology concept by NAME (English or any other "
-                "language) — e.g. 'flower development', 'photosynthesis', "
-                "'Photosynthese', 'Blütenentwicklung', 'DNA binding', "
-                "'cell wall biosynthesis'. The dataset's `go_terms` "
+                "Use for any user request that mentions a Gene-Ontology "
+                "concept by name. The dataset's `go_terms` "
                 "column stores `GO:#######` IDs only, never process "
                 "names, so neither `resolve_value` nor "
                 "`list_distinct_values` on ordinary metadata columns "
@@ -3168,7 +3301,7 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
                 "properties": {
                     "operation": {"type": "string", "enum": ["count", "rank", "stats"]},
                     "tables": {"type": "array", "items": {"type": "string"}},
-                    "filters": {"type": "object", "additionalProperties": True},
+                    "filters": _UNIFIED_FILTERS_SCHEMA,
                     "target_column": {"type": "string"},
                 },
                 "required": ["operation", "tables", "filters"],
@@ -3186,7 +3319,7 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
                 "properties": {
                     "view": {"type": "string", "enum": ["heatmap", "compare", "phylo", "ora", "catalog"]},
                     "tables": {"type": "array", "items": {"type": "string"}},
-                    "filters": {"type": "object", "additionalProperties": True},
+                    "filters": _UNIFIED_FILTERS_SCHEMA,
                     "viz_patches": {"type": "object", "additionalProperties": True},
                     "trigger_actions": {"type": "array", "items": {"type": "string", "enum": ["export_png", "export_svg", "open_data_manager"]}},
                 },

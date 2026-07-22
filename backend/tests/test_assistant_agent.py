@@ -35,6 +35,7 @@ def _make_fake_service():
     cs_var = pd.DataFrame({
         "genename": [f"CSG{i:03d}" for i in range(6)],
         "tf_family": ["MIKC", "MIKC", "bHLH", "MIKC", None, "GATA"],
+        "go_terms": ["GO:0009908", "GO:0003677", None, "GO:0009908,GO:0003677", None, None],
         "ortho_id": ["OG1,OG2", "OG1", "OG3", "OG1", "OG4", "OG2,OG5"],
         "pfam_desc": ["Kinase|Transferase", "Kinase", "Binding|Domain", "Kinase", "Domain", "Binding"],
         "is_tf": [True, True, True, True, False, True],
@@ -43,6 +44,7 @@ def _make_fake_service():
     cs_obs = pd.DataFrame({
         "tissue": ["leaf", "root", "leaf", "flower"],
         "condition": ["Leaf", "Root", "Leaf", "Flower"],
+        "group": ["A", None, "B", "A"],
         "assigned": [1000, 2000, 1500, 800],
     }, index=[f"S{i}" for i in range(4)])
 
@@ -108,6 +110,7 @@ def _make_fake_cm():
             "pfam_desc": {"display_name": "Pfam Desc", "type": "array", "is_array": True, "array_separator": "|", "visible": True, "filterable": True},
             "tissue": {"display_name": "Tissue", "type": "text", "visible": True, "filterable": True},
             "condition": {"display_name": "Condition", "type": "text", "visible": True, "filterable": True},
+            "group": {"display_name": "Group", "type": "text", "visible": True, "filterable": True},
         },
     )
 
@@ -642,6 +645,10 @@ def test_unified_schema_exposes_exactly_three_tools():
     assert {tool["function"]["name"] for tool in tools.openai_schema()} == {
         "search_metadata", "compute_analytics", "build_state_token",
     }
+    for tool in tools.openai_schema():
+        if tool["function"]["name"] in {"compute_analytics", "build_state_token"}:
+            properties = tool["function"]["parameters"]["properties"]["filters"]["properties"]
+            assert {"var_filters", "obs_filters"}.issubset(properties)
 
 
 def test_search_metadata_and_compute_rank_use_verified_values():
@@ -658,6 +665,92 @@ def test_search_metadata_and_compute_rank_use_verified_values():
         service=svc, config_manager=_make_fake_cm(),
     )
     assert ranked["top"][0] == {"value": "OG1", "count": 3}
+    assert ranked["top_value"] == "OG1"
+    assert ranked["count"] == 3
+    assert ranked["rankings"] == ranked["top"]
+
+
+def test_search_metadata_finds_arbitrary_sample_column_name():
+    result = tools.tool_search_metadata(
+        _make_fake_service(), _make_fake_cm(), query="Group", tables=["CS"],
+    )
+    assert result["hits"][0] == {
+        "table": "CS", "namespace": "obs", "column": "group",
+        "display_name": "Group", "value": None, "match": "column",
+    }
+
+
+def test_search_metadata_resolves_go_descriptions_to_dataset_go_ids(monkeypatch):
+    class FakeGoService:
+        def is_available(self):
+            return True
+
+        def search_terms(self, value, limit=20):
+            assert value == "flower development"
+            return [{"id": "GO:0009908", "name": "flower development", "definition": "Flower formation."}]
+
+    monkeypatch.setattr(tools, "_get_go_service", lambda: FakeGoService())
+    result = tools.tool_search_metadata(
+        _make_fake_service(), _make_fake_cm(), query="flower development", tables=["CS"],
+    )
+    assert any(
+        hit["column"] == "go_terms" and hit["value"] == "GO:0009908"
+        and hit["label"] == "flower development"
+        for hit in result["hits"]
+    )
+
+
+def test_search_metadata_reports_not_found_without_matches():
+    result = tools.tool_search_metadata(
+        _make_fake_service(), _make_fake_cm(), query="not-present", tables=["CS"],
+    )
+    assert result["status"] == "not_found"
+
+
+def test_compute_analytics_preserves_explicit_axis_has_value_filters():
+    svc = _make_fake_service()
+    result = tools.dispatch_tool_call(
+        "compute_analytics",
+        {"operation": "count", "tables": ["CS"], "filters": {
+            "var_filters": {"tf_family": {"has_value": True}},
+            "obs_filters": {"tissue": {"has_value": True}},
+        }},
+        service=svc, config_manager=_make_fake_cm(),
+    )
+    assert result["n_var_match"] == 5
+    assert result["n_obs_match"] == 4
+
+
+def test_build_state_token_preserves_explicit_axis_has_value_filters():
+    svc = _make_fake_service()
+    result = tools.dispatch_tool_call(
+        "build_state_token",
+        {"view": "heatmap", "tables": ["CS"], "filters": {
+            "var_filters": {"tf_family": {"has_value": True}},
+            "obs_filters": {"tissue": {"has_value": True}},
+        }},
+        service=svc, config_manager=_make_fake_cm(),
+    )
+    filters = result["state_token"]["filters"]["filters"]
+    assert filters["tf_family"] == {"has_value": True}
+    assert filters["tissue"] == {"has_value": True}
+
+
+def test_build_state_token_applies_sample_has_value_without_compare_navigation_limit():
+    svc = _make_fake_service()
+    cm = _make_fake_cm()
+    cm.get_config = lambda: {"analysis_limits": {"compare": {"max_rows": 2}}}
+    result = tools.dispatch_tool_call(
+        "build_state_token",
+        {"view": "compare", "tables": ["CS"], "filters": {
+            "obs_filters": {"group": {"has_value": True}},
+            "var_filters": {},
+        }},
+        service=svc, config_manager=cm,
+    )
+    token = result["state_token"]
+    assert token["filters"]["filters"]["group"] == {"has_value": True}
+    assert token["url_path"] == ""
 
 
 def test_build_state_token_preserves_complete_state_and_returns_route():
@@ -674,6 +767,70 @@ def test_build_state_token_preserves_complete_state_and_returns_route():
     assert token["viz_patches"] == {"colorScale": "VIRIDIS"}
     assert token["trigger_actions"] == ["export_svg"]
     assert token["url_path"].startswith("/h/Capnoides sempervirens?id=")
+
+
+def test_build_state_token_applies_exact_mikc_var_filter():
+    svc = _make_fake_service()
+    result = tools.dispatch_tool_call(
+        "build_state_token",
+        {"view": "heatmap", "tables": ["CS"], "filters": {
+            "var_filters": {"tf_family": {"value": "MIKC", "exact": True}},
+            "obs_filters": {},
+        }},
+        service=svc, config_manager=_make_fake_cm(),
+    )
+    assert result["state_token"]["filters"]["filters"]["tf_family"] == {
+        "value": "MIKC", "exact": True,
+    }
+
+
+def test_build_state_token_applies_resolved_go_id_filter():
+    svc = _make_fake_service()
+    result = tools.dispatch_tool_call(
+        "build_state_token",
+        {"view": "heatmap", "tables": ["CS"], "filters": {
+            "var_filters": {"go_terms": {"value": "GO:0009908", "exact": True}},
+            "obs_filters": {},
+        }},
+        service=svc, config_manager=_make_fake_cm(),
+    )
+    assert result["state_token"]["filters"]["filters"]["go_terms"] == {
+        "value": "GO:0009908", "exact": True,
+    }
+
+
+def test_agentic_loop_materializes_successful_state_token(monkeypatch):
+    svc = _make_fake_service()
+
+    def dispatch(name, args):
+        return tools.dispatch_tool_call(name, args, service=svc, config_manager=_make_fake_cm())
+
+    script = [
+        {
+            "role": "assistant", "content": "",
+            "tool_calls": [{
+                "id": "token-1", "type": "function",
+                "function": {
+                    "name": "build_state_token",
+                    "arguments": json.dumps({
+                        "view": "heatmap", "tables": ["CS"],
+                        "filters": {"var_filters": {"tf_family": {"value": "MIKC", "exact": True}}},
+                    }),
+                },
+            }],
+        },
+        {"role": "assistant", "content": "MIKC is filtered."},
+    ]
+    monkeypatch.setattr(assistant, "_stream_with_fallback", _make_fake_llm(script))
+
+    events = list(assistant.run_agentic_turn(
+        cfg={"model": "fake"},
+        initial_messages=[{"role": "user", "content": "Filter nach MIKC"}],
+        tools=tools.openai_schema(), dispatch=dispatch, max_iterations=4,
+    ))
+    final = [event for event in events if event["type"] == "delta"][-1]["delta"]
+    assert "```state_token" in final
+    assert '"tf_family"' in final
 
 
 def test_manifest_describes_static_datasets_columns_and_views():
@@ -694,6 +851,10 @@ def test_compact_prompt_contains_unified_contract_and_context_names():
     assert "build_state_token" in prompt
     assert "INSTANCE_MANIFEST" in prompt
     assert "LIVE_UI_STATE" in prompt
+    assert "var_filters" in prompt
+    assert "obs_filters" in prompt
+    assert "Never guess or hallucinate" in prompt
+    assert "top_value" in prompt
     assert len(prompt) < len(prompt_builder.ROLE)
 
 
