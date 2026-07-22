@@ -103,28 +103,6 @@ def test_test_connection_missing_fields():
     assert result["ok"] is False
 
 
-def test_complete_chat_falls_back_to_secondary_model():
-    cfg = {"api_base": "https://x", "api_key": "k", "model": "primary", "fallback_model": "fallback"}
-
-    calls = []
-
-    def fake_call(cfg_, messages, stream=False, model_override=None):
-        calls.append(model_override)
-        if model_override == "primary":
-            import urllib.error
-            raise urllib.error.HTTPError("u", 500, "boom", {}, None)
-        fake_resp = MagicMock()
-        fake_resp.read.return_value = json.dumps({"model": "fallback", "choices": [{"message": {"content": "hi"}}]}).encode()
-        fake_resp.close.return_value = None
-        return fake_resp
-
-    with patch.object(assistant, "call_chat_completion", side_effect=fake_call):
-        result = assistant.complete_chat(cfg, [{"role": "user", "content": "hey"}])
-    assert result["ok"] is True
-    assert result["model"] == "fallback"
-    assert calls == ["primary", "fallback"]
-
-
 def test_streaming_timeout_is_capped_below_worker_timeout(monkeypatch):
     cfg = {
         "api_base": "https://x",
@@ -151,57 +129,24 @@ def test_streaming_timeout_is_capped_below_worker_timeout(monkeypatch):
     assert captured["timeout"] <= 50
 
 
-def test_coverage_correction_rewrites_false_all_species_claim():
-    content = (
-        "Let me show you a heatmap of OG0000000, which appears in all three "
-        "species and has the highest count across all datasets."
-    )
-    corrected = assistant._apply_coverage_corrections(content, [{
-        "value": "OG0000000",
-        "count": 519,
-        "present_in": ["OS"],
-        "absent_from": ["AT", "SL"],
-    }])
+def test_native_tool_calls_are_serialized(monkeypatch):
+    captured = {}
 
-    assert "appears in all three species" not in corrected
-    assert "present only in OS" in corrected
-    assert "absent from AT, SL" in corrected
+    def fake_post(url, api_key, payload, timeout, stream=False):
+        captured.update(payload)
+        fake_resp = MagicMock()
+        fake_resp.read.return_value = b'{"choices":[{"message":{"content":"ok"}}]}'
+        fake_resp.close.return_value = None
+        return fake_resp
 
+    with patch.object(assistant, "_post_json", side_effect=fake_post):
+        response = assistant.call_chat_completion(
+            {"api_base": "https://x", "api_key": "k", "model": "m"},
+            [{"role": "user", "content": "hi"}],
+            tools=[{"type": "function", "function": {"name": "tool", "parameters": {}}}],
+            tool_choice="required",
+        )
+        response.close()
 
-def test_phylo_request_repairs_heatmap_deeplink_for_orthogroup():
-    content = (
-        "The phylogenetic tree view is not available, so I will show a heatmap.\n\n"
-        "```deeplink\n"
-        '{"view":"heatmap","tables":["AT","OS"],'
-        '"filters":{"filters":{"ortho_id":{"value":"OG0011744"}}}}'
-        "\n```"
-    )
-    repaired = assistant._repair_phylo_request_deeplink(
-        content,
-        "Open the gene tree for orthogroup OG0011744.",
-    )
-
-    assert "phylogenetic tree view is not available" not in repaired
-    assert '"view": "phylo"' in repaired
-    assert '"selectedOrthogroup": "OG0011744"' in repaired
-    assert '"view":"heatmap"' not in repaired
-
-
-def test_phylo_request_keeps_non_action_answer_without_orthogroup():
-    content = "I can help if you provide an orthogroup ID."
-    assert assistant._repair_phylo_request_deeplink(content, "phylo tree") == content
-
-
-def test_phylo_request_adds_missing_orthogroup_filter():
-    content = (
-        "```deeplink\n"
-        '{"view":"heatmap","tables":["AT","SL","OS"],"filters":{"filters":{}}}'
-        "\n```"
-    )
-    repaired = assistant._repair_phylo_request_deeplink(
-        content,
-        "phylo tree OG0011744",
-    )
-
-    assert '"view": "phylo"' in repaired
-    assert '"ortho_id": {"value": "OG0011744", "match_mode": "or", "exact": true}' in repaired
+    assert captured["parallel_tool_calls"] is False
+    assert captured["tool_choice"] == "required"

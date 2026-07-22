@@ -410,27 +410,6 @@ def _tables_label(slot: Dict[str, str], tables: Optional[List[str]], *, all_tabl
     return slot.get("table_label") or slot.get("table", "")
 
 
-def _suggestion_action(view: str, tables: List[str], column: str, value: str) -> Dict[str, Any]:
-    filters = {
-        "filters": {column: {"value": value, "match_mode": "or", "exact": True}},
-        "datasetIdFilters": {},
-    }
-    visualizations: Dict[str, Any] = {}
-    if view == "phylo":
-        visualizations = {"phyloTree": {"selectedOrthogroup": value}}
-    elif view == "compare" and column.lower() in {"ortho_id", "orthogroup", "orthogroup_id"}:
-        visualizations = {"compare": {"selectedOrthogroup": value}}
-    return {
-        "kind": "deeplink",
-        "spec": {
-            "view": view,
-            "tables": tables,
-            "filters": filters,
-            "visualizations": visualizations,
-        },
-    }
-
-
 def _is_actionable_slot(service, cm, view: str, slot: Dict[str, str], pool: Dict[str, Any]) -> bool:
     return _build_actionable_suggestion(service, cm, view, slot, pool) is not None
 
@@ -445,10 +424,6 @@ def _build_actionable_suggestion(
     variant: int = 0,
     tables_override: Optional[List[str]] = None,
 ) -> Optional[Dict[str, Any]]:
-    try:
-        from . import assistant_tools as _at
-    except Exception:
-        return None
     column = str(slot.get("column") or "")
     value = str(slot.get("value") or "")
     namespace = str(slot.get("namespace") or "")
@@ -463,20 +438,6 @@ def _build_actionable_suggestion(
         tables = [table] if table else []
     if not tables:
         return None
-    try:
-        action = _suggestion_action(view, tables, column, value)
-        result = _at.tool_build_deeplink(
-            service,
-            cm,
-            view=view,
-            tables=tables,
-            filters=action["spec"]["filters"],
-            visualizations=action["spec"].get("visualizations") or {},
-        )
-    except Exception:
-        return None
-    if not isinstance(result, dict) or result.get("error") or not result.get("url_path"):
-        return None
     item = _render_generic_view(
         view,
         slot,
@@ -484,10 +445,7 @@ def _build_actionable_suggestion(
         tables=tables,
         all_table_count=len(pool.get("species") or []),
     )
-    action["url_path"] = result.get("url_path")
-    action["view"] = result.get("view") or view
-    item["action"] = action
-    item["tables"] = result.get("tables") or tables
+    item["tables"] = tables
     item["column"] = column
     item["value"] = value
     return item

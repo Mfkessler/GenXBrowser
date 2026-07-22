@@ -1,18 +1,4 @@
-"""
-Tool registry for the AI assistant agentic loop.
-
-Each tool is a small, pure Python function that operates on the already-loaded
-``DataService`` (no new endpoints, no I/O beyond what the HTTP routes already
-do). Tools are exposed to the LLM in the OpenAI tool-calling schema; both
-Gemini (via the OpenAI-compatible endpoint) and GPT-4o understand this shape.
-
-The LLM uses these tools to *introspect* the data and *compose* a final
-answer that contains zero or more markdown action blocks
-(``deeplink`` / ``add_filter`` / ``dataset_visibility`` / …). Tool calls do not themselves mutate UI
-state — the frontend is responsible for that, based on the final action
-blocks. This keeps the trust boundary crisp: the backend validates and
-inspects, the frontend applies.
-"""
+"""GAIA's native tools and their shared data engine."""
 
 from __future__ import annotations
 
@@ -83,87 +69,6 @@ def _species_table_lookup(service) -> Dict[str, str]:
             out[code] = table_name
     return out
 
-
-def _dataset_entries_from_service(service) -> List[Dict[str, Any]]:
-    """Return loaded dataset IDs, labels, and aliases without assuming names."""
-    try:
-        entries = service.get_tables(include_disabled=False)
-    except Exception:
-        entries = []
-    out: List[Dict[str, Any]] = []
-    for entry in entries or []:
-        table_name = str(entry.get("table_name") or entry.get("full_name") or entry.get("_species_code") or entry.get("code") or "").strip()
-        code = str(entry.get("_species_code") or entry.get("code") or "").strip()
-        if not table_name:
-            continue
-        label = str(entry.get("display_name") or entry.get("full_name") or table_name).strip() or table_name
-        aliases: List[str] = []
-        for value in (table_name, code, entry.get("full_name"), entry.get("display_name")):
-            if isinstance(value, str) and value.strip() and value.strip() not in aliases:
-                aliases.append(value.strip())
-        out.append({"id": table_name, "label": label, "code": code or table_name, "aliases": aliases})
-    return out
-
-
-def _active_view_state_from_context(service, client_context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Normalize live frontend dataset visibility from the request context."""
-    client_context = client_context if isinstance(client_context, dict) else {}
-    supplied = client_context.get("active_view_state")
-    if isinstance(supplied, dict):
-        datasets = supplied.get("loaded_datasets") or supplied.get("datasets") or []
-        visible_ids = supplied.get("visible_dataset_ids") or []
-        if isinstance(datasets, list) and isinstance(visible_ids, list):
-            loaded = []
-            for item in datasets:
-                if not isinstance(item, dict):
-                    continue
-                dataset_id = str(item.get("id") or item.get("table_name") or "").strip()
-                if not dataset_id:
-                    continue
-                aliases = item.get("aliases") if isinstance(item.get("aliases"), list) else []
-                loaded.append({
-                    "id": dataset_id,
-                    "label": str(item.get("label") or item.get("display_name") or dataset_id).strip() or dataset_id,
-                    "code": str(item.get("code") or item.get("_species_code") or dataset_id).strip() or dataset_id,
-                    "aliases": [str(alias).strip() for alias in aliases if str(alias).strip()],
-                })
-            available_ids = [item["id"] for item in loaded]
-            visible = [str(item).strip() for item in visible_ids if str(item).strip() in set(available_ids)]
-            hidden = [dataset_id for dataset_id in available_ids if dataset_id not in set(visible)]
-            return {
-                "view": supplied.get("view") or client_context.get("view"),
-                "route": supplied.get("route") or client_context.get("route"),
-                "loaded_datasets": loaded,
-                "visible_dataset_ids": visible,
-                "hidden_dataset_ids": hidden,
-            }
-
-    loaded = _dataset_entries_from_service(service)
-    available_ids = [item["id"] for item in loaded]
-    raw_visible = []
-    for key in ("tables", "selected_table_names"):
-        value = client_context.get(key)
-        if isinstance(value, list) and value:
-            raw_visible = [str(item).strip() for item in value if str(item).strip()]
-            break
-    visible = [dataset_id for dataset_id in raw_visible if dataset_id in set(available_ids)] or raw_visible
-    hidden = [dataset_id for dataset_id in available_ids if dataset_id not in set(visible)]
-    return {
-        "view": client_context.get("view"),
-        "route": client_context.get("route"),
-        "loaded_datasets": loaded,
-        "visible_dataset_ids": visible,
-        "hidden_dataset_ids": hidden,
-    }
-
-
-def _column_series(adata, column: str):
-    """Return a pd.Series for a var or obs column, trying both spaces."""
-    if column in adata.var.columns:
-        return adata.var[column], "var"
-    if column in adata.obs.columns:
-        return adata.obs[column], "obs"
-    return None, None
 
 
 def _column_display_maps(config_manager=None) -> Dict[str, Dict[str, str]]:
@@ -262,11 +167,20 @@ def _column_type_from_config(config_manager, column: str, series=None) -> str:
     return "text"
 
 
-def _column_separator(config_manager, column: str) -> str:
+def _column_separator(config_manager, column: str, series=None) -> str:
     spec = _column_definitions(config_manager).get(column) or {}
     if isinstance(spec, dict) and (spec.get("is_array") or spec.get("type") == "array"):
-        sep = str(spec.get("array_separator") or ",")
-        return sep if sep in {",", "|", ";"} else ","
+        configured = spec.get("array_separator")
+        if configured in {",", "|", ";"}:
+            return str(configured)
+        if series is not None:
+            try:
+                values = series.dropna().astype(str)
+                for candidate in ("|", ";"):
+                    if values.str.contains(candidate, regex=False).any():
+                        return candidate
+            except Exception:
+                pass
     return ","
 
 
@@ -332,14 +246,14 @@ def _split_array_values(series, separators: Tuple[str, ...] = (",", "|", ";")) -
 
 def _split_column_values(series, config_manager, column: str) -> List[str]:
     if _column_type_from_config(config_manager, column, series) == "array":
-        return _split_array_values(series, (_column_separator(config_manager, column),))
+        return _split_array_values(series, (_column_separator(config_manager, column, series),))
     return [str(v).strip() for v in series.dropna().astype(str) if str(v).strip()]
 
 
-def _column_separators_for(config_manager, columns: set) -> Dict[str, str]:
+def _column_separators_for(config_manager, frame) -> Dict[str, str]:
     return {
-        str(col): _column_separator(config_manager, str(col))
-        for col in columns
+        str(col): _column_separator(config_manager, str(col), frame[col])
+        for col in frame.columns
         if _column_type_from_config(config_manager, str(col)) == "array"
     }
 
@@ -348,13 +262,9 @@ def normalize_filter_pipe_value(value: Any) -> Optional[str]:
     """Normalize a filter ``value`` field to the pipe-separated form the
     frontend filter store and TextFilter component expect.
 
-    The assistant frequently emits multi-value filters as either:
-      - a JSON array  ``["OG1","OG2"]``
-      - a comma-separated string  ``"OG1, OG2"``
-      - a newline-separated string
-    All three must end up as ``"OG1|OG2"`` so the TextFilter component
-    splits them into individual chips. ``None`` and the empty string are
-    passed through unchanged (used by the ``empty`` filter mode).
+        Structured JSON arrays become multiple frontend chips. Scalar strings
+        remain scalar because punctuation can be part of a legitimate metadata
+        value. ``None`` and the empty string are passed through unchanged.
     """
     if value is None:
         return None
@@ -362,11 +272,7 @@ def normalize_filter_pipe_value(value: Any) -> Optional[str]:
         items = [str(v).strip() for v in value]
     else:
         s = str(value)
-        if not s.strip():
-            return s
-        # Split on common separators users / LLMs emit. Pipe is the canonical
-        # separator the frontend expects, so we must collapse , ; \n into |.
-        items = re.split(r"[,;\n\r|]+", s)
+        return s
     items = [v.strip() for v in items if v and str(v).strip()]
     if not items:
         return ""
@@ -384,10 +290,7 @@ def normalize_filter_payload(filters: Any) -> Any:
     """Recursively normalize ``filters`` so any ``{value: ...}`` entry that
     carries multiple values uses the pipe-separated form.
 
-    Accepts both the top-level deeplink filter shape
-    (``{"filters": {col: {value, strict, empty}}}``) and a flat
-    ``{col: {value, strict, empty}}`` mapping. Unknown keys are passed
-    through untouched.
+    Unknown keys are passed through untouched.
     """
     if not isinstance(filters, dict):
         return filters
@@ -534,7 +437,7 @@ def validate_analysis_request_limits(
         var_f = {c: spec for c, spec in flat_filters.items() if c in var_cols}
         obs_f = {c: spec for c, spec in flat_filters.items() if c in obs_cols}
         try:
-            cr = tool_count_rows(
+            cr = _count_rows(
                 service,
                 table=code,
                 var_filters=var_f or None,
@@ -591,7 +494,7 @@ def _infer_anndata_column_types(df) -> Dict[str, str]:
     return filter_parser.infer_dataframe_column_types(df)
 
 
-def apply_assistant_filters(
+def _apply_filters(
     service,
     adata,
     *,
@@ -623,7 +526,7 @@ def apply_assistant_filters(
             _Path(__file__).resolve().parent / "filter_parser.py",
         )
         if not (_spec and _spec.loader):
-            logger.warning("apply_assistant_filters: filter_parser unavailable")
+            logger.warning("_apply_filters: filter_parser unavailable")
             return adata.var, adata.obs
         filter_parser = _ilu.module_from_spec(_spec)
         _spec.loader.exec_module(filter_parser)  # type: ignore[union-attr]
@@ -641,10 +544,10 @@ def apply_assistant_filters(
                 var_df = filter_parser.apply_filter_query(
                     var_df,
                     var_query,
-                    column_separators=_column_separators_for(config_manager, set(var_df.columns)),
+                    column_separators=_column_separators_for(config_manager, var_df),
                 )
         except Exception as e:
-            logger.warning("apply_assistant_filters(var) failed: %s", e, exc_info=True)
+            logger.warning("_apply_filters(var) failed: %s", e, exc_info=True)
     if obs_filters:
         try:
             allowed = obs_column_types or filter_parser.infer_dataframe_column_types(obs_df)
@@ -653,10 +556,10 @@ def apply_assistant_filters(
                 obs_df = filter_parser.apply_filter_query(
                     obs_df,
                     obs_query,
-                    column_separators=_column_separators_for(config_manager, set(obs_df.columns)),
+                    column_separators=_column_separators_for(config_manager, obs_df),
                 )
         except Exception as e:
-            logger.warning("apply_assistant_filters(obs) failed: %s", e, exc_info=True)
+            logger.warning("_apply_filters(obs) failed: %s", e, exc_info=True)
     return var_df, obs_df
 
 
@@ -671,7 +574,7 @@ _SCHEMA_CACHE: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
 
 # (species_code, h5ad_mtime, namespace) → list of (column_name, Counter).
 # Built lazily by ``_get_value_counters`` and reused across every
-# ``tool_resolve_value`` call. The Counter is the dominant cost there;
+# ``_search_values`` call. The Counter is the dominant cost there;
 # rebuilding it on every invocation routinely hit the 20s tool-timeout
 # on instances with high-cardinality array columns (go_terms, ipr_desc).
 _VALUE_COUNTER_CACHE: Dict[Tuple[str, float, str], List[Tuple[str, "Counter"]]] = {}
@@ -805,16 +708,8 @@ def _cached_filter_column_types(
     return inferred
 
 
-def tool_list_schema(service, cm, *, max_values_per_col: int = 5) -> Dict[str, Any]:
-    """High-level schema the LLM needs to pick tables/columns/filters.
-
-    Returns a compact dict. Uses ``build_overview`` via the caller to stay in
-    sync with the landing page; falls back to direct registry inspection.
-
-    Per-table summaries are cached by (species code, h5ad mtime); rebuilding
-    only happens when the underlying file changes. Across an unchanged
-    deployment this turns the call into a constant-time dict lookup.
-    """
+def _build_schema(service, cm, *, max_values_per_col: int = 5) -> Dict[str, Any]:
+    """Build the visible instance schema used by ``INSTANCE_MANIFEST``."""
     tables: List[Dict[str, Any]] = []
     try:
         entries = service.get_tables(include_disabled=False)
@@ -948,122 +843,8 @@ def tool_list_schema(service, cm, *, max_values_per_col: int = 5) -> Dict[str, A
 
         tables.append(summary_entry)
 
-    # Common action-block vocabulary so the LLM remembers what to emit.
-    return {
-        "tables": tables,
-        "column_internal_names": _column_display_maps(cm).get("internal_to_display", {}),
-        "column_display_names": {
-            display: internal
-            for internal, display in _column_display_maps(cm).get("internal_to_display", {}).items()
-        },
-        "views": ["heatmap", "compare", "phylo", "ora", "catalog"],
-        "action_kinds": [
-            "deeplink", "add_filter", "remove_filter", "clear_filters",
-            "select_tables", "set_expression_display", "set_filter_chain", "viz_update",
-        ],
-        "action_block_schemas": _ACTION_BLOCK_SCHEMAS,
-    }
+    return {"tables": tables}
 
-
-def warmup_runtime_cache(service, cm) -> Dict[str, Any]:
-    """Prime static/semi-static assistant metadata caches for this instance."""
-    try:
-        from .overview import _overview_mtime
-        mtime = _overview_mtime(service, cm)
-    except Exception:
-        mtime = None
-    if _WARMUP_CACHE.get("summary") is not None and _WARMUP_CACHE.get("mtime") == mtime:
-        return _WARMUP_CACHE["summary"]
-    schema = tool_list_schema(service, cm, max_values_per_col=0)
-    tables = schema.get("tables") or []
-    summary = {
-        "mtime": mtime,
-        "datasets": [
-            {
-                # `name` is the canonical dataset identifier that MUST be passed
-                # to `tables` in every tool call and action block (build_deeplink,
-                # count_rows, resolve_value, deeplink/select_tables blocks, …).
-                # The short `code` is legacy/internal only — never pass it.
-                "name": t.get("table_name") or t.get("full_name") or t.get("code"),
-                "species_name": t.get("species_name") or t.get("full_name") or t.get("table_name"),
-                "code": t.get("code"),
-                "label": t.get("table_name") or t.get("full_name") or t.get("code"),
-                "n_samples": t.get("n_samples"),
-                "n_genes": t.get("n_genes"),
-            }
-            for t in tables
-        ],
-        "species_names": [t.get("full_name") or t.get("table_name") or t.get("code") for t in tables],
-        "structural_columns": {
-            "var": sorted({c.get("name") for t in tables for c in (t.get("var_columns") or []) if c.get("name")}),
-            "obs": sorted({c.get("name") for t in tables for c in (t.get("obs_columns") or []) if c.get("name")}),
-        },
-        "column_internal_names": schema.get("column_internal_names", {}),
-        "column_display_names": schema.get("column_display_names", {}),
-        "views": schema.get("views", []),
-    }
-    _WARMUP_CACHE["mtime"] = mtime
-    _WARMUP_CACHE["summary"] = summary
-    return summary
-
-
-def tool_state_summary(service, cm) -> Dict[str, Any]:
-    """Unified cached state summary for fast first-pass assistant routing."""
-    return warmup_runtime_cache(service, cm)
-
-
-def tool_get_available_datasets(service, cm) -> Dict[str, Any]:
-    """GAIA discovery alias: list the species/datasets currently loaded.
-
-    Thin, data-agnostic wrapper over :func:`tool_state_summary` exposing the
-    GAIA contract name ``get_available_datasets``. Returns only dataset
-    identity/shape (no expression values), so it is cheap and safe as the
-    first discovery call of a turn.
-    """
-    summary = tool_state_summary(service, cm)
-    return {
-        "datasets": summary.get("datasets", []),
-        "species_names": summary.get("species_names", []),
-        "views": summary.get("views", []),
-    }
-
-
-def tool_get_dataset_schema(service, cm, *, species_id: Optional[str] = None,
-                            max_values_per_col: int = 5, **_ignore) -> Dict[str, Any]:
-    """GAIA discovery alias: the `.obs`/`.var` layout of loaded datasets.
-
-    Wraps :func:`tool_list_schema` and, when ``species_id`` is given, narrows
-    the result to the matching dataset (matched case-insensitively against the
-    canonical ``table_name``, short ``code``, display label, or species name).
-    Never returns raw expression values — only column metadata, dtypes,
-    categorical levels and numeric ranges. This is the only sanctioned source
-    of truth for whether a column the user named actually exists.
-    """
-    full = tool_list_schema(service, cm, max_values_per_col=max_values_per_col)
-    if not species_id:
-        return full
-    tables = full.get("tables") or []
-    needle = str(species_id).strip().lower()
-    matched = [
-        t for t in tables
-        if needle in {
-            str(t.get("table_name") or "").lower(),
-            str(t.get("code") or "").lower(),
-            str(t.get("full_name") or "").lower(),
-            str(t.get("species_name") or "").lower(),
-            str(t.get("display_label") or "").lower(),
-        }
-    ]
-    if not matched:
-        return {
-            "error": f"No loaded dataset matches species_id '{species_id}'.",
-            "available": [
-                {"table_name": t.get("table_name"), "code": t.get("code"),
-                 "full_name": t.get("full_name")}
-                for t in tables
-            ],
-        }
-    return {**full, "tables": matched}
 
 
 # Static catalog of expression-display options. The frontend mirror lives at
@@ -1075,14 +856,21 @@ _EXPRESSION_OPTIONS: List[Dict[str, Any]] = [
     {"id": "tpm",       "label": "TPM (within-sample)",            "layer": "tpm",    "transform": "raw"},
     {"id": "tmm",       "label": "TMM (between-sample)",           "layer": "tmm",    "transform": "raw"},
     {"id": "getmm",     "label": "GeTMM (gene-length corrected)",  "layer": "getmm",  "transform": "raw"},
-    {"id": "log2",      "label": "Log\u2082 (on TPM)",             "layer": "tpm",    "transform": "log2"},
-    {"id": "zscore",    "label": "Z-Score (on GeTMM)",             "layer": "getmm",  "transform": "zscore"},
+    {"id": "log2",      "label": "Log\u2082 (automatic layer)",     "layer": None,     "transform": "log2"},
+    {"id": "zscore",    "label": "Z-Score (automatic layer)",       "layer": None,     "transform": "zscore"},
     {"id": "zscore-tpm","label": "Z-Score (on TPM)",               "layer": "tpm",    "transform": "zscore"},
     {"id": "raw",       "label": "Raw Counts",                     "layer": "X",      "transform": "raw"},
 ]
 
+_TRIGGER_ACTIONS = [
+    "export_png", "export_pdf", "export_svg",
+    "export_tsv", "export_csv", "export_xlsx", "export_json",
+    "open_data_manager", "open_export_modal",
+    "reset_view", "expand_all", "collapse_all", "collapse_to_species",
+]
+
 # Per-view static descriptors of viz controls beyond the expression display.
-# Values are filled in dynamically by `tool_list_view_settings` based on the
+# Values are filled in dynamically by `_view_settings` based on the
 # loaded data (e.g. `oraColumnName.options` is the intersection of `.var`
 # columns across the selected tables).
 _VIEW_CONTROLS: Dict[str, List[Dict[str, Any]]] = {
@@ -1135,7 +923,7 @@ _VIEW_CONTROLS: Dict[str, List[Dict[str, Any]]] = {
          "min": 200, "max": 1200, "store_action": "setCompareState"},
         {"key": "compare.expression", "type": "expression_display",
          "store_action": "setCompareState",
-         "note": "Compare view stores its own expression copy. Use action 'set_expression_display' which mirrors to BOTH expressionDisplay and compare.expression."},
+         "note": "Compare stores its expression selection under compare.expression."},
         {"key": "compare.selectedOrthogroup", "type": "select_orthogroup",
          "store_action": "setCompareState"},
         {"key": "compare.selectedSpecies", "type": "multi_select_table",
@@ -1225,7 +1013,7 @@ _ORA_TOOLTIP_FIELDS: List[str] = [
 ]
 
 
-def tool_list_view_settings(
+def _view_settings(
     service,
     config_manager=None,
     *,
@@ -1236,11 +1024,7 @@ def tool_list_view_settings(
     GenXBrowser instance, with valid value spaces resolved against the
     loaded data.
 
-    Why this exists: settings like the expression-display dropdown depend
-    on which `.layers` the H5AD files actually contain — different
-    deployments have different layer sets. The LLM MUST call this tool
-    before emitting a `set_expression_display` / `viz_update` action so
-    it never picks a value that is not selectable in the current UI.
+    Settings like expression display depend on which layers are loaded.
 
     Returns:
         {
@@ -1248,7 +1032,6 @@ def tool_list_view_settings(
           "tables_considered": [...],
           "expression_options": [{id,label,layer,transform,available,reason}],
           "controls": [{key,type,...,options?,note?}, ...],
-          "common_actions": ["set_expression_display", "viz_update"]
         }
     """
     allowed = {"heatmap", "compare", "phylo", "ora", "catalog"}
@@ -1350,7 +1133,11 @@ def tool_list_view_settings(
     # think every raw .obs column (e.g. `tissue`, `condition`) is a valid
     # colSideColor and hallucinate one that hides behind a similar Display
     # Name. Intersect the curated set across the selected tables.
-    def _curated_meta_options(sample_metadata: bool) -> Tuple[set, Dict[str, str]]:
+    def _curated_meta_options(
+        sample_metadata: bool,
+        *,
+        collapse_default_trait: bool = True,
+    ) -> Tuple[set, Dict[str, str]]:
         per_table: List[set] = []
         details: Dict[str, str] = {}
         for code in codes:
@@ -1365,7 +1152,15 @@ def tool_list_view_settings(
                     adata, sample_metadata=sample_metadata,
                 )
             except Exception:
-                cols = []
+                frame = adata.obs if sample_metadata else adata.var
+                cols = [
+                    {
+                        "column_name": str(name),
+                        "display_name": _display_name_for(config_manager, str(name)),
+                    }
+                    for name in frame.columns
+                    if _column_is_filterable(config_manager, str(name))
+                ]
             names: set = set()
             for col in cols:
                 cname = str(col.get("column_name") or "")
@@ -1374,7 +1169,7 @@ def tool_list_view_settings(
                 # Collapse the default-trait source column into the pseudo key
                 # the store/UI uses, so the assistant emits the same value a
                 # human checkbox click would produce.
-                key = "default_trait" if col.get("is_default_trait") else cname
+                key = "default_trait" if collapse_default_trait and col.get("is_default_trait") else cname
                 names.add(key)
                 details.setdefault(
                     key,
@@ -1390,6 +1185,10 @@ def tool_list_view_settings(
     display_maps = _column_display_maps(config_manager).get("internal_to_display", {})
 
     curated_obs, curated_obs_details = _curated_meta_options(sample_metadata=True)
+    grouping_obs, grouping_obs_details = _curated_meta_options(
+        sample_metadata=True,
+        collapse_default_trait=False,
+    )
     curated_var, curated_var_details = _curated_meta_options(sample_metadata=False)
 
     def _option_details(columns: set) -> List[Dict[str, str]]:
@@ -1414,9 +1213,12 @@ def tool_list_view_settings(
             c["options"] = sorted(common_var)
             c["option_details"] = _option_details(common_var)
         elif ctype == "select_obs_column":
-            # colOrder.name / customColOrder.metadataColumn — curated obs set.
-            c["options"] = sorted(curated_obs)
-            c["option_details"] = _curated_option_details(curated_obs, curated_obs_details)
+            if c.get("key") in {"compare.groupingColumn", "phyloTree.groupingColumn"}:
+                c["options"] = sorted(grouping_obs)
+                c["option_details"] = _curated_option_details(grouping_obs, grouping_obs_details)
+            else:
+                c["options"] = sorted(curated_obs)
+                c["option_details"] = _curated_option_details(curated_obs, curated_obs_details)
         elif ctype in ("multi_select_var_column", "multi_select_var_column_nullable"):
             # rowSideColors / tooltipFields — curated var set (config-defined).
             c["options"] = sorted(curated_var)
@@ -1427,6 +1229,15 @@ def tool_list_view_settings(
             c["option_details"] = _curated_option_details(curated_obs, curated_obs_details)
         elif ctype == "multi_select_table":
             c["options"] = codes
+        elif ctype == "expression_display":
+            available_expression = [
+                option for option in expression_options if option.get("available") is True
+            ]
+            c["options"] = [str(option["id"]) for option in available_expression]
+            c["option_details"] = [
+                {"name": str(option["id"]), "display_name": str(option["label"])}
+                for option in available_expression
+            ]
         if c.get("key") == "oraTooltipFields":
             c["options"] = _ORA_TOOLTIP_FIELDS
         controls_out.append(c)
@@ -1437,138 +1248,23 @@ def tool_list_view_settings(
         "expression_options": expression_options,
         "controls": controls_out,
         "available_layers": sorted(common_layers),
-        "common_actions": [
-            "set_expression_display", "viz_update",
-            "add_filter", "remove_filter", "clear_filters", "set_filter_chain",
-        ],
     }
 
 
-def tool_list_distinct_values(
-    service,
-    config_manager=None,
-    *,
-    column: str,
-    table: Optional[str] = None,
-    prefix: Optional[str] = None,
-    limit: int = 50,
-) -> Dict[str, Any]:
-    """Return up to ``limit`` distinct values for a column (optionally per table)."""
-    if not column:
-        return {"error": "'column' is required"}
-    codes = _resolve_species_codes(service, [table] if table else None)
-    if not codes:
-        return {"error": "No matching species/table"}
-    values: List[str] = []
-    seen = set()
-    prefix_l = (prefix or "").lower()
-    for code in codes:
-        try:
-            adata = service.registry.load(code)
-        except Exception:
-            continue
-        if adata is None:
-            continue
-        column = _resolve_column_name(config_manager, column, set(adata.var.columns) | set(adata.obs.columns))
-        series, _ns = _column_series(adata, column)
-        if series is None:
-            continue
-        for v in _split_array_values(series):
-            if prefix_l and not v.lower().startswith(prefix_l):
-                continue
-            if v in seen:
-                continue
-            seen.add(v)
-            values.append(v)
-            if len(values) >= int(limit):
-                break
-        if len(values) >= int(limit):
-            break
-    return {"column": column, "display_name": _display_name_for(config_manager, column), "values": values, "truncated": len(values) >= int(limit)}
 
-
-def tool_get_active_view_state(service, *, client_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Return live dataset visibility captured by the frontend for this turn."""
-    state = _active_view_state_from_context(service, client_context)
-    return {
-        **state,
-        "available_dataset_ids": [item["id"] for item in state.get("loaded_datasets", [])],
-    }
-
-
-def tool_update_dataset_visibility(
-    service,
-    *,
-    action: str,
-    dataset_ids: Optional[List[str]] = None,
-    client_context: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """Validate a requested dataset-card visibility mutation."""
-    state = _active_view_state_from_context(service, client_context)
-    action_norm = str(action or "").strip().upper()
-    if action_norm not in {"SHOW_ONLY", "HIDE", "SHOW_ALL", "ADD"}:
-        return {"ok": False, "error": "action must be SHOW_ONLY, HIDE, SHOW_ALL, or ADD", "active_view_state": state}
-
-    available_ids = [item["id"] for item in state.get("loaded_datasets", [])]
-    available = set(available_ids)
-    visible_ids = [str(item) for item in state.get("visible_dataset_ids", []) if str(item) in available]
-    requested_ids = [str(item).strip() for item in (dataset_ids or []) if str(item).strip()]
-    unknown = [item for item in requested_ids if item not in available]
-    if unknown:
-        return {
-            "ok": False,
-            "error": "dataset_ids must come from get_active_view_state().available_dataset_ids",
-            "unknown_dataset_ids": unknown,
-            "active_view_state": state,
-        }
-
-    if action_norm == "SHOW_ALL":
-        next_ids = available_ids
-        requested_ids = available_ids
-    elif action_norm == "SHOW_ONLY":
-        if not requested_ids:
-            return {"ok": False, "error": "SHOW_ONLY requires at least one dataset_id", "active_view_state": state}
-        next_ids = [item for item in available_ids if item in set(requested_ids)]
-    elif action_norm == "HIDE":
-        if not requested_ids:
-            return {"ok": False, "error": "HIDE requires at least one dataset_id", "active_view_state": state}
-        next_ids = [item for item in visible_ids if item not in set(requested_ids)]
-    else:
-        if not requested_ids:
-            return {"ok": False, "error": "ADD requires at least one dataset_id", "active_view_state": state}
-        next_ids = [item for item in visible_ids if item in available]
-        for item in available_ids:
-            if item in requested_ids and item not in next_ids:
-                next_ids.append(item)
-
-    labels = {item["id"]: item.get("label") or item["id"] for item in state.get("loaded_datasets", [])}
-    return {
-        "ok": True,
-        "action": action_norm,
-        "dataset_ids": requested_ids,
-        "visible_dataset_ids_before": visible_ids,
-        "visible_dataset_ids_after": next_ids,
-        "labels_after": [labels.get(item, item) for item in next_ids],
-        "action_block": {
-            "action": action_norm,
-            "dataset_ids": requested_ids,
-            "visible_dataset_ids": next_ids,
-        },
-    }
-
-
-def tool_resolve_value(
+def _search_values(
     service,
     config_manager=None,
     *,
     query: str,
+    column: Optional[str] = None,
     tables: Optional[List[str]] = None,
     max_hits: int = 10,
 ) -> Dict[str, Any]:
     """Find which column(s) contain a free-form user term.
 
     Returns ranked hits ``{table, column, value, count, match}``. Used by the
-    LLM before emitting an ``add_filter`` block so it never guesses the column.
+    Used by ``search_metadata`` so it never guesses the column.
 
     The per-column ``Counter`` over each species' ``.var`` / ``.obs`` is
     cached by (code, mtime, namespace) — a cold call rebuilds, every
@@ -1593,7 +1289,16 @@ def tool_resolve_value(
 
         mtime = _h5ad_mtime_for(service, code)
         for ns_name in ("var", "obs"):
-            counters = _get_value_counters(adata, code, ns_name, mtime, config_manager)
+            frame = adata.var if ns_name == "var" else adata.obs
+            resolved_column = _resolve_column_name(config_manager, column, set(frame.columns)) if column else None
+            if column and resolved_column not in frame.columns:
+                counters = []
+            elif resolved_column:
+                targeted = _column_value_counter(frame[resolved_column], resolved_column, config_manager)
+                counters = [(resolved_column, targeted)] if targeted is not None else []
+            else:
+                counters = _get_value_counters(adata, code, ns_name, mtime, config_manager)
+            searched_columns = {str(col) for col, _counter in counters}
             for col, counter in counters:
                 # Exact (case-insensitive) match.
                 exact = [v for v in counter if v.lower() == q_lower]
@@ -1620,101 +1325,46 @@ def tool_resolve_value(
                         "value": v, "count": counter[v], "match": "substring",
                     })
 
+            # High-cardinality/free-text columns are deliberately omitted from
+            # the reusable substring counters, but exact values remain valid
+            # filter targets. Scan only those omitted, visible columns and only
+            # for equality, keeping broad free-text search bounded.
+            for col in frame.columns:
+                internal = str(col)
+                if column and internal != resolved_column:
+                    continue
+                if internal in searched_columns or not _column_is_filterable(config_manager, internal):
+                    continue
+                if not any(part in internal.lower() for part in _RESOLVE_SKIP_COL_SUBSTR):
+                    continue
+                raw_values = frame[col].dropna().astype(str).str.strip()
+                raw_exact = raw_values[raw_values.str.lower() == q_lower]
+                if not raw_exact.empty:
+                    exact_value = str(raw_exact.iloc[0])
+                    hits.append({
+                        "table": code, "namespace": ns_name, "column": internal,
+                        "display_name": _display_name_for(config_manager, internal),
+                        "value": exact_value, "count": int(raw_exact.size), "match": "exact",
+                    })
+                    continue
+                counter = _column_value_counter(frame[col], internal, config_manager)
+                if counter is None:
+                    continue
+                exact_value = next((value for value in counter if value.lower() == q_lower), None)
+                if exact_value is not None:
+                    hits.append({
+                        "table": code, "namespace": ns_name, "column": internal,
+                        "display_name": _display_name_for(config_manager, internal),
+                        "value": exact_value, "count": counter[exact_value], "match": "exact",
+                    })
+
     # Prefer exact matches, then higher counts.
     hits.sort(key=lambda h: (0 if h["match"] == "exact" else 1, -h["count"]))
     return {"query": query, "hits": hits[: int(max_hits)]}
 
 
-def tool_search_go_terms(
-    service,
-    *,
-    query: str,
-    limit: int = 20,
-    only_in_dataset: bool = True,
-) -> Dict[str, Any]:
-    """Resolve a free-form biological-process term to GO IDs.
 
-    Uses the loaded GO OBO ontology (via ``current_app.go_service``) to
-    fuzzy-match human descriptions to their canonical ``GO:#######`` IDs and
-    definitions. This is the GO-aware counterpart to ``resolve_value`` —
-    the latter scans column values verbatim and therefore cannot map a
-    natural-language process name (which is NOT stored in ``go_terms``)
-    to its ID.
-
-    By default results are restricted to GO terms that actually appear
-    in the dataset's ``go_terms`` column so the LLM can immediately
-    emit an ``add_filter`` on ``go_terms`` without producing an empty
-    plot. Set ``only_in_dataset=False`` to also surface ontology terms
-    that are not annotated in any loaded H5AD (useful for hierarchy /
-    "did you mean" follow-ups).
-
-    Returns ``{available, query, results:[{id,name,namespace,definition,
-    in_dataset}], count, in_dataset_count}``.
-    """
-    if not query or not str(query).strip():
-        return {"error": "'query' is required"}
-
-    # Fetch go_service from the Flask app context. Done lazily so the tool
-    # module stays importable in non-Flask test contexts.
-    go_service = None
-    try:
-        from flask import current_app  # noqa: WPS433
-        go_service = getattr(current_app, "go_service", None)
-    except Exception:
-        go_service = None
-
-    if not go_service or not getattr(go_service, "is_available", lambda: False)():
-        return {
-            "available": False,
-            "query": query,
-            "results": [],
-            "message": "GO ontology not loaded on this instance",
-        }
-
-    lim = max(1, min(int(limit or 20), 100))
-    try:
-        # Pull more than `limit` so the dataset-intersection filter still
-        # leaves a useful number of hits.
-        raw_hits = go_service.search_terms(query, limit=lim * 5) or []
-    except Exception as e:
-        logger.warning("search_go_terms: ontology search failed: %s", e)
-        return {"error": f"GO search failed: {e}"}
-
-    dataset_ids: set = set()
-    try:
-        dataset_ids = set(service.get_unique_values("go_terms") or [])
-    except Exception:
-        dataset_ids = set()
-
-    results: List[Dict[str, Any]] = []
-    for hit in raw_hits:
-        if not isinstance(hit, dict):
-            continue
-        gid = hit.get("id")
-        in_ds = bool(gid and gid in dataset_ids)
-        if only_in_dataset and not in_ds:
-            continue
-        results.append({
-            "id": gid,
-            "name": hit.get("name"),
-            "namespace": hit.get("namespace"),
-            "definition": hit.get("definition"),
-            "in_dataset": in_ds,
-        })
-        if len(results) >= lim:
-            break
-
-    return {
-        "available": True,
-        "query": query,
-        "results": results,
-        "count": len(results),
-        "in_dataset_count": sum(1 for r in results if r["in_dataset"]),
-        "only_in_dataset": bool(only_in_dataset),
-    }
-
-
-def tool_count_rows(
+def _count_rows(
     service,
     config_manager=None,
     *,
@@ -1744,6 +1394,20 @@ def tool_count_rows(
     if not codes:
         return {"error": f"Unknown table(s) '{raw}'"}
 
+    try:
+        from . import filter_parser  # noqa: WPS433
+    except ImportError:  # pragma: no cover - tests use spec loader
+        import importlib.util as _ilu
+        from pathlib import Path as _Path
+        _spec = _ilu.spec_from_file_location(
+            "_gx_filter_parser_count_fallback",
+            _Path(__file__).resolve().parent / "filter_parser.py",
+        )
+        if not (_spec and _spec.loader):
+            return {"error": "filter parser unavailable"}
+        filter_parser = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(filter_parser)  # type: ignore[union-attr]
+
     per_table: List[Dict[str, Any]] = []
     tot_var = tot_obs = tot_var_total = tot_obs_total = 0
     for code in codes:
@@ -1757,16 +1421,31 @@ def tool_count_rows(
             continue
         var_filters_norm = _normalize_filter_columns_for_df(config_manager, var_filters, set(adata.var.columns))
         obs_filters_norm = _normalize_filter_columns_for_df(config_manager, obs_filters, set(adata.obs.columns))
-        var_f, obs_f = apply_assistant_filters(
-            service, adata,
-            var_filters=var_filters_norm,
-            obs_filters=obs_filters_norm,
-            var_column_types=_cached_filter_column_types(service, adata, code, "var", list(var_filters_norm.keys()), config_manager) if var_filters_norm else None,
-            obs_column_types=_cached_filter_column_types(service, adata, code, "obs", list(obs_filters_norm.keys()), config_manager) if obs_filters_norm else None,
-            config_manager=config_manager,
-        )
-        n_var = int(len(var_f))
-        n_obs = int(len(obs_f))
+        var_types = _cached_filter_column_types(
+            service, adata, code, "var", list(var_filters_norm.keys()), config_manager,
+        ) if var_filters_norm else {}
+        obs_types = _cached_filter_column_types(
+            service, adata, code, "obs", list(obs_filters_norm.keys()), config_manager,
+        ) if obs_filters_norm else {}
+        var_query = filter_parser.parse_filter_query(var_filters_norm, var_types) if var_filters_norm else {}
+        obs_query = filter_parser.parse_filter_query(obs_filters_norm, obs_types) if obs_filters_norm else {}
+        try:
+            n_var = int(service.get_row_count(code, var_query)) if var_query else int(adata.n_vars)
+        except Exception:
+            var_f, _ = _apply_filters(
+                service, adata, var_filters=var_filters_norm,
+                var_column_types=var_types or None, config_manager=config_manager,
+            )
+            n_var = int(len(var_f))
+        try:
+            allowed_samples = service._filter_samples(adata, obs_query) if obs_query else None
+            n_obs = int(len(allowed_samples)) if allowed_samples is not None else int(adata.n_obs)
+        except Exception:
+            _, obs_f = _apply_filters(
+                service, adata, obs_filters=obs_filters_norm,
+                obs_column_types=obs_types or None, config_manager=config_manager,
+            )
+            n_obs = int(len(obs_f))
         per_table.append({
             "table": code,
             "n_var_total": int(adata.n_vars),
@@ -1809,7 +1488,7 @@ def _coerce_tables_arg(table, tables) -> Optional[Any]:
     return None
 
 
-def tool_top_groups(
+def _rank_values(
     service,
     config_manager=None,
     *,
@@ -1865,7 +1544,7 @@ def tool_top_groups(
                 "error": f"var column(s) not in .var: {bad}",
             })
             continue
-        var_f, _ = apply_assistant_filters(
+        var_f, _ = _apply_filters(
             service, adata, var_filters=var_filters_norm or {}, config_manager=config_manager,
         )
         filtered = var_f[group_column]
@@ -1927,112 +1606,8 @@ def tool_top_groups(
     }
 
 
-def tool_common_values(
-    service,
-    config_manager=None,
-    *,
-    column: str,
-    tables: Optional[List[str]] = None,
-    min_tables: Optional[int] = None,
-    limit: int = 500,
-    namespace: str = "auto",
-    var_filters_per_table: Optional[Dict[str, Dict[str, Any]]] = None,
-) -> Dict[str, Any]:
-    """Return the set of values shared across the given tables for a column.
 
-    Use this for cross-species intersection questions about values present in
-    all or several loaded datasets.
-    Pass ``min_tables=len(tables)`` for a strict intersection; lower values
-    find values present in at least N tables.
-
-    ``namespace`` selects which axis of the AnnData to scan:
-    - ``"var"`` — row-level annotations from ``.var``
-    - ``"obs"`` — sample-level annotations from ``.obs``
-      - ``"auto"`` — try ``var`` first, then ``obs`` (per-table).
-
-    ``var_filters_per_table`` optionally narrows each table first (same shape
-    as :func:`tool_count_rows`'s ``var_filters``). Only applied when the
-    column lives in ``.var``.
-    """
-    codes = _resolve_species_codes(service, tables)
-    if not codes:
-        return {"error": "no matching species"}
-    if min_tables is None:
-        min_tables = len(codes)
-    min_tables = max(1, min(int(min_tables), len(codes)))
-    ns_pref = (namespace or "auto").lower()
-
-    vf_map = var_filters_per_table or {}
-    per_table: Dict[str, set] = {}
-    per_table_namespace: Dict[str, str] = {}
-    for code in codes:
-        try:
-            adata = service.registry.load(code)
-        except Exception:
-            continue
-        if adata is None:
-            continue
-        column_resolved = _resolve_column_name(
-            config_manager, column, set(adata.var.columns) | set(adata.obs.columns)
-        )
-        # Resolve which namespace contains the column for this table.
-        if ns_pref == "var" and column_resolved in adata.var.columns:
-            ns = "var"
-        elif ns_pref == "obs" and column_resolved in adata.obs.columns:
-            ns = "obs"
-        elif ns_pref == "auto":
-            if column_resolved in adata.var.columns:
-                ns = "var"
-            elif column_resolved in adata.obs.columns:
-                ns = "obs"
-            else:
-                continue
-        else:
-            continue
-        series = adata.var[column_resolved] if ns == "var" else adata.obs[column_resolved]
-        column = column_resolved
-        per_table_namespace[code] = ns
-        # Optional per-table filter pre-narrow (only for var-namespaced columns).
-        vf = vf_map.get(code) or {}
-        if vf and ns == "var":
-            try:
-                var_f, _ = apply_assistant_filters(service, adata, var_filters=vf)
-                series = var_f[column_resolved] if column_resolved in var_f.columns else series.iloc[0:0]
-            except Exception as e:  # noqa: BLE001
-                logger.warning("common_values pre-narrow failed for %s: %s", code, e)
-                series = series.iloc[0:0]
-        per_table[code] = set(_split_array_values(series))
-
-    if not per_table:
-        return {"error": "no usable tables"}
-
-    # Count in how many tables each value appears.
-    counter: Counter = Counter()
-    for vals in per_table.values():
-        for v in vals:
-            counter[v] += 1
-
-    common = [v for v, c in counter.items() if c >= min_tables]
-    common.sort()
-    truncated = False
-    if len(common) > int(limit):
-        common = common[: int(limit)]
-        truncated = True
-
-    return {
-        "column": column,
-        "display_name": _display_name_for(config_manager, column),
-        "tables": list(per_table.keys()),
-        "namespaces": per_table_namespace,
-        "per_table_distinct": {k: sorted(v)[:50] for k, v in per_table.items()},
-        "min_tables": min_tables,
-        "n_common": int(sum(1 for _, c in counter.items() if c >= min_tables)),
-        "values": common,
-        "truncated": truncated,
-    }
-
-
-def tool_summary_stats(
+def _summary_stats(
     service,
     config_manager=None,
     *,
@@ -2080,7 +1655,7 @@ def tool_summary_stats(
         if column not in df_full.columns:
             per_table.append({"table": code, "error": f"column '{column}' not in .{namespace}"})
             continue
-        var_f, obs_f = apply_assistant_filters(
+        var_f, obs_f = _apply_filters(
             service, adata,
             var_filters=var_filters_norm or {},
             obs_filters=obs_filters_norm or {},
@@ -2122,7 +1697,7 @@ def tool_summary_stats(
     }
 
 
-def tool_build_deeplink(
+def _build_navigation(
     service,
     config_manager=None,
     *,
@@ -2131,11 +1706,7 @@ def tool_build_deeplink(
     filters: Optional[Dict[str, Any]] = None,
     visualizations: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Persist a view state and return ``{id, url_path}``.
-
-    Mirrors ``/api/assistant/deeplink`` but callable from the tool loop so the
-    LLM can get the URL *before* emitting its final answer, then embed it.
-    """
+    """Validate, persist, and route a complete GAIA view state."""
     allowed = {"heatmap", "compare", "phylo", "ora", "catalog"}
     v = str(view or "").strip().lower()
     if v not in allowed:
@@ -2259,7 +1830,7 @@ def tool_build_deeplink(
             var_f = {c: vs for c, vs in flat_filters.items() if c in var_cols}
             obs_f = {c: vs for c, vs in flat_filters.items() if c in obs_cols}
             try:
-                cr = tool_count_rows(
+                cr = _count_rows(
                     service, table=code,
                     var_filters=var_f or None,
                     obs_filters=obs_f or None,
@@ -2374,7 +1945,7 @@ def tool_build_deeplink(
 
 def build_instance_manifest(service, config_manager=None) -> Dict[str, Any]:
     """Build static capabilities injected into every assistant request."""
-    schema = tool_list_schema(service, config_manager, max_values_per_col=0)
+    schema = _build_schema(service, config_manager, max_values_per_col=0)
     datasets: List[Dict[str, Any]] = []
     columns: Dict[str, Dict[str, Dict[str, Any]]] = {"var": {}, "obs": {}}
     for table in schema.get("tables") or []:
@@ -2398,7 +1969,7 @@ def build_instance_manifest(service, config_manager=None) -> Dict[str, Any]:
                     }
     views: Dict[str, Any] = {}
     for view in ("heatmap", "compare", "phylo", "ora", "catalog"):
-        settings = tool_list_view_settings(service, config_manager, view=view, tables=["all"])
+        settings = _view_settings(service, config_manager, view=view, tables=None)
         views[view] = {
             "controls": [
                 {key: value for key, value in control.items() if key in {"key", "type", "options", "min", "max"}}
@@ -2408,7 +1979,9 @@ def build_instance_manifest(service, config_manager=None) -> Dict[str, Any]:
                 option["id"] for option in settings.get("expression_options") or []
                 if option.get("available")
             ],
-            "trigger_actions": ["export_png", "export_svg", "open_data_manager"],
+            "trigger_actions": [
+                *_TRIGGER_ACTIONS,
+            ],
         }
     return {
         "datasets": datasets,
@@ -2436,14 +2009,88 @@ def _go_columns(adata, requested_column: Optional[str]) -> List[str]:
     return [name for name in columns if re.search(r"(^|_)(go|gene_ontology)(_|$)", name.lower())]
 
 
+def _visible_assistant_columns(service, config_manager, codes: List[str]) -> Dict[str, str]:
+    """Return visible/filterable internal keys and their var/obs namespaces."""
+    definitions = _column_definitions(config_manager)
+    configured = {
+        str(name) for name, spec in definitions.items()
+        if _column_is_filterable(config_manager, str(name), spec if isinstance(spec, dict) else None)
+    }
+    strict = bool(definitions)
+    visible: Dict[str, str] = {}
+    for code in codes:
+        try:
+            adata = service.registry.load(code)
+        except Exception:
+            continue
+        for namespace, frame in (("var", adata.var), ("obs", adata.obs)):
+            for name in frame.columns:
+                key = str(name)
+                if (not strict or key in configured) and _column_is_filterable(config_manager, key):
+                    visible.setdefault(key, namespace)
+    return visible
+
+
+def _resolve_visible_column(config_manager, raw: str, visible: Dict[str, str]) -> Optional[str]:
+    resolved = _resolve_column_name(config_manager, str(raw), set(visible))
+    return resolved if resolved in visible else None
+
+
 def tool_search_metadata(service, config_manager=None, *, query: str,
                          column: Optional[str] = None, tables: Optional[List[str]] = None,
                          limit: int = 20) -> Dict[str, Any]:
     """Find verified metadata values and resolve GO descriptions to GO IDs."""
     if not str(query or "").strip():
         return {"error": "query is required"}
-    result = tool_resolve_value(service, config_manager, query=query, tables=tables, max_hits=limit)
+    query_key = re.sub(r"[^a-z0-9]", "", str(query).lower())
+    control_hits: List[Dict[str, Any]] = []
+    for candidate_view in ("heatmap", "compare", "phylo", "ora"):
+        settings = _view_settings(
+            service, config_manager, view=candidate_view, tables=tables,
+        )
+        for control in settings.get("controls") or []:
+            if not isinstance(control, dict):
+                continue
+            key = str(control.get("key") or "")
+            key_normalized = re.sub(r"[^a-z0-9]", "", key.lower())
+            option_keys = {
+                re.sub(r"[^a-z0-9]", "", str(option).lower())
+                for option in control.get("options") or []
+            }
+            option_keys.update(
+                re.sub(r"[^a-z0-9]", "", str(detail.get("display_name") or "").lower())
+                for detail in control.get("option_details") or []
+                if isinstance(detail, dict)
+            )
+            if (
+                query_key == key_normalized
+                or query_key in option_keys
+                or (len(query_key) >= 8 and query_key in key_normalized)
+            ):
+                control_hits.append({
+                    "view": candidate_view,
+                    "key": key,
+                    "type": control.get("type"),
+                    "options": control.get("options") or [],
+                })
+    if control_hits:
+        return {
+            "status": "ui_control",
+            "query": query,
+            "controls": control_hits,
+            "next_tool": "build_state_token",
+            "instruction": "This term names visualization controls, not metadata. Apply the requested UI change with build_state_token and do not search it as a data value.",
+        }
+    result = _search_values(
+        service, config_manager, query=query, column=column, tables=tables, max_hits=limit,
+    )
     codes = _resolve_species_codes(service, tables)
+    visible = _visible_assistant_columns(service, config_manager, codes)
+    result["hits"] = [
+        hit for hit in result.get("hits") or []
+        if hit.get("column") in visible
+        and visible[hit["column"]] == hit.get("namespace")
+    ]
     query_lower = str(query).strip().lower()
     column_hits: List[Dict[str, Any]] = []
     go_columns: List[Tuple[str, str]] = []
@@ -2456,6 +2103,8 @@ def tool_search_metadata(service, config_manager=None, *, query: str,
             for namespace, frame in (("var", adata.var), ("obs", adata.obs)):
                 for name in frame.columns:
                     internal = str(name)
+                    if internal not in visible or visible[internal] != namespace:
+                        continue
                     display_name = _display_name_for(config_manager, internal)
                     if query_lower in {internal.lower(), display_name.lower()}:
                         column_hits.append({
@@ -2466,7 +2115,10 @@ def tool_search_metadata(service, config_manager=None, *, query: str,
                             "value": None,
                             "match": "column",
                         })
-            go_columns.extend((code, name) for name in _go_columns(adata, column))
+            go_columns.extend(
+                (code, name) for name in _go_columns(adata, column)
+                if name in visible and visible[name] == "var"
+            )
 
     if column_hits:
         result["hits"] = column_hits + (result.get("hits") or [])
@@ -2501,7 +2153,13 @@ def tool_search_metadata(service, config_manager=None, *, query: str,
                     })
                     existing.add(key)
     if column:
-        requested = str(column).strip().lower()
+        resolved_column = _resolve_visible_column(config_manager, column, visible)
+        if resolved_column is None:
+            return {
+                "status": "unavailable",
+                "error": f"Metadata attribute '{column}' is not available in the active instance schema.",
+            }
+        requested = resolved_column.lower()
         result["hits"] = [
             hit for hit in result.get("hits") or []
             if str(hit.get("column") or "").lower() == requested
@@ -2530,8 +2188,23 @@ def _split_assistant_filters(
             if name not in {"var_filters", "obs_filters"}
         }
 
-    var_filters = dict(explicit_var)
-    obs_filters = dict(explicit_obs)
+    def _clean(spec: Any) -> Any:
+        if not isinstance(spec, dict):
+            cleaned = {"value": spec}
+            if isinstance(spec, (str, list)):
+                cleaned["exact"] = True
+            return cleaned
+        cleaned = dict(spec)
+        value = cleaned.get("value", cleaned.get("values"))
+        has_concrete_value = value is not None and value != "" and value != []
+        if has_concrete_value:
+            cleaned.pop("has_value", None)
+            if isinstance(value, (str, list)):
+                cleaned.setdefault("exact", True)
+        return cleaned
+
+    var_filters = {key: _clean(spec) for key, spec in explicit_var.items()}
+    obs_filters = {key: _clean(spec) for key, spec in explicit_obs.items()}
     for code in codes:
         try:
             adata = service.registry.load(code)
@@ -2541,10 +2214,239 @@ def _split_assistant_filters(
         for name, value in flat.items():
             resolved = _resolve_column_name(config_manager, str(name), known)
             if resolved in adata.var.columns:
-                var_filters[resolved] = value
+                var_filters[resolved] = _clean(value)
             elif resolved in adata.obs.columns:
-                obs_filters[resolved] = value
+                obs_filters[resolved] = _clean(value)
     return var_filters, obs_filters
+
+
+def _validate_unified_columns(
+    service,
+    config_manager,
+    codes: List[str],
+    var_filters: Dict[str, Any],
+    obs_filters: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Dict[str, Any], List[str]]:
+    visible = _visible_assistant_columns(service, config_manager, codes)
+    normalized_var: Dict[str, Any] = {}
+    normalized_obs: Dict[str, Any] = {}
+    unavailable: List[str] = []
+    for namespace, source, target in (
+        ("var", var_filters, normalized_var), ("obs", obs_filters, normalized_obs),
+    ):
+        for raw, spec in source.items():
+            resolved = _resolve_visible_column(config_manager, str(raw), visible)
+            if resolved is None or visible.get(resolved) != namespace:
+                unavailable.append(str(raw))
+            else:
+                target[resolved] = spec
+    return normalized_var, normalized_obs, sorted(set(unavailable))
+
+
+def _compile_local_dataset_chains(
+    service,
+    config_manager,
+    codes: List[str],
+    chains: Any,
+) -> Tuple[Dict[str, Any], Dict[str, Any], List[str]]:
+    """Compile payload-friendly local rules into the Vue filter-store shape."""
+    if not isinstance(chains, dict):
+        return {}, {}, []
+    visible = _visible_assistant_columns(service, config_manager, codes)
+    code_to_table = _species_table_lookup(service)
+    table_lookup: Dict[str, str] = {}
+    for code in codes:
+        table_name = code_to_table.get(code, code)
+        table_lookup[code.lower()] = table_name
+        table_lookup[table_name.lower()] = table_name
+    local_states: Dict[str, Any] = {}
+    local_filters: Dict[str, Any] = {}
+    unavailable: List[str] = []
+    for raw_table, chain in chains.items():
+        table_name = table_lookup.get(str(raw_table).strip().lower())
+        if table_name is None or not isinstance(chain, dict):
+            unavailable.append(str(raw_table))
+            continue
+        operator = "or" if str(chain.get("operator") or "and").lower() == "or" else "and"
+        columns: List[str] = []
+        custom: Dict[str, Any] = {}
+        nots: Dict[str, bool] = {}
+        for index, rule in enumerate(chain.get("rules") or []):
+            if not isinstance(rule, dict):
+                continue
+            resolved = _resolve_visible_column(config_manager, str(rule.get("column") or ""), visible)
+            if resolved is None:
+                unavailable.append(str(rule.get("column") or ""))
+                continue
+            key = f"{resolved}::chain::gaia-{index}"
+            filter_spec = {
+                name: value for name, value in rule.items()
+                if name in {"value", "values", "match_mode", "exact", "has_value"}
+            }
+            if "values" in filter_spec and "value" not in filter_spec:
+                filter_spec["value"] = filter_spec.pop("values")
+            columns.append(key)
+            custom[key] = {"column": resolved, "filter": filter_spec}
+            if rule.get("isNot") is True:
+                nots[key] = True
+        operators = {
+            "::".join(sorted((left, right))): operator
+            for left, right in zip(columns, columns[1:])
+        }
+        local_states[table_name] = {
+            "columns": columns, "operators": operators, "groups": {},
+            "nots": nots, "disabled": {},
+        }
+        local_filters[table_name] = custom
+    return local_states, local_filters, sorted(set(unavailable))
+
+
+def _active_filter_state(client_context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    context = client_context if isinstance(client_context, dict) else {}
+    state = context.get("filters")
+    return dict(state) if isinstance(state, dict) else {}
+
+
+def _live_view_and_tables(client_context: Optional[Dict[str, Any]]) -> Tuple[str, List[str]]:
+    context = client_context if isinstance(client_context, dict) else {}
+    raw_view = str(context.get("view") or context.get("route") or "").lower()
+    if "heatmap" in raw_view or "/h/" in raw_view:
+        view = "heatmap"
+    elif "compare" in raw_view or "/c/" in raw_view:
+        view = "compare"
+    elif "phylo" in raw_view or "/p/" in raw_view:
+        view = "phylo"
+    elif "ora" in raw_view or "/o/" in raw_view:
+        view = "ora"
+    else:
+        view = "catalog"
+    tables: List[str] = []
+    for candidate in (
+        context.get("tables"), context.get("selected_table_names"),
+        (_active_filter_state(context).get("table_names")),
+    ):
+        if isinstance(candidate, list) and candidate:
+            tables = [str(item) for item in candidate if str(item).strip()]
+            break
+    return view, tables
+
+
+def tool_get_current_view(*, client_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return the authoritative read-only UI snapshot for grounded explanations."""
+    context = client_context if isinstance(client_context, dict) else {}
+    view, tables = _live_view_and_tables(context)
+    live_visualizations = context.get("visualizations") if isinstance(context.get("visualizations"), dict) else {}
+    visualizations: Dict[str, Any] = {}
+    for control in _VIEW_CONTROLS.get(view, []):
+        key = str(control.get("key") or "")
+        value: Any = live_visualizations
+        for part in key.split("."):
+            if not isinstance(value, dict) or part not in value:
+                value = None
+                break
+            value = value[part]
+        if value is not None:
+            visualizations[key] = value
+    return {
+        "view": view,
+        "route": str(context.get("route") or ""),
+        "tables": tables,
+        "filters": _active_filter_state(context),
+        "visualizations": visualizations,
+        "analysis_results": context.get("analysis_results") if isinstance(context.get("analysis_results"), dict) else {},
+        "dataset_state": context.get("active_view_state") if isinstance(context.get("active_view_state"), dict) else {},
+    }
+
+
+def _prepare_viz_patches(
+    service,
+    config_manager,
+    view: str,
+    tables: List[str],
+    patches: Optional[Dict[str, Any]],
+    client_context: Optional[Dict[str, Any]],
+    replace_lists: bool,
+) -> Tuple[Dict[str, Any], Optional[str]]:
+    requested_patches = dict(patches) if isinstance(patches, dict) else {}
+    live = client_context.get("visualizations") if isinstance(client_context, dict) else {}
+    live = live if isinstance(live, dict) else {}
+    settings = _view_settings(service, config_manager, view=view, tables=tables)
+    if settings.get("error"):
+        return {}, str(settings["error"])
+    controls = {
+        str(control.get("key")): control
+        for control in settings.get("controls") or [] if isinstance(control, dict)
+    }
+
+    def _flatten(source: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
+        flattened: Dict[str, Any] = {}
+        for raw_key, value in source.items():
+            key = f"{prefix}.{raw_key}" if prefix else str(raw_key)
+            if isinstance(value, dict) and key not in controls:
+                flattened.update(_flatten(value, key))
+            else:
+                flattened[key] = value
+        return flattened
+
+    def _live_value(path: str) -> Any:
+        value: Any = live
+        for part in path.split("."):
+            if not isinstance(value, dict):
+                return None
+            value = value.get(part)
+        return value
+
+    expression_options = {
+        str(option.get("id")): option
+        for option in settings.get("expression_options") or []
+        if isinstance(option, dict)
+    }
+    prepared: Dict[str, Any] = {}
+    for key, value in _flatten(requested_patches).items():
+        control = controls.get(key)
+        if control is None:
+            return {}, f"Unsupported visualization control for {view}: {key}"
+        if control.get("type") == "expression_display":
+            option = expression_options.get(str(value))
+            if option is None or option.get("available") is not True:
+                return {}, f"Unsupported {key} option for the active datasets: {value}"
+            prepared[key] = str(value)
+            continue
+
+        options = [str(option) for option in control.get("options") or []]
+        if options:
+            aliases: Dict[str, str] = {option.lower(): option for option in options}
+            for detail in control.get("option_details") or []:
+                if not isinstance(detail, dict) or not detail.get("name"):
+                    continue
+                internal = str(detail["name"])
+                aliases[internal.lower()] = internal
+                if detail.get("display_name"):
+                    aliases[str(detail["display_name"]).lower()] = internal
+
+            def _resolve(raw: Any) -> Optional[str]:
+                if raw == "*":
+                    return "*"
+                return aliases.get(str(raw).lower())
+
+            if isinstance(value, list):
+                resolved = [_resolve(item) for item in value]
+                invalid = [str(raw) for raw, item in zip(value, resolved) if item is None]
+                if invalid:
+                    return {}, f"Unsupported {key} option(s) for the active datasets: {', '.join(invalid)}"
+                value = [item for item in resolved if item is not None]
+            else:
+                resolved_value = _resolve(value)
+                if resolved_value is None:
+                    return {}, f"Unsupported {key} option for the active datasets: {value}"
+                value = resolved_value
+
+        if isinstance(value, list) and not replace_lists and "*" not in value:
+            current = _live_value(key)
+            current = current if isinstance(current, list) else []
+            value = list(dict.fromkeys([*current, *value]))
+        prepared[key] = value
+    return prepared, None
 
 
 def tool_compute_analytics(service, config_manager=None, *, operation: str,
@@ -2558,12 +2460,23 @@ def tool_compute_analytics(service, config_manager=None, *, operation: str,
     if not codes:
         return {"error": "tables must name at least one loaded dataset"}
     var_filters, obs_filters = _split_assistant_filters(service, config_manager, codes, source)
+    var_filters, obs_filters, unavailable = _validate_unified_columns(
+        service, config_manager, codes, var_filters, obs_filters,
+    )
+    if unavailable:
+        return {"error": "Metadata attribute(s) not available in the active instance schema: " + ", ".join(unavailable)}
+    visible = _visible_assistant_columns(service, config_manager, codes)
+    resolved_target = _resolve_visible_column(config_manager, target_column, visible) if target_column else None
+    if target_column and resolved_target is None:
+        return {"error": f"Metadata attribute '{target_column}' is not available in the active instance schema."}
     if operation == "count":
-        return tool_count_rows(service, config_manager, tables=tables, var_filters=var_filters, obs_filters=obs_filters)
+        return _count_rows(service, config_manager, tables=tables, var_filters=var_filters, obs_filters=obs_filters)
     if operation == "rank":
         if not target_column:
             return {"error": "target_column is required for rank"}
-        result = tool_top_groups(service, config_manager, tables=tables, group_column=target_column, var_filters=var_filters)
+        if visible.get(resolved_target) != "var":
+            return {"error": "rank target_column must be a visible transcript/gene metadata column"}
+        result = _rank_values(service, config_manager, tables=tables, group_column=resolved_target, var_filters=var_filters)
         rankings = result.get("top") if isinstance(result, dict) else None
         if not isinstance(rankings, list):
             return result
@@ -2577,8 +2490,8 @@ def tool_compute_analytics(service, config_manager=None, *, operation: str,
     if operation == "stats":
         if not target_column:
             return {"error": "target_column is required for stats"}
-        return tool_summary_stats(service, config_manager, tables=tables, column=target_column,
-                                  namespace="obs", var_filters=var_filters, obs_filters=obs_filters)
+        return _summary_stats(service, config_manager, tables=tables, column=resolved_target,
+                      namespace=visible[resolved_target], var_filters=var_filters, obs_filters=obs_filters)
     return {"error": "operation must be count, rank, or stats"}
 
 
@@ -2586,22 +2499,87 @@ def tool_build_state_token(service, config_manager=None, *, view: str,
                            tables: Optional[List[str]] = None,
                            filters: Optional[Dict[str, Any]] = None,
                            viz_patches: Optional[Dict[str, Any]] = None,
-                           trigger_actions: Optional[List[str]] = None) -> Dict[str, Any]:
+                           trigger_actions: Optional[List[str]] = None,
+                           replace_viz_lists: bool = False,
+                           client_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Validate a complete target state and return one frontend state token."""
+    raw_filters = dict(filters) if isinstance(filters, dict) else {}
     actions = [str(item) for item in (trigger_actions or []) if str(item)]
-    invalid = sorted(set(actions) - {"export_png", "export_svg", "open_data_manager"})
+    supported_actions = set(_TRIGGER_ACTIONS)
+    invalid = sorted(set(actions) - supported_actions)
     if invalid:
         return {"error": "unsupported trigger action(s): " + ", ".join(invalid)}
-    raw_filters = filters if isinstance(filters, dict) else {}
-    codes = _resolve_species_codes(service, tables)
+    live_view, live_tables = _live_view_and_tables(client_context)
+    requested_tables = list(tables or live_tables)
+    codes = _resolve_species_codes(service, requested_tables)
+    if not codes:
+        return {"error": "tables must name at least one loaded dataset"}
     var_filters, obs_filters = _split_assistant_filters(service, config_manager, codes, raw_filters)
-    state_filters = raw_filters
-    if "var_filters" in raw_filters or "obs_filters" in raw_filters:
-        state_filters = {"filters": {**var_filters, **obs_filters}}
-    deeplink = tool_build_deeplink(
-        service, config_manager, view=view, tables=tables or [],
-        filters=state_filters,
-        visualizations=viz_patches if isinstance(viz_patches, dict) else {},
+    var_filters, obs_filters, unavailable = _validate_unified_columns(
+        service, config_manager, codes, var_filters, obs_filters,
+    )
+    local_states, local_custom, local_unavailable = _compile_local_dataset_chains(
+        service, config_manager, codes, raw_filters.get("local_dataset_chains"),
+    )
+    unavailable.extend(local_unavailable)
+    if unavailable:
+        return {"error": "Metadata attribute(s) not available in the active instance schema: " + ", ".join(sorted(set(unavailable)))}
+
+    prepared_viz, viz_error = _prepare_viz_patches(
+        service, config_manager, str(view or "").lower(), requested_tables,
+        viz_patches, client_context, replace_viz_lists,
+    )
+    if viz_error:
+        return {"error": viz_error}
+
+    preserve = raw_filters.get("clear_existing") is not True
+    active_filters = _active_filter_state(client_context)
+    state_filters = active_filters if preserve else {
+        "tags": [],
+        "table_names": active_filters.get("table_names", []),
+        "filters": {},
+        "datasetIdFilters": {},
+        "filterChainColumns": [],
+        "filterChainOperators": {},
+        "filterChainGroups": {},
+        "filterChainNots": {},
+        "localDatasetChains": {},
+        "localCustomFilters": {},
+    }
+    if active_filters.get("idColumnName"):
+        state_filters["idColumnName"] = active_filters["idColumnName"]
+    existing_flat = state_filters.get("filters") if isinstance(state_filters.get("filters"), dict) else {}
+    state_filters["filters"] = {**existing_flat, **var_filters, **obs_filters}
+    if local_states:
+        existing_local = state_filters.get("localDatasetChains") if isinstance(state_filters.get("localDatasetChains"), dict) else {}
+        existing_custom = state_filters.get("localCustomFilters") if isinstance(state_filters.get("localCustomFilters"), dict) else {}
+        state_filters["localDatasetChains"] = {**existing_local, **local_states}
+        state_filters["localCustomFilters"] = {**existing_custom, **local_custom}
+    live_codes = _resolve_species_codes(service, live_tables)
+    in_place = live_view == str(view or "").lower() and set(live_codes) == set(codes)
+    if in_place:
+        live_filter_state = _active_filter_state(client_context)
+        if state_filters == live_filter_state and not prepared_viz and not actions:
+            return {
+                "error": (
+                    "No UI state change was supplied. Provide a non-empty viz_patches, "
+                    "filter change, or trigger_actions payload; do not claim success."
+                ),
+                "no_op": True,
+            }
+        code_to_table = _species_table_lookup(service)
+        return {"ok": True, "state_token": {
+            "view": str(view or "").lower(),
+            "tables": [code_to_table.get(code, code) for code in codes],
+            "filters": state_filters,
+            "viz_patches": prepared_viz,
+            "trigger_actions": actions,
+            "url_path": "",
+        }}
+    deeplink = _build_navigation(
+        service, config_manager, view=view, tables=requested_tables,
+        filters={"filters": state_filters["filters"]},
+        visualizations=prepared_viz,
     )
     if deeplink.get("error"):
         # A sample-only filter is a valid in-place Sidebar update even when
@@ -2614,7 +2592,7 @@ def tool_build_state_token(service, config_manager=None, *, view: str,
                 "view": str(view or "").lower(),
                 "tables": [code_to_table.get(code, code) for code in codes],
                 "filters": state_filters,
-                "viz_patches": viz_patches if isinstance(viz_patches, dict) else {},
+                "viz_patches": prepared_viz,
                 "trigger_actions": actions,
                 "url_path": "",
             }}
@@ -2622,7 +2600,7 @@ def tool_build_state_token(service, config_manager=None, *, view: str,
     return {"ok": True, "state_token": {
         "view": deeplink["view"], "tables": deeplink["tables"],
         "filters": state_filters,
-        "viz_patches": viz_patches if isinstance(viz_patches, dict) else {},
+        "viz_patches": prepared_viz,
         "trigger_actions": actions, "url_path": deeplink["url_path"],
     }}
 
@@ -2648,6 +2626,7 @@ _FILTER_SPEC_SCHEMA: Dict[str, Any] = {
         "match_mode": {"type": "string", "enum": ["or", "and"], "default": "or"},
         "exact": {"type": "boolean", "default": True},
         "has_value": {"type": "boolean", "default": False},
+        "isNot": {"type": "boolean", "default": False},
     },
     "additionalProperties": False,
 }
@@ -2671,8 +2650,50 @@ _UNIFIED_FILTERS_SCHEMA: Dict[str, Any] = {
         "var_filters": _FILTER_MAP_SCHEMA,
         "obs_filters": _FILTER_MAP_SCHEMA,
         "filters": _FILTER_MAP_SCHEMA,
+        "local_dataset_chains": {
+            "type": "object",
+            "description": "Dataset-local AND/OR chains keyed by full dataset name.",
+            "additionalProperties": {
+                "type": "object",
+                "properties": {
+                    "operator": {"type": "string", "enum": ["AND", "OR", "and", "or"]},
+                    "rules": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "column": {"type": "string"},
+                                "value": _FILTER_VALUE_SCHEMA,
+                                "values": {"type": "array", "items": {"type": ["string", "number", "boolean"]}},
+                                "match_mode": {"type": "string", "enum": ["or", "and"]},
+                                "exact": {"type": "boolean"},
+                                "has_value": {"type": "boolean"},
+                                "isNot": {"type": "boolean"},
+                            },
+                            "required": ["column"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": ["operator", "rules"],
+                "additionalProperties": False,
+            },
+        },
+        "clear_existing": {
+            "type": "boolean",
+            "description": "Set true only when the user explicitly asks to clear existing filters.",
+        },
     },
-    "additionalProperties": True,
+    "additionalProperties": False,
+}
+
+_STATE_FILTERS_SCHEMA: Dict[str, Any] = {
+    **_UNIFIED_FILTERS_SCHEMA,
+    "description": (
+        "Filter changes for this state update. Omit this argument for visualization-only "
+        "requests so LIVE_UI_STATE filters remain unchanged. Supplied filters are merged "
+        "with live state unless clear_existing is true."
+    ),
 }
 
 _STRING_ARRAY_SCHEMA: Dict[str, Any] = {"type": "array", "items": {"type": "string"}}
@@ -2713,6 +2734,7 @@ _COMPARE_PATCH_SCHEMA: Dict[str, Any] = {
     "properties": {
         "plotType": {"type": "string", "enum": ["line", "box", "violin"]},
         "plotHeight": {"type": "integer", "minimum": 200, "maximum": 1200},
+        "expression": {"type": "string", "enum": [option["id"] for option in _EXPRESSION_OPTIONS]},
         "selectedOrthogroup": {"type": "string"},
         "selectedSpecies": _STRING_ARRAY_SCHEMA,
         "showAllTranscripts": {"type": "boolean"},
@@ -2732,12 +2754,19 @@ _PHYLO_PATCH_SCHEMA: Dict[str, Any] = {
 }
 
 _VISUALIZATION_PATCH_PROPERTIES: Dict[str, Any] = {
+    "expressionDisplay": {"type": "string", "enum": [option["id"] for option in _EXPRESSION_OPTIONS]},
     "rowLabel": {"type": "boolean"},
     "colLabel": {"type": "boolean"},
     "legend": {"type": "boolean"},
     "colorScale": {"type": "string", "enum": _COLOR_SCALES},
-    "rowSideColors": _STRING_ARRAY_SCHEMA,
-    "colSideColors": _STRING_ARRAY_SCHEMA,
+    "rowSideColors": {
+        "type": "array", "items": {"type": "string"},
+        "description": "Visible transcript/.var annotation keys; ['*'] selects all eligible RowSideColors.",
+    },
+    "colSideColors": {
+        "type": "array", "items": {"type": "string"},
+        "description": "Visible sample/.obs annotation keys; ['*'] selects all eligible ColSideColors.",
+    },
     "tooltipFields": _NULLABLE_STRING_ARRAY_SCHEMA,
     "showSequencesInTooltip": {"type": "boolean"},
     "sequencePreviewLength": {"type": "integer", "minimum": 20, "maximum": 1000},
@@ -2761,6 +2790,7 @@ _VISUALIZATION_PATCH_PROPERTIES: Dict[str, Any] = {
     "compare": _COMPARE_PATCH_SCHEMA,
     "compare.plotType": {"type": "string", "enum": ["line", "box", "violin"]},
     "compare.plotHeight": {"type": "integer", "minimum": 200, "maximum": 1200},
+    "compare.expression": {"type": "string", "enum": [option["id"] for option in _EXPRESSION_OPTIONS]},
     "compare.selectedOrthogroup": {"type": "string"},
     "compare.selectedSpecies": _STRING_ARRAY_SCHEMA,
     "compare.showAllTranscripts": {"type": "boolean"},
@@ -2798,490 +2828,29 @@ _VISUALIZATION_PATCH_SCHEMA: Dict[str, Any] = {
     "additionalProperties": False,
 }
 
-_VIEW_STATE_SCHEMA: Dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "tags": {"type": "array", "items": {"type": "string"}},
-        "table_names": {"type": "array", "items": {"type": "string"}},
-        "filters": _FILTER_MAP_SCHEMA,
-        "datasetIdFilters": _FILTER_MAP_SCHEMA,
-        "filterChainColumns": {"type": "array", "items": {"type": "string"}},
-        "filterChainOperators": {"type": "object", "additionalProperties": {"type": "string", "enum": ["and", "or"]}},
-        "filterChainGroups": {"type": "object", "additionalProperties": True},
-    },
-    "additionalProperties": False,
-}
-
-_ACTION_BLOCK_SCHEMAS: Dict[str, Any] = {
-    "add_filter": {
-        "type": "object",
-        "properties": {
-            "column": {"type": "string", "minLength": 1},
-            "value": _FILTER_VALUE_SCHEMA,
-            "values": {"type": "array", "items": {"type": ["string", "number", "boolean"]}},
-            "match_mode": {"type": "string", "enum": ["or", "and"], "default": "or"},
-            "exact": {"type": "boolean", "default": True},
-            "has_value": {"type": "boolean", "default": False},
-        },
-        "required": ["column"],
-        "additionalProperties": False,
-    },
-    "remove_filter": {
-        "type": "object",
-        "properties": {"column": {"type": "string", "minLength": 1}},
-        "required": ["column"],
-        "additionalProperties": False,
-    },
-    "clear_filters": {"type": "object", "properties": {}, "additionalProperties": False},
-    "select_tables": {
-        "type": "object",
-        "properties": {"tables": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1}},
-        "required": ["tables"],
-        "additionalProperties": False,
-    },
-    "set_expression_display": {
-        "type": "object",
-        "properties": {
-            "optionId": {"type": "string", "enum": [o["id"] for o in _EXPRESSION_OPTIONS]},
-            "layer": {"type": ["string", "null"], "enum": ["tpm", "tmm", "getmm", "X", None]},
-            "transform": {"type": "string", "enum": ["raw", "log2", "zscore"]},
-        },
-        "required": ["optionId", "transform"],
-        "additionalProperties": False,
-    },
-    "set_filter_chain": {
-        "type": "object",
-        "properties": {
-            "columns": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 2},
-            "operator": {"type": "string", "enum": ["and", "or"]},
-        },
-        "required": ["columns", "operator"],
-        "additionalProperties": False,
-    },
-    "viz_update": {
-        "type": "object",
-        "properties": {"patch": _VISUALIZATION_PATCH_SCHEMA},
-        "required": ["patch"],
-        "additionalProperties": False,
-    },
-    "deeplink": {
-        "type": "object",
-        "properties": {
-            "view": {"type": "string", "enum": ["heatmap", "compare", "phylo", "ora", "catalog"]},
-            "tables": {"type": "array", "items": {"type": "string"}},
-            "filters": _VIEW_STATE_SCHEMA,
-            "visualizations": {"type": "object", "additionalProperties": True},
-        },
-        "required": ["view", "tables"],
-        "additionalProperties": False,
-    },
-}
-
-_LEGACY_TOOL_SCHEMAS: List[Dict[str, Any]] = [
-    {
-        "type": "function",
-        "function": {
-            "name": "state_summary",
-            "description": (
-                "Return a cached high-level summary of this GenXBrowser "
-                "instance: dataset IDs/labels, species names, structural "
-                ".var/.obs columns, and fresh display-name mappings. Prefer "
-                "this for initial routing; call list_schema only when column "
-                "dtypes or per-table details are needed."
-            ),
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_schema",
-            "description": (
-                "List loaded tables with dynamic row/sample metadata fields, "
-                "display labels, dtypes, layers, and compact top categorical "
-                "values. Use display labels for prose and internal keys for "
-                "tool/action payloads."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "max_values_per_col": {"type": "integer", "default": 5, "minimum": 0, "maximum": 20},
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_active_view_state",
-            "description": (
-                "Return the live frontend dataset-card state for this turn: "
-                "all loaded dataset IDs/labels/aliases, which dataset cards "
-                "are currently visible, and which loaded datasets are hidden. "
-                "Call this before any add/remove/show-only/show-all dataset "
-                "visibility command. Resolve user shortcuts only against the "
-                "returned runtime labels and aliases."
-            ),
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "update_dataset_visibility",
-            "description": (
-                "Validate and compose a frontend dataset_visibility action. "
-                "Use only dataset_ids returned by get_active_view_state. "
-                "HIDE removes visible dataset cards, SHOW_ONLY keeps only "
-                "the specified cards, SHOW_ALL renders all loaded datasets, "
-                "and ADD appends hidden loaded datasets back into the view."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "action": {"type": "string", "enum": ["SHOW_ONLY", "HIDE", "SHOW_ALL", "ADD"]},
-                    "dataset_ids": {"type": "array", "items": {"type": "string"}},
-                },
-                "required": ["action", "dataset_ids"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_view_settings",
-            "description": (
-                "List the visualization settings available for a view on "
-                "this GenXBrowser instance. Returns the expression-display "
-                "options actually selectable here (filtered by layers that "
-                "exist in the loaded H5AD files), plus per-view controls "
-                "(toggles, color scales, ORA columns, plot types, ...). "
-                "ALWAYS call this BEFORE emitting `set_expression_display` "
-                "or `viz_update` so you never pick a value that the user "
-                "cannot select in the UI — the option set is "
-                "instance-dependent because deployments load different "
-                "expression layers."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "view": {
-                        "type": "string",
-                        "enum": ["heatmap", "compare", "phylo", "ora", "catalog"],
-                    },
-                    "tables": {
-                        "type": "array", "items": {"type": "string"},
-                        "description": (
-                            "Optional: restrict to these species codes. "
-                            "Defaults to every loaded table — the result "
-                            "then reflects the intersection of layers / "
-                            "columns across all tables."
-                        ),
-                    },
-                },
-                "required": ["view"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "resolve_value",
-            "description": (
-                "Find which dynamic metadata field contains a free-form term. "
-                "Returns ranked hits with table, namespace, internal column, "
-                "Display Name, exact value, and occurrence count. Use before "
-                "proposing an add_filter when the column/value is not already "
-                "verified."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string"},
-                    "tables": {
-                        "type": "array", "items": {"type": "string"},
-                        "description": "Optional: limit to these tables/species codes.",
-                    },
-                    "max_hits": {"type": "integer", "default": 10, "minimum": 1, "maximum": 100},
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_go_terms",
-            "description": (
-                "Use for any user request that mentions a Gene-Ontology "
-                "concept by name. The dataset's `go_terms` "
-                "column stores `GO:#######` IDs only, never process "
-                "names, so neither `resolve_value` nor "
-                "`list_distinct_values` on ordinary metadata columns "
-                "can resolve such a query. "
-                "This tool maps the natural-language name to canonical "
-                "GO IDs via the loaded GO OBO ontology and (by default) "
-                "only returns IDs that are actually annotated in this "
-                "dataset, so the very next step can be `add_filter` on "
-                "`go_terms` + `build_deeplink`. ALWAYS try this BEFORE "
-                "concluding that no GO match exists. If it returns "
-                "`available:false`, only then may you say the ontology "
-                "is not loaded."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Natural-language GO term name or fragment.",
-                    },
-                    "limit": {
-                        "type": "integer", "default": 20,
-                        "minimum": 1, "maximum": 100,
-                    },
-                    "only_in_dataset": {
-                        "type": "boolean", "default": True,
-                        "description": (
-                            "If true (default), restrict to GO IDs present "
-                            "in the dataset's go_terms column. Set false to "
-                            "also include ontology terms not annotated in "
-                            "any loaded table."
-                        ),
-                    },
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_distinct_values",
-            "description": (
-                "List up to `limit` distinct values in a column, optionally "
-                "filtered by a case-insensitive prefix. Handles array columns."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "column": {"type": "string"},
-                    "table": {"type": "string"},
-                    "prefix": {"type": "string"},
-                    "limit": {"type": "integer", "default": 50, "minimum": 1, "maximum": 500},
-                },
-                "required": ["column"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "count_rows",
-            "description": (
-                "Count .var (genes) and .obs (samples) rows matching the "
-                "filters. Pass `tables` as an ARRAY to count across "
-                "multiple species in ONE call (returns per_table + totals). "
-                "Filter values can be a string, a list of allowed strings "
-                "(array-aware), or {min,max,contains,equals}."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "table": {"type": "string", "description": "single species code (or use `tables` for multiple)"},
-                    "tables": {"type": "array", "items": {"type": "string"}, "description": "multiple species codes — preferred over repeated single-table calls"},
-                    "var_filters": {"type": "object", "additionalProperties": True},
-                    "obs_filters": {"type": "object", "additionalProperties": True},
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "top_groups",
-            "description": (
-                "Rank values in a dynamic row-metadata column after applying "
-                "row filters. Handles separator-delimited multi-value cells. "
-                "Pass `tables` as an array to aggregate across tables in one "
-                "call and use returned coverage fields for cross-table claims."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "table": {"type": "string", "description": "single species code (or use `tables` for multiple)"},
-                    "tables": {"type": "array", "items": {"type": "string"}, "description": "multiple species codes — combined ranking returned in `top`, plus `per_table` breakdown"},
-                    "group_column": {"type": "string"},
-                    "var_filters": {"type": "object", "additionalProperties": True},
-                    "top_n": {"type": "integer", "default": 10, "minimum": 1, "maximum": 50},
-                    "split_arrays": {"type": "boolean", "default": True},
-                },
-                "required": ["group_column"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "common_values",
-            "description": (
-                "Return values shared by multiple tables for a dynamic "
-                "metadata column. The column may live in row metadata or "
-                "sample metadata; set `namespace` or leave `auto`. Result "
-                "includes compact per-table distinct values and total shared "
-                "count."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "column": {"type": "string"},
-                    "tables": {"type": "array", "items": {"type": "string"}},
-                    "namespace": {
-                        "type": "string", "enum": ["auto", "var", "obs"],
-                        "default": "auto",
-                    },
-                    "min_tables": {
-                        "type": "integer",
-                        "description": "min number of tables a value must appear in; default = all given tables (strict intersection).",
-                    },
-                    "limit": {"type": "integer", "default": 500, "minimum": 1, "maximum": 1000},
-                    "var_filters_per_table": {
-                        "type": "object",
-                        "description": "optional per-table var_filters; keys are species codes.",
-                        "additionalProperties": True,
-                    },
-                },
-                "required": ["column", "tables"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "summary_stats",
-            "description": "min/max/mean/median/std of a numeric column after filtering. Pass `tables` as an ARRAY to compute across multiple species in ONE call (per_table + pooled).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "table": {"type": "string", "description": "single species code (or use `tables` for multiple)"},
-                    "tables": {"type": "array", "items": {"type": "string"}},
-                    "column": {"type": "string"},
-                    "namespace": {"type": "string", "enum": ["var", "obs"], "default": "obs"},
-                    "var_filters": {"type": "object", "additionalProperties": True},
-                    "obs_filters": {"type": "object", "additionalProperties": True},
-                },
-                "required": ["column"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "build_deeplink",
-            "description": (
-                "Persist a view state and return a shareable URL path. "
-                "Views: heatmap | compare | phylo | ora | catalog. `filters` "
-                "and `visualizations` use the frontend store shape. The tool "
-                "validates dynamic per-view row limits and returns an error "
-                "with `over_limit` instead of a URL when filters are required."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "view": {"type": "string", "enum": ["heatmap", "compare", "phylo", "ora", "catalog"]},
-                    "tables": {"type": "array", "items": {"type": "string"}},
-                    "filters": _VIEW_STATE_SCHEMA,
-                    "visualizations": _VISUALIZATION_PATCH_SCHEMA,
-                },
-                "required": ["view", "tables"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_available_datasets",
-            "description": (
-                "GAIA discovery step 1. List the species/datasets currently "
-                "loaded (identity + shape only, no expression values). Call "
-                "this first to learn which datasets exist before planning."
-            ),
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_dataset_schema",
-            "description": (
-                "GAIA discovery step 2. Return the `.obs` (sample metadata "
-                "columns + categorical levels / numeric ranges) and `.var` "
-                "(gene metadata columns) layout for the loaded datasets, "
-                "without any raw expression values. Pass `species_id` to scope "
-                "to one dataset. This is the ONLY sanctioned way to verify a "
-                "column or category exists before emitting any filter, color "
-                "group, annotation, or visualization setting."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "species_id": {
-                        "type": "string",
-                        "description": "Optional table_name / code / species name to scope the schema.",
-                    },
-                    "max_values_per_col": {"type": "integer", "default": 5},
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "dispatch_frontend_action",
-            "description": (
-                "GAIA execution step. Instruct the Vue frontend state manager "
-                "to perform ONE UI mutation, exactly as a human user could. "
-                "`action_type` MUST be one of: add_filter, remove_filter, "
-                "clear_filters, select_tables, set_expression_display, "
-                "set_filter_chain, viz_update, deeplink, dataset_visibility, "
-                "phylo_action. `payload` is that action block's object. Only "
-                "dispatch actions whose columns/values you have verified via "
-                "get_dataset_schema. The backend converts this into the "
-                "matching action block; never invent unverified payloads."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "action_type": {
-                        "type": "string",
-                        "enum": [
-                            "add_filter", "remove_filter", "clear_filters",
-                            "select_tables", "set_expression_display",
-                            "set_filter_chain", "viz_update", "deeplink",
-                            "dataset_visibility", "phylo_action",
-                        ],
-                    },
-                    "payload": {"type": "object", "additionalProperties": True},
-                },
-                "required": ["action_type", "payload"],
-            },
-        },
-    },
-]
-
 
 _TOOL_SCHEMAS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "get_current_view",
+            "description": "Read the authoritative current UI view, datasets, filters, visualization settings, and available analysis results. Use this before explaining the current view. This tool never changes state.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "search_metadata",
-            "description": "Find verified metadata values and their internal column keys.",
+            "description": "Find a non-empty biological/metadata term and its verified internal key. Never use this tool to select visualization controls such as SideColors; those are declared in INSTANCE_MANIFEST and applied with build_state_token.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string"},
+                    "query": {"type": "string", "minLength": 1},
                     "column": {"type": "string"},
                     "tables": {"type": "array", "items": {"type": "string"}},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 100},
@@ -3301,7 +2870,7 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
                 "properties": {
                     "operation": {"type": "string", "enum": ["count", "rank", "stats"]},
                     "tables": {"type": "array", "items": {"type": "string"}},
-                    "filters": _UNIFIED_FILTERS_SCHEMA,
+                    "filters": _STATE_FILTERS_SCHEMA,
                     "target_column": {"type": "string"},
                 },
                 "required": ["operation", "tables", "filters"],
@@ -3313,17 +2882,21 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "build_state_token",
-            "description": "Validate the complete target UI state and return a state_token for the frontend.",
+            "description": "Validate and apply navigation, filters, or visualization controls. For Heatmap SideColors use rowSideColors (.var) and colSideColors (.obs); ['*'] selects all eligible options.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "view": {"type": "string", "enum": ["heatmap", "compare", "phylo", "ora", "catalog"]},
                     "tables": {"type": "array", "items": {"type": "string"}},
                     "filters": _UNIFIED_FILTERS_SCHEMA,
-                    "viz_patches": {"type": "object", "additionalProperties": True},
-                    "trigger_actions": {"type": "array", "items": {"type": "string", "enum": ["export_png", "export_svg", "open_data_manager"]}},
+                    "viz_patches": _VISUALIZATION_PATCH_SCHEMA,
+                    "replace_viz_lists": {
+                        "type": "boolean",
+                        "description": "False/default merges list controls with LIVE_UI_STATE; true explicitly replaces them.",
+                    },
+                    "trigger_actions": {"type": "array", "items": {"type": "string", "enum": _TRIGGER_ACTIONS}},
                 },
-                "required": ["view", "tables", "filters"],
+                "required": ["view", "tables"],
                 "additionalProperties": False,
             },
         },
@@ -3332,7 +2905,7 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
 
 
 def openai_schema() -> List[Dict[str, Any]]:
-    """Return exactly the three modern unified tool definitions."""
+    """Return the modern unified tool definitions."""
     return json.loads(json.dumps(_TOOL_SCHEMAS))
 
 
@@ -3341,9 +2914,12 @@ def _get_dispatch():
         return {k: v for k, v in kwargs.items() if k != "client_context"}
 
     return {
+        "get_current_view": lambda service, cm, **kw: tool_get_current_view(
+            client_context=kw.get("client_context"),
+        ),
         "search_metadata": lambda service, cm, **kw: tool_search_metadata(service, cm, **_tool_args(kw)),
         "compute_analytics": lambda service, cm, **kw: tool_compute_analytics(service, cm, **_tool_args(kw)),
-        "build_state_token": lambda service, cm, **kw: tool_build_state_token(service, cm, **_tool_args(kw)),
+        "build_state_token": lambda service, cm, **kw: tool_build_state_token(service, cm, **kw),
     }
 
 

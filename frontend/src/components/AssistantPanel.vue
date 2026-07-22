@@ -48,8 +48,8 @@
       <div ref="scrollEl" class="flex-1 overflow-y-auto p-4 space-y-3 bg-gray-50">
         <div v-if="store.messages.length === 0" class="text-sm text-gray-600 space-y-3">
           <p>
-            Ask GAIA about your loaded data. GAIA sees which view, filters and visualizations
-            you currently have open and can propose changes, compute summaries or open deep links.
+            Ask GAIA about your loaded data. GAIA sees the current view, filters and
+            visualizations and can apply validated state changes or compute summaries.
           </p>
           <div class="space-y-2">
             <div class="flex items-center justify-between">
@@ -181,7 +181,7 @@
                     ]"
                   ></span>
                   <span class="font-mono">{{ t.name }}</span>
-                  <span v-if="t.args" class="text-gray-400 truncate">{{ JSON.stringify(t.args).slice(0, 80) }}</span>
+                  <span v-if="t.args" class="text-gray-400 break-all">{{ JSON.stringify(t.args).slice(0, 400) }}</span>
                 </li>
               </ul>
             </details>
@@ -190,126 +190,14 @@
             <div v-if="msg.actions && msg.actions.length" class="mt-3 flex flex-wrap gap-2">
               <template v-for="(action, ai) in msg.actions" :key="ai">
                 <button
-                  v-if="action.kind === 'deeplink' && action.status === 'applied' && action.url_path"
-                  class="inline-flex items-center gap-1 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-3 py-1.5 rounded-full cursor-pointer"
-                  @click="openDeeplink(action.url_path!)"
-                >
-                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5-5 5M6 12h12" />
-                  </svg>
-                  {{ action.url_path === route.fullPath ? '✓' : '↗' }} Open {{ action.view || "view" }}
-                </button>
-
-                <button
-                  v-else-if="action.kind === 'state_token' && action.status !== 'applied'"
+                  v-if="action.status !== 'applied' && action.status !== 'error'"
                   class="inline-flex items-center gap-1 bg-primary-700 hover:bg-primary-900 text-white text-xs font-semibold px-3 py-1.5 rounded-full cursor-pointer"
                   @click="executeAssistantAction(action)"
-                >Apply filters</button>
+                >Apply state</button>
                 <span
-                  v-else-if="action.kind === 'state_token' && action.status === 'applied'"
+                  v-else-if="action.status === 'applied'"
                   class="inline-flex items-center gap-1 bg-primary-100 text-primary-900 text-xs font-semibold px-3 py-1.5 rounded-full"
-                >✓ Filters applied</span>
-
-                <span
-                  v-else-if="action.kind === 'viz_update' && action.status !== 'error'"
-                  class="inline-flex items-center gap-1 bg-primary-100 text-primary-800 text-xs font-semibold px-3 py-1.5 rounded-full max-w-full"
-                  :title="action.summary || 'View updated'"
-                >
-                  <span class="truncate">
-                    ✓ View updated<template v-if="action.summary">: {{ action.summary }}</template>
-                  </span>
-                </span>
-
-                <button
-                  v-else-if="action.kind === 'add_filter' && action.status !== 'applied'"
-                  class="inline-flex items-center gap-1 bg-primary-700 hover:bg-primary-900 text-white text-xs font-semibold px-3 py-1.5 rounded-full cursor-pointer"
-                  @click="applyAddFilter(action)"
-                >
-                  + Add filter{{ action.spec.column ? `: ${String(action.spec.column)}` : '' }}
-                </button>
-                <span
-                  v-else-if="action.kind === 'add_filter' && action.status === 'applied'"
-                  class="inline-flex items-center gap-1 bg-primary-100 text-primary-900 text-xs font-semibold px-3 py-1.5 rounded-full"
-                >✓ Filter added</span>
-
-                <button
-                  v-else-if="action.kind === 'remove_filter' && action.status !== 'applied'"
-                  class="inline-flex items-center gap-1 bg-accent1-500 hover:bg-accent1-700 text-white text-xs font-semibold px-3 py-1.5 rounded-full cursor-pointer"
-                  @click="applyRemoveFilter(action)"
-                >
-                  − Remove filter{{ action.spec.column ? `: ${String(action.spec.column)}` : '' }}
-                </button>
-                <span
-                  v-else-if="action.kind === 'remove_filter' && action.status === 'applied'"
-                  class="inline-flex items-center gap-1 bg-accent1-100 text-accent1-900 text-xs font-semibold px-3 py-1.5 rounded-full"
-                >✓ Filter removed</span>
-
-                <button
-                  v-else-if="action.kind === 'clear_filters' && action.status !== 'applied'"
-                  class="inline-flex items-center gap-1 bg-accent1-500 hover:bg-accent1-700 text-white text-xs font-semibold px-3 py-1.5 rounded-full cursor-pointer"
-                  @click="applyClearFilters(action)"
-                >
-                  Clear all filters
-                </button>
-                <span
-                  v-else-if="action.kind === 'clear_filters' && action.status === 'applied'"
-                  class="inline-flex items-center gap-1 bg-accent1-100 text-accent1-900 text-xs font-semibold px-3 py-1.5 rounded-full"
-                >✓ Filters cleared</span>
-
-                <span
-                  v-else-if="action.kind === 'select_tables' && action.status === 'applied'"
-                  class="inline-flex items-center gap-1 bg-primary-100 text-primary-900 text-xs font-semibold px-3 py-1.5 rounded-full"
-                >✓ Selected {{ formatSpeciesList(action.spec.tables) }}</span>
-                <button
-                  v-else-if="action.kind === 'select_tables' && action.status !== 'applied'"
-                  class="inline-flex items-center gap-1 bg-primary-700 hover:bg-primary-900 text-white text-xs font-semibold px-3 py-1.5 rounded-full cursor-pointer"
-                  @click="applySelectTables(action)"
-                >Select tables</button>
-
-                <span
-                  v-else-if="action.kind === 'dataset_visibility' && action.status === 'applied'"
-                  class="inline-flex items-center gap-1 bg-primary-100 text-primary-900 text-xs font-semibold px-3 py-1.5 rounded-full"
-                >✓ Datasets shown: {{ formatSpeciesList(action.spec.visible_dataset_ids || action.spec.dataset_ids) }}</span>
-                <button
-                  v-else-if="action.kind === 'dataset_visibility' && action.status !== 'applied'"
-                  class="inline-flex items-center gap-1 bg-primary-700 hover:bg-primary-900 text-white text-xs font-semibold px-3 py-1.5 rounded-full cursor-pointer"
-                  @click="applyDatasetVisibility(action)"
-                >Update datasets</button>
-
-                <span
-                  v-else-if="action.kind === 'set_expression_display' && action.status === 'applied'"
-                  class="inline-flex items-center gap-1 bg-primary-100 text-primary-900 text-xs font-semibold px-3 py-1.5 rounded-full"
-                >✓ Expression: {{ String(action.spec.optionId || '') }}</span>
-                <button
-                  v-else-if="action.kind === 'set_expression_display' && action.status !== 'applied'"
-                  class="inline-flex items-center gap-1 bg-primary-700 hover:bg-primary-900 text-white text-xs font-semibold px-3 py-1.5 rounded-full cursor-pointer"
-                  @click="applySetExpressionDisplay(action)"
-                >Set expression: {{ String(action.spec.optionId || '') }}</button>
-
-                <span
-                  v-else-if="action.kind === 'set_filter_chain' && action.status === 'applied'"
-                  class="inline-flex items-center gap-1 bg-primary-100 text-primary-900 text-xs font-semibold px-3 py-1.5 rounded-full"
-                >✓ Filter chain: {{ action.summary || String(action.spec.operator || '') }}</span>
-                <button
-                  v-else-if="action.kind === 'set_filter_chain' && action.status !== 'applied'"
-                  class="inline-flex items-center gap-1 bg-primary-700 hover:bg-primary-900 text-white text-xs font-semibold px-3 py-1.5 rounded-full cursor-pointer"
-                  @click="applySetFilterChain(action)"
-                >Set filter chain</button>
-
-                <span
-                  v-else-if="action.kind === 'phylo_action' && action.status === 'applied'"
-                  class="inline-flex items-center gap-1 bg-primary-100 text-primary-900 text-xs font-semibold px-3 py-1.5 rounded-full"
-                >✓ PhyloTree: {{ action.summary || String(action.spec.command || '') }}</span>
-                <button
-                  v-else-if="action.kind === 'phylo_action' && action.status !== 'applied'"
-                  class="inline-flex items-center gap-1 bg-primary-700 hover:bg-primary-900 text-white text-xs font-semibold px-3 py-1.5 rounded-full cursor-pointer"
-                  @click="applyPhyloAction(action)"
-                >PhyloTree: {{ String(action.spec.command || '') }}</button>
-
-                <span
-                  v-else-if="action.kind === 'compute' && action.status === 'applied'"
-                  class="inline-flex items-center gap-1 bg-gray-100 text-gray-700 text-xs font-semibold px-3 py-1.5 rounded-full"
-                >✓ Computed {{ String(action.spec.op || '') }}</span>
+                >✓ State applied<template v-if="action.summary">: {{ action.summary }}</template></span>
 
                 <span
                   v-else-if="action.status === 'error'"
@@ -333,38 +221,6 @@
               Step undone.
             </div>
 
-            <!-- Compute result tables -->
-            <div v-if="computeResultRows(msg).length" class="mt-2 space-y-2">
-              <div
-                v-for="(r, ri) in computeResultRows(msg)"
-                :key="ri"
-                class="border border-gray-200 rounded-lg overflow-hidden"
-              >
-                <div class="px-2 py-1 text-[11px] font-semibold bg-gray-100 text-gray-700">
-                  {{ r.title }}
-                </div>
-                <table class="w-full text-xs">
-                  <thead>
-                    <tr class="bg-gray-50">
-                      <th
-                        v-for="h in r.headers"
-                        :key="h"
-                        class="text-left px-2 py-1 font-medium text-gray-600 border-b border-gray-200"
-                      >{{ h }}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="(row, rowIdx) in r.rows" :key="rowIdx" class="hover:bg-gray-50">
-                      <td
-                        v-for="(cell, ci) in row"
-                        :key="ci"
-                        class="px-2 py-1 border-b border-gray-100"
-                      >{{ cell }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
           </div>
         </template>
       </div>
@@ -443,7 +299,6 @@ marked.setOptions({ gfm: true, breaks: true });
 interface SuggestionItem {
   id?: string;
   text: string;
-  action?: AssistantAction;
 }
 
 const FALLBACK_SUGGESTIONS: SuggestionItem[] = [
@@ -577,29 +432,12 @@ function handleDocumentPointerDown(event: PointerEvent) {
 }
 
 function stripActionBlocks(content: string): string {
-  let out = content
-    // Known action blocks (the frontend applies them via chips).
-    .replace(
-      /```(?:state_token|action|deeplink|viz_update|add_filter|remove_filter|clear_filters|select_tables|dataset_visibility|set_expression_display|set_filter_chain|phylo_action|compute)\s*\n[\s\S]*?\n```/gi,
-      "",
-    )
-    // Leaked tool-argument JSON that the backend salvaged.
-    .replace(/```(?:json|tool)\s*\n[\s\S]*?\n```/gi, "")
-    // Any remaining bare ```...``` fence whose body is JSON-shaped —
-    // these are leaked tool calls or action payloads the backend didn't
-    // recognise; we never want raw JSON shown to the user.
-    .replace(/```\s*\n\s*[{[][\s\S]*?\n```/g, "");
-  // Trailing unclosed fence (truncated streams) — drop everything from
-  // the dangling ``` to the end so partial JSON never reaches the user.
+  let out = content.replace(/```state_token\s*\n[\s\S]*?\n```/gi, "");
   const fenceCount = (out.match(/```/g) || []).length;
   if (fenceCount % 2 === 1) {
     const last = out.lastIndexOf("```");
     if (last >= 0) out = out.slice(0, last);
   }
-  // Inline raw JSON object/array that wasn't fenced — happens when the
-  // model dumps a tool result mid-prose. Drop runs starting with `{"`
-  // or `[{` that are obviously machine-shaped.
-  out = out.replace(/(^|\n)\s*[{[][\s\S]{40,}$/m, (_m, p1) => p1 || "");
   return out.trim();
 }
 
@@ -627,18 +465,10 @@ function escapeHtml(s: string): string {
  *  Running form is shown while a tool is in flight; finished form once
  *  the result has come back. */
 const TOOL_LABELS: Record<string, { running: string; finished: string }> = {
-  list_schema:          { running: "Inspecting datasets",      finished: "Inspected datasets" },
-  get_dataset_schema:   { running: "Checking schema",          finished: "Checked schema" },
-  get_available_datasets: { running: "Listing datasets",       finished: "Listed datasets" },
-  state_summary:        { running: "Reading state",            finished: "Read state" },
-  search_go_terms:      { running: "Resolving GO terms",       finished: "Resolved GO terms" },
-  resolve_value:        { running: "Locating term",            finished: "Located term" },
-  list_distinct_values: { running: "Listing values",           finished: "Listed values" },
-  count_rows:           { running: "Checking dataset sizes",   finished: "Checked dataset sizes" },
-  top_groups:           { running: "Ranking values",           finished: "Ranked values" },
-  common_values:        { running: "Comparing across datasets", finished: "Compared datasets" },
-  summary_stats:        { running: "Computing statistics",     finished: "Computed statistics" },
-  build_deeplink:       { running: "Preparing analysis link",  finished: "Prepared analysis link" },
+  get_current_view:  { running: "Inspecting current view", finished: "Inspected current view" },
+  search_metadata:   { running: "Searching metadata", finished: "Searched metadata" },
+  compute_analytics: { running: "Computing analytics", finished: "Computed analytics" },
+  build_state_token: { running: "Preparing state", finished: "Prepared state" },
 };
 
 /** Emoji + short caption for each execution step GAIA surfaces as a badge
@@ -646,30 +476,11 @@ const TOOL_LABELS: Record<string, { running: string; finished: string }> = {
  *  Heatmap]`). Keyed by tool name and by frontend action kind. Data-agnostic:
  *  it maps mechanisms, never dataset columns. */
 const BADGE_META: Record<string, { icon: string; label: string }> = {
-  // Discovery tools
-  get_available_datasets: { icon: "🗂️", label: "Listing datasets" },
-  state_summary:          { icon: "🗂️", label: "Reading state" },
-  list_schema:            { icon: "🔍", label: "Checking schema" },
-  get_dataset_schema:     { icon: "🔍", label: "Checking schema" },
-  search_go_terms:        { icon: "🧬", label: "Resolving GO terms" },
-  resolve_value:          { icon: "🧬", label: "Locating term" },
-  list_distinct_values:   { icon: "🔢", label: "Listing values" },
-  count_rows:             { icon: "📏", label: "Checking sizes" },
-  top_groups:             { icon: "📈", label: "Ranking values" },
-  common_values:          { icon: "🔗", label: "Comparing datasets" },
-  summary_stats:          { icon: "📐", label: "Computing stats" },
-  build_deeplink:         { icon: "📊", label: "Preparing view" },
-  // Frontend action kinds (execution)
-  add_filter:             { icon: "⚡", label: "Applying filter" },
-  remove_filter:          { icon: "⚡", label: "Removing filter" },
-  clear_filters:          { icon: "🧹", label: "Clearing filters" },
-  set_filter_chain:       { icon: "⚡", label: "Linking filters" },
-  select_tables:          { icon: "🗂️", label: "Selecting datasets" },
-  dataset_visibility:     { icon: "👁️", label: "Updating datasets" },
-  set_expression_display: { icon: "🎚️", label: "Setting display" },
-  viz_update:             { icon: "🎨", label: "Updating view" },
-  deeplink:               { icon: "📊", label: "Rendering view" },
-  phylo_action:           { icon: "🌳", label: "Updating tree" },
+  get_current_view:  { icon: "👁", label: "Inspecting current view" },
+  search_metadata:   { icon: "🔍", label: "Searching metadata" },
+  compute_analytics: { icon: "📈", label: "Computing analytics" },
+  build_state_token: { icon: "⚙️", label: "Applying state" },
+  state_token:       { icon: "⚙️", label: "Applying state" },
 };
 
 export interface ExecutionBadge {
@@ -773,7 +584,14 @@ function buildClientContext(): ClientContext {
   } catch {
     filters = {};
   }
-  filters = mergeRouteFilters(filters, route.query.filters);
+  const filterTables = Array.isArray(filters.table_names)
+    ? filters.table_names.map(String).filter(Boolean)
+    : [];
+  const selectedTables = tables.length > 0
+    ? tables
+    : Array.from(catalogStore.selectedTableNames || []).length > 0
+      ? Array.from(catalogStore.selectedTableNames || [])
+      : filterTables;
   let visualizations: Record<string, unknown> = {};
   try {
     visualizations = visualizationStore.toObject ? visualizationStore.toObject() : {};
@@ -784,18 +602,18 @@ function buildClientContext(): ClientContext {
     view: String(route.name || ""),
     route: route.fullPath,
     tables,
-    selected_table_names: tables.length > 0 ? [...tables] : Array.from(catalogStore.selectedTableNames || []),
+    selected_table_names: [...selectedTables],
     filters,
     visualizations,
     analysis_results: store.analysisContext && Object.keys(store.analysisContext).length
       ? store.analysisContext
       : undefined,
-    active_view_state: buildActiveViewState(tables),
+    active_view_state: buildActiveViewState(selectedTables),
   };
 }
 
 function buildActiveViewState(routeTables: string[]) {
-  const loaded = speciesEntries.value
+  let loaded = speciesEntries.value
     .map((entry) => {
       const id = String(entry.table_name || entry.full_name || entry._species_code || entry.code || "").trim();
       if (!id) return null;
@@ -806,6 +624,9 @@ function buildActiveViewState(routeTables: string[]) {
       return { id, label, code: String(entry._species_code || entry.code || id), aliases };
     })
     .filter((item): item is { id: string; label: string; code: string; aliases: string[] } => item !== null);
+  if (loaded.length === 0) {
+    loaded = routeTables.map((id) => ({ id, label: formatSpeciesLabel(id), code: id, aliases: [id] }));
+  }
   const availableIds = new Set(loaded.map((item) => item.id));
   const visible = routeTables.length > 0
     ? routeTables.filter((item) => availableIds.has(item))
@@ -818,23 +639,6 @@ function buildActiveViewState(routeTables: string[]) {
     visible_dataset_ids: visible,
     hidden_dataset_ids: loaded.map((item) => item.id).filter((id) => !visibleSet.has(id)),
   };
-}
-
-function mergeRouteFilters(filters: Record<string, unknown>, routeFilters: unknown): Record<string, unknown> {
-  if (typeof routeFilters !== "string" || !routeFilters.trim()) return filters;
-  try {
-    const parsed = JSON.parse(routeFilters) as Record<string, unknown>;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return filters;
-    const nested = filters.filters && typeof filters.filters === "object" && !Array.isArray(filters.filters)
-      ? filters.filters as Record<string, unknown>
-      : {};
-    return {
-      ...filters,
-      filters: { ...parsed, ...nested },
-    };
-  } catch {
-    return filters;
-  }
 }
 
 function send(prompt: string) {
@@ -861,14 +665,6 @@ function submit() {
   store.sendMessage(text, buildClientContext(), applyImmediateActions);
 }
 
-function openDeeplink(urlPath: string) {
-  store.open = false;
-  router.push(urlPath);
-}
-
-// ---------------------------------------------------------------------------
-// Assistant action dispatch — validated registry + audit log
-// ---------------------------------------------------------------------------
 
 function undoMessage(msg: ChatMessage) {
   restoreSnapshot(msg, dispatcherDeps());
@@ -891,68 +687,13 @@ async function executeAssistantAction(action: AssistantAction): Promise<boolean>
   return createAssistantActionDispatcher(dispatcherDeps()).dispatch(action);
 }
 
-function applyVizUpdate(action: AssistantAction) {
-  void executeAssistantAction(action);
-}
-
-function applyAddFilter(action: AssistantAction) {
-  void executeAssistantAction(action);
-}
-
-function applyRemoveFilter(action: AssistantAction) {
-  void executeAssistantAction(action);
-}
-
-function applyClearFilters(action: AssistantAction) {
-  void executeAssistantAction(action);
-}
-
-function applySelectTables(action: AssistantAction) {
-  void executeAssistantAction(action);
-}
-
-function applyDatasetVisibility(action: AssistantAction) {
-  void executeAssistantAction(action);
-}
-
-function applySetExpressionDisplay(action: AssistantAction) {
-  void executeAssistantAction(action);
-}
-
-function applySetFilterChain(action: AssistantAction) {
-  void executeAssistantAction(action);
-}
-
-function applyPhyloAction(action: AssistantAction) {
-  void executeAssistantAction(action);
-}
 
 function shortActionError(action: AssistantAction): string {
-  if (action.kind === "state_token") return "State update failed";
-  if (action.kind === "deeplink") return "Cannot open view";
-  if (action.kind === "compute") return "Compute failed";
-  if (action.kind === "viz_update") return "Update failed";
-  if (action.kind === "add_filter") return "Filter failed";
-  if (action.kind === "remove_filter") return "Remove failed";
-  if (action.kind === "clear_filters") return "Clear failed";
-  if (action.kind === "select_tables") return "Selection failed";
-  if (action.kind === "dataset_visibility") return "Dataset update failed";
-  if (action.kind === "set_expression_display") return "Expression failed";
-  if (action.kind === "set_filter_chain") return "Update failed";
-  if (action.kind === "phylo_action") return "PhyloTree command failed";
-  return "Action failed";
+  return action.error || "State update failed";
 }
 
-async function autoApplyActions(msg: ChatMessage, mode: AssistantAutoApplyMode = "all"): Promise<boolean> {
-  if (mode === "all") return createAssistantActionDispatcher(dispatcherDeps()).autoApplyActions(msg);
-  let mutated = false;
-  const dispatcher = createAssistantActionDispatcher(dispatcherDeps());
-  for (const action of msg.actions || []) {
-    if (action.kind !== "viz_update" && action.kind !== "state_token") continue;
-    if (action.status && action.status !== "pending") continue;
-    mutated = (await dispatcher.dispatch(action)) || mutated;
-  }
-  return mutated;
+async function autoApplyActions(msg: ChatMessage, _mode: AssistantAutoApplyMode = "all"): Promise<boolean> {
+  return createAssistantActionDispatcher(dispatcherDeps()).autoApplyActions(msg);
 }
 
 async function applyImmediateActions(msg: ChatMessage, mode: AssistantAutoApplyMode) {
@@ -962,40 +703,6 @@ async function applyImmediateActions(msg: ChatMessage, mode: AssistantAutoApplyM
   if (mutated) msg.undo = pre;
 }
 
-interface ResultTable {
-  title: string;
-  headers: string[];
-  rows: Array<Array<string | number>>;
-}
-
-function computeResultRows(msg: ChatMessage): ResultTable[] {
-  const out: ResultTable[] = [];
-  for (const a of msg.actions || []) {
-    if (a.kind !== "compute" || a.status !== "applied" || !a.result) continue;
-    const res = a.result as { op?: string; results?: Record<string, unknown> };
-    if (!res.results) continue;
-    for (const [species, payload] of Object.entries(res.results)) {
-      const p = payload as Record<string, unknown>;
-      if (Array.isArray(p.top)) {
-        const rows = (p.top as Array<Record<string, unknown>>).slice(0, 15).map((row) =>
-          Object.values(row).map((v) => (typeof v === "number" ? v : String(v))),
-        );
-        const headers = p.top.length > 0 ? Object.keys(p.top[0] as object) : [];
-        out.push({ title: `${species} — ${res.op || "result"}`, headers, rows });
-      } else if (p && typeof p === "object") {
-        const entries = Object.entries(p).filter(([, v]) => typeof v === "number" || typeof v === "string");
-        if (entries.length) {
-          out.push({
-            title: `${species} — ${res.op || "result"}`,
-            headers: ["metric", "value"],
-            rows: entries.map(([k, v]) => [k, v as string | number]),
-          });
-        }
-      }
-    }
-  }
-  return out;
-}
 
 watch(
   () => store.messages.map((m) => `${(m.content || "").length}:${(m.tools || []).length}:${(m.tools || []).map((t) => t.status).join(",")}:${m.status?.phase || ""}:${m.status?.iteration || 0}`).join("|"),

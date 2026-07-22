@@ -92,7 +92,8 @@
       :show="true"
       :showLink="true"
       :htmlContainer="ref(visualizationExportRoot)"
-      @close="showShareOverlay = false"
+      :initialDownload="assistantVisualizationExport ?? undefined"
+      @close="closeShareOverlay"
     />
     <ExportModal
       v-if="showExportModal"
@@ -104,7 +105,9 @@
       :hasFilters="globalExportPayload.hasFilters"
       :totalCount="globalExportPayload.data.length"
       dataColumnLabel="metrics"
-      @close="showExportModal = false"
+      :initialFormat="assistantDataExport ?? undefined"
+      :autoExport="assistantDataExport !== null"
+      @close="closeExportModal"
     />
   </div>
 </template>
@@ -127,6 +130,11 @@ import VisualizationSettings from "@/components/VisualizationSettings.vue";
 import { useDatasetEmptinessFilter } from "@/shared/useDatasetEmptinessFilter";
 import { beautifyLabel } from "@/shared/utils";
 import type { RowType } from "@/shared/RowType";
+import {
+  useAssistantExportTriggers,
+  type DataExportFormat,
+  type VisualizationExportFormat,
+} from "@/shared/useAssistantExportTriggers";
 
 const route = useRoute();
 const router = useRouter();
@@ -137,6 +145,29 @@ const visualizationStore = useVisualizationStore();
 const showSettingsOverlay = ref(false);
 const showShareOverlay = ref(false);
 const showExportModal = ref(false);
+const assistantVisualizationExport = ref<VisualizationExportFormat | null>(null);
+const assistantDataExport = ref<DataExportFormat | null>(null);
+
+function closeShareOverlay() {
+  showShareOverlay.value = false;
+  assistantVisualizationExport.value = null;
+}
+
+function closeExportModal() {
+  showExportModal.value = false;
+  assistantDataExport.value = null;
+}
+
+useAssistantExportTriggers({
+  openVisualizationExport(format) {
+    assistantVisualizationExport.value = format;
+    showShareOverlay.value = true;
+  },
+  openDataExport(format) {
+    assistantDataExport.value = format ?? null;
+    showExportModal.value = true;
+  },
+});
 const viewContentRoot = ref<HTMLDivElement | null>(null);
 const visualizationExportRoot = ref<HTMLDivElement | null>(null);
 interface ExportPayload {

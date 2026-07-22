@@ -84,7 +84,8 @@
       :show="true"
       :showLink="true"
       :htmlContainer="ref(phylotreeContainer)"
-      @close="showShareOverlay = false"
+      :initialDownload="assistantVisualizationExport ?? undefined"
+      @close="closeShareOverlay"
     />
 
     <ExportModal
@@ -97,7 +98,9 @@
       :filename="phyloExportPayload.filename"
       :hasFilters="phyloExportPayload.hasFilters"
       :totalCount="phyloExportPayload.data.length"
-      @close="showExportModal = false"
+      :initialFormat="assistantDataExport ?? undefined"
+      :autoExport="assistantDataExport !== null"
+      @close="closeExportModal"
     />
 
     <!-- Tooltip Modal for detailed cell info -->
@@ -178,11 +181,39 @@ import type { Config } from "@/shared/Config";
 import { hierarchicalCluster } from "@/shared/clustering";
 import { useFilterSeparation } from "@/shared/useFilterSeparation";
 import { useRoute, useRouter } from 'vue-router';
+import {
+  useAssistantExportTriggers,
+  type DataExportFormat,
+  type VisualizationExportFormat,
+} from "@/shared/useAssistantExportTriggers";
 
 const config = inject("config") as Config;
 const phylotreeContainer = ref<HTMLDivElement | null>(null);
 const showShareOverlay = ref(false);
 const showExportModal = ref(false);
+const assistantVisualizationExport = ref<VisualizationExportFormat | null>(null);
+const assistantDataExport = ref<DataExportFormat | null>(null);
+
+function closeShareOverlay() {
+  showShareOverlay.value = false;
+  assistantVisualizationExport.value = null;
+}
+
+function closeExportModal() {
+  showExportModal.value = false;
+  assistantDataExport.value = null;
+}
+
+useAssistantExportTriggers({
+  openVisualizationExport(format) {
+    assistantVisualizationExport.value = format;
+    showShareOverlay.value = true;
+  },
+  openDataExport(format) {
+    assistantDataExport.value = format ?? null;
+    showExportModal.value = true;
+  },
+});
 const filtersStore = useFiltersStore();
 const visualizationStore = useVisualizationStore();
 const columnStore = useColumnsStore();

@@ -103,9 +103,10 @@
       v-if="showShareOverlay"
       :show="true"
       :showLink="true"
-      :htmlContainer="plotContainerRef"
+      :htmlContainer="plotContainer"
       :multiPlot="false"
-      @close="showShareOverlay = false"
+      :initialDownload="assistantVisualizationExport ?? undefined"
+      @close="closeShareOverlay"
     />
 
     <!-- Export Modal -->
@@ -119,7 +120,9 @@
       :filename="exportFilename"
       :hasFilters="hasActiveFilters"
       :totalCount="exportData.length"
-      @close="showExportModal = false"
+      :initialFormat="assistantDataExport ?? undefined"
+      :autoExport="assistantDataExport !== null"
+      @close="closeExportModal"
     />
 
     <!-- Visualization Settings Modal (unified with other views) -->
@@ -185,6 +188,11 @@ import VisualizationSettings from "@/components/VisualizationSettings.vue";
 import DropdownMenu from "@/components/DropdownMenu.vue";
 import TooltipModal from "@/components/TooltipModal.vue";
 import { getDisplayName } from "@/shared/metadataFields";
+import {
+  useAssistantExportTriggers,
+  type DataExportFormat,
+  type VisualizationExportFormat,
+} from "@/shared/useAssistantExportTriggers";
 
 import { useRoute, useRouter } from "vue-router";
 
@@ -242,6 +250,29 @@ const loadingPhaseHint = ref("Preparing comparison request...");
 const initialUrlParsing = ref(true); // Guard against watchers during URL parsing
 const showShareOverlay = ref(false);
 const showExportModal = ref(false);
+const assistantVisualizationExport = ref<VisualizationExportFormat | null>(null);
+const assistantDataExport = ref<DataExportFormat | null>(null);
+
+function closeShareOverlay() {
+  showShareOverlay.value = false;
+  assistantVisualizationExport.value = null;
+}
+
+function closeExportModal() {
+  showExportModal.value = false;
+  assistantDataExport.value = null;
+}
+
+useAssistantExportTriggers({
+  openVisualizationExport(format) {
+    assistantVisualizationExport.value = format;
+    showShareOverlay.value = true;
+  },
+  openDataExport(format) {
+    assistantDataExport.value = format ?? null;
+    showExportModal.value = true;
+  },
+});
 const showSettingsModal = ref(false);
 
 // --- Transcript Metadata Modal (right-click / long-press on line traces) ---
@@ -351,7 +382,6 @@ const commonOGs_array = ref<string[]>([]);
 // Plot state
 const cardWrapper = ref<HTMLDivElement | null>(null);
 const plotContainer = ref<HTMLDivElement | null>(null);
-const plotContainerRef = computed(() => ref(plotContainer.value));
 
 // No filter dropdowns needed - Plotly legend handles species visibility
 

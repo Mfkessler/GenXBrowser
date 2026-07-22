@@ -1,5 +1,8 @@
 <template>
-  <main class="flex flex-col h-full min-h-0 overflow-hidden">
+  <main
+    class="flex flex-col h-full min-h-0 overflow-hidden"
+    :data-export-pending="loading || rendering ? 'true' : 'false'"
+  >
     <div
       class="flex justify-between gap-2 px-2 items-start mb-2 flex-shrink-0 flex-wrap"
       data-export-ignore="true"
@@ -326,6 +329,7 @@ const tableNameOptions = computed(() => {
 const loading = ref(false);
 const loadingProgress = ref<number | null>(null);
 const loadingPhaseHint = ref("Preparing heatmap request...");
+const rendering = ref(false);
 const showShareOverlay = ref(false);
 const showExportModal = ref(false);
 const showTooltipModal = ref(false);
@@ -1344,12 +1348,18 @@ function clearScheduledRender() {
 
 function scheduleHeatmapRender(delay = 0, retries = MAX_RENDER_RETRIES) {
   if (isUnmounting) return;
+  rendering.value = true;
 
   const runRender = async () => {
     renderFrame = null;
-    const didRender = await renderHeatmap();
-    if (!didRender && retries > 0 && !isUnmounting) {
-      scheduleHeatmapRender(0, retries - 1);
+    try {
+      const didRender = await renderHeatmap();
+      if (!didRender && retries > 0 && !isUnmounting) {
+        scheduleHeatmapRender(0, retries - 1);
+        return;
+      }
+    } finally {
+      if (renderFrame === null) rendering.value = false;
     }
   };
 

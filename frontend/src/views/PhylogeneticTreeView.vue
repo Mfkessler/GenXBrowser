@@ -200,13 +200,8 @@ function callOnAllTrees(method: 'expandAll' | 'collapseAll' | 'collapseToSpecies
   }
 }
 
-// Assistant-driven PhyloTree toolbar commands. The AI assistant emits a
-// `phylo_action` block ({command:"reset_view"|"expand_all"|"collapse_all"
-// |"collapse_to_species"}) which the shared action dispatcher converts to
-// a window CustomEvent - this view fans the call out to every mounted
-// tree instance, mirroring the manual toolbar buttons. Decoupling via a
-// CustomEvent avoids dragging the tree refs into a global store and
-// keeps the imperative commands data-agnostic.
+// GAIA state-token toolbar commands are delivered through a CustomEvent and
+// fanned out to every mounted tree instance.
 const PHYLO_COMMAND_DISPATCH: Record<string, () => void> = {
   reset_view: () => resetPhyloTreeView(),
   expand_all: () => callOnAllTrees('expandAll'),

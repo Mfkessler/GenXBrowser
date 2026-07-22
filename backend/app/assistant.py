@@ -53,29 +53,6 @@ def is_assistant_enabled(config_manager) -> bool:
     )
 
 
-_GREETING_RE = re.compile(
-    r"^\s*(hi|hello|hey|hallo|servus|moin|guten\s+(morgen|tag|abend)|good\s+(morning|afternoon|evening))\s*[!.?]*\s*$",
-    re.I,
-)
-_OUT_OF_SCOPE_RE = re.compile(
-    r"\b(weather|wetter|forecast|news|nachrichten|sports?|joke|witz|recipe|rezept|stock\s+price|translate\s+this|how\s+are\s+you|wie\s+geht|tell\s+me\s+about\s+yourself)\b",
-    re.I,
-)
-
-
-def scope_guard_response(user_text: str) -> Optional[str]:
-    """Return a no-tool response for obvious non-GenXBrowser prompts."""
-    text = str(user_text or "").strip()
-    if not text:
-        return None
-    if _GREETING_RE.match(text) or _OUT_OF_SCOPE_RE.search(text):
-        return (
-            "I can help with the loaded GenXBrowser datasets and interface: "
-            "filters, views, metadata, ORA, heatmaps, compare plots, and phylo trees."
-        )
-    return None
-
-
 def redact_llm_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     """Return a copy with ``api_key`` replaced by a placeholder when set."""
     redacted = dict(cfg or {})
@@ -224,6 +201,7 @@ def call_chat_completion(
     }
     if tools:
         payload["tools"] = tools
+        payload["parallel_tool_calls"] = False
         if tool_choice is not None:
             payload["tool_choice"] = tool_choice
     url = _build_url(cfg["api_base"], "chat/completions")
@@ -285,296 +263,6 @@ def test_connection(cfg: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "error": str(e), "latency_ms": int((time.monotonic() - started) * 1000)}
 
 
-# ----------------------------------------------------------------------------
-# SSE streaming with primary / fallback
-# ----------------------------------------------------------------------------
-
-def stream_chat(
-    cfg: Dict[str, Any],
-    messages: List[Dict[str, str]],
-) -> Iterator[str]:
-    """Yield SSE-formatted string chunks for a chat completion.
-
-    Falls back to ``fallback_model`` on a primary-model 4xx/5xx. Always emits
-    a final ``event: done`` frame.
-    """
-    primary = cfg.get("model")
-    fallback = cfg.get("fallback_model") or None
-    tried: List[str] = []
-    last_error: Optional[str] = None
-
-    for model in [m for m in (primary, fallback) if m]:
-        if model in tried:
-            continue
-        tried.append(model)
-        try:
-            resp = call_chat_completion(cfg, messages, stream=True, model_override=model)
-        except urllib.error.HTTPError as e:
-            last_error = f"HTTP {e.code} on {model}"
-            logger.warning("LLM upstream error (%s): %s", model, last_error)
-            continue
-        except Exception as e:
-            last_error = f"{type(e).__name__}: {e}"
-            logger.warning("LLM upstream failure (%s): %s", model, last_error)
-            continue
-
-        yield f"event: start\ndata: {json.dumps({'model': model})}\n\n"
-        try:
-            for raw in resp:
-                if not raw:
-                    continue
-                line = raw.decode("utf-8", errors="replace").rstrip("\n").rstrip("\r")
-                if not line:
-                    continue
-                if line.startswith("data:"):
-                    payload = line[5:].strip()
-                    if payload == "[DONE]":
-                        break
-                    try:
-                        obj = json.loads(payload)
-                        delta = (
-                            obj.get("choices", [{}])[0]
-                            .get("delta", {})
-                            .get("content")
-                        )
-                        if delta:
-                            yield f"data: {json.dumps({'delta': delta})}\n\n"
-                    except json.JSONDecodeError:
-                        continue
-        finally:
-            resp.close()
-
-        yield f"event: done\ndata: {json.dumps({'model': model})}\n\n"
-        return
-
-    yield f"event: error\ndata: {json.dumps({'error': last_error or 'no usable model'})}\n\n"
-
-
-def complete_chat(cfg: Dict[str, Any], messages: List[Dict[str, str]]) -> Dict[str, Any]:
-    """Non-streaming chat completion with primary/fallback retry."""
-    primary = cfg.get("model")
-    fallback = cfg.get("fallback_model") or None
-    last_error: Optional[str] = None
-    for model in [m for m in (primary, fallback) if m]:
-        try:
-            resp = call_chat_completion(cfg, messages, stream=False, model_override=model)
-            try:
-                body = resp.read().decode("utf-8", errors="replace")
-            finally:
-                resp.close()
-            data = json.loads(body)
-            content = (
-                data.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-            )
-            return {"ok": True, "model": data.get("model") or model, "content": content}
-        except urllib.error.HTTPError as e:
-            last_error = f"HTTP {e.code} on {model}: {e.read().decode('utf-8', errors='replace')[:300]}"
-        except Exception as e:
-            last_error = f"{type(e).__name__}: {e}"
-    return {"ok": False, "error": last_error or "no usable model"}
-
-
-# ----------------------------------------------------------------------------
-# Leaked-tool-call salvage
-# ----------------------------------------------------------------------------
-# Some OpenAI-compatible backends (notably Qwen) occasionally emit tool
-# arguments as a ```json``` (or ```tool```) code block in the assistant text
-# instead of going through the tool_calls protocol. We detect and rescue
-# these by mapping the key signature to one of our registered tools.
-
-_TOOL_KEY_SIGNATURES: List[Tuple[str, frozenset, frozenset]] = [
-    # (tool_name, required_keys, allowed_keys)
-    ("top_groups", frozenset({"table", "group_column"}),
-        frozenset({"table", "group_column", "var_filters", "top_n", "split_arrays"})),
-    ("resolve_value", frozenset({"query"}),
-        frozenset({"query", "tables", "max_hits"})),
-    ("count_rows", frozenset({"table"}),
-        frozenset({"table", "var_filters", "obs_filters"})),
-    ("summary_stats", frozenset({"table", "column"}),
-        frozenset({"table", "column", "namespace", "var_filters", "obs_filters"})),
-    ("build_deeplink", frozenset({"view"}),
-        frozenset({"view", "tables", "filters", "visualizations"})),
-    ("list_distinct_values", frozenset({"column"}),
-        frozenset({"column", "table", "prefix", "limit"})),
-    ("list_schema", frozenset(), frozenset()),
-]
-
-# Strip fenced code blocks whose language is "json" or "tool" (not one of the
-# real action-block tags) before emitting text to the user.
-_ACTION_BLOCK_TAGS = {
-    "deeplink", "viz_update", "add_filter", "remove_filter", "clear_filters",
-    "select_tables", "set_expression_display", "set_filter_chain", "action", "compute",
-    "dataset_visibility", "phylo_action",
-}
-
-# Action-block tags that the model sometimes mis-emits as OpenAI tool_calls
-# instead of fenced markdown blocks. When we see a tool_call with one of
-# these names we DO NOT dispatch - there is no backend tool - and instead
-# convert the arguments into an action-block fence appended to the final
-# assistant content. This is data-agnostic: it relies only on the tag set,
-# never on column names or values.
-_ACTION_BLOCK_TOOL_NAMES = {
-    "add_filter", "remove_filter", "clear_filters", "select_tables",
-    "set_expression_display", "set_filter_chain", "viz_update",
-    "dataset_visibility", "deeplink", "phylo_action",
-}
-_FENCE_RE = re.compile(r"```([A-Za-z_][A-Za-z0-9_]*)\s*\n([\s\S]*?)\n```", re.MULTILINE)
-# Matches both tagged AND untagged fences. The untagged variant catches
-# bare ```{...}``` blocks that some models emit instead of using the
-# proper action-block tag.
-_FENCE_ANY_RE = re.compile(r"```([A-Za-z_][A-Za-z0-9_]*)?\s*\n([\s\S]*?)\n```", re.MULTILINE)
-
-# Action-block signatures used to recognise leaked / mis-tagged fences.
-_ACTION_KEY_SIGNATURES: List[Tuple[str, frozenset, frozenset]] = [
-    ("add_filter", frozenset({"column"}),
-        frozenset({"column", "value", "values", "strict", "empty"})),
-    ("remove_filter", frozenset({"column"}), frozenset({"column"})),
-    ("clear_filters", frozenset(), frozenset()),
-    ("select_tables", frozenset({"tables"}), frozenset({"tables"})),
-    ("set_expression_display", frozenset({"optionId"}),
-        frozenset({"optionId", "layer", "transform"})),
-    ("set_filter_chain", frozenset({"columns", "operator"}),
-        frozenset({"columns", "operator"})),
-    ("viz_update", frozenset({"patch"}), frozenset({"patch"})),
-    ("deeplink", frozenset({"view"}),
-        frozenset({"view", "tables", "filters", "visualizations"})),
-    ("dataset_visibility", frozenset({"action"}),
-        frozenset({"action", "dataset_ids", "visible_dataset_ids"})),
-    ("phylo_action", frozenset({"command"}),
-        frozenset({"command"})),
-]
-
-
-def _match_action_signature(obj: Dict[str, Any]) -> Optional[str]:
-    keys = frozenset(obj.keys())
-    for name, required, allowed in _ACTION_KEY_SIGNATURES:
-        if not required.issubset(keys):
-            continue
-        if allowed and not keys.issubset(allowed):
-            continue
-        return name
-    return None
-
-
-def retag_action_fences(content: str) -> str:
-    """Re-tag fenced JSON blocks that match an action signature.
-
-    Some models emit action payloads as ```json``` or as a bare ``` ``` ```
-    fence. Without re-tagging, the frontend parser ignores them and the
-    user sees raw JSON in chat. We rewrite the fence's opening line to use
-    the matching action language tag (e.g. ``add_filter``) so the existing
-    extractor picks them up.
-
-    Also strips any TRAILING unclosed fence whose body looks like JSON —
-    those happen when ``max_tokens`` truncates the response mid-block and
-    would otherwise show up as raw JSON in the chat bubble.
-    """
-    if not content:
-        return content
-
-    # Drop a trailing unclosed fence (no closing ```) whose body looks
-    # like JSON. Any unclosed fence at the end of the message is at best
-    # an incomplete action payload — safer to discard than to render.
-    if "```" in content:
-        last_open = content.rfind("```")
-        # If the fence we found has no matching closer, last_open is unclosed.
-        # We test by counting fence markers: an even number means all closed.
-        fence_count = content.count("```")
-        if fence_count % 2 == 1:
-            head = content[:last_open].rstrip()
-            tail = content[last_open + 3:]
-            tail_body = tail.split("\n", 1)[1] if "\n" in tail else tail
-            looks_json = tail_body.lstrip().startswith(("{", "["))
-            # Always drop unclosed fences whose body looks like JSON or whose
-            # tag is one of our action / json / tool tags.
-            tag = (tail.split("\n", 1)[0] or "").strip().lower()
-            if looks_json or tag in _ACTION_BLOCK_TAGS or tag in ("", "json", "tool"):
-                content = head
-
-    if "```" not in content:
-        return content
-
-    out: List[str] = []
-    last = 0
-    for match in _FENCE_ANY_RE.finditer(content):
-        tag = (match.group(1) or "").lower()
-        body = match.group(2) or ""
-        out.append(content[last:match.start()])
-        last = match.end()
-
-        if tag in _ACTION_BLOCK_TAGS:
-            # Already a recognised action block \u2014 keep verbatim.
-            out.append(match.group(0))
-            continue
-
-        # Try to recognise the body as an action payload.
-        try:
-            obj = json.loads(body)
-        except Exception:
-            obj = None
-        if isinstance(obj, dict):
-            name = _match_action_signature(obj)
-            if name:
-                out.append(f"```{name}\n{body}\n```")
-                continue
-
-        # Unrecognised \u2014 if it is a bare/json/tool fence containing JSON,
-        # drop it (otherwise the user sees a raw JSON code block).
-        looks_like_json = body.lstrip().startswith(("{", "["))
-        if tag in ("", "json", "tool") and looks_like_json:
-            continue
-
-        out.append(match.group(0))
-
-    out.append(content[last:])
-    return "".join(out)
-
-
-def _extract_leaked_tool_calls(content: str) -> List[Tuple[str, Dict[str, Any], Tuple[int, int]]]:
-    """Return list of (tool_name, args, (span_start, span_end)) parsed from text."""
-    out: List[Tuple[str, Dict[str, Any], Tuple[int, int]]] = []
-    if not content:
-        return out
-    for match in _FENCE_RE.finditer(content):
-        tag = (match.group(1) or "").lower()
-        body = match.group(2) or ""
-        if tag in _ACTION_BLOCK_TAGS:
-            continue  # legitimate action block
-        try:
-            obj = json.loads(body)
-        except Exception:
-            continue
-        if not isinstance(obj, dict):
-            continue
-        keys = frozenset(obj.keys())
-        # Find the best-matching tool signature.
-        best: Optional[str] = None
-        for name, required, allowed in _TOOL_KEY_SIGNATURES:
-            if not required.issubset(keys):
-                continue
-            if allowed and not keys.issubset(allowed):
-                continue
-            best = name
-            break
-        if best is None:
-            continue
-        out.append((best, obj, match.span()))
-    return out
-
-
-def _strip_leaked_tool_blocks(content: str, spans: List[Tuple[int, int]]) -> str:
-    """Remove the given character spans from `content` and tidy whitespace."""
-    if not spans:
-        return content
-    # Sort descending so edits don't shift subsequent spans.
-    for start, end in sorted(spans, key=lambda s: -s[0]):
-        content = content[:start] + content[end:]
-    # Collapse 3+ newlines that the removal may have created.
-    content = re.sub(r"\n{3,}", "\n\n", content).strip()
-    return content
-
 
 # ----------------------------------------------------------------------------
 # Agentic tool-calling loop
@@ -613,6 +301,7 @@ def _stream_once(
     *,
     tools: Optional[List[Dict[str, Any]]],
     model_override: Optional[str] = None,
+    tool_choice: Optional[str] = None,
 ) -> Iterator[Tuple[str, Any]]:
     """Stream a single chat completion. Yields tuples:
 
@@ -631,7 +320,7 @@ def _stream_once(
     try:
         resp = call_chat_completion(
             cfg, messages, stream=True, model_override=model_override,
-            tools=tools, tool_choice="auto" if tools else None,
+            tools=tools, tool_choice=tool_choice if tools else None,
         )
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", errors="replace")[:300]
@@ -705,6 +394,7 @@ def _stream_with_fallback(
     messages: List[Dict[str, Any]],
     *,
     tools: Optional[List[Dict[str, Any]]],
+    tool_choice: Optional[str] = None,
 ) -> Iterator[Tuple[str, Any]]:
     """Stream from primary model, fall back once on transport error.
 
@@ -718,7 +408,10 @@ def _stream_with_fallback(
     for model in [m for m in (cfg.get("model"), cfg.get("fallback_model")) if m]:
         emitted = False
         had_error = False
-        for ev in _stream_once(cfg, messages, tools=tools, model_override=model):
+        for ev in _stream_once(
+            cfg, messages, tools=tools, model_override=model,
+            tool_choice=tool_choice,
+        ):
             kind = ev[0]
             if kind == "error":
                 last_err = f"{ev[1]} (model={model})"
@@ -771,279 +464,6 @@ def _complete_with_fallback(
     return None, None, last_err or "no usable model"
 
 
-def _top_groups_grounding_note(result: Dict[str, Any]) -> Optional[str]:
-    """Return a compact coverage constraint for aggregate top_groups output."""
-    if not isinstance(result, dict):
-        return None
-    tables = result.get("tables")
-    top = result.get("top")
-    if not isinstance(tables, list) or len(tables) < 2 or not isinstance(top, list):
-        return None
-
-    lines: List[str] = []
-    for row in top[:10]:
-        if not isinstance(row, dict):
-            continue
-        value = row.get("value")
-        if value in (None, ""):
-            continue
-        present = row.get("present_in")
-        absent = row.get("absent_from")
-        if not isinstance(present, list) or not isinstance(absent, list):
-            continue
-        present_text = ", ".join(str(item) for item in present) or "none"
-        absent_text = ", ".join(str(item) for item in absent) or "none"
-        if row.get("is_present_in_all_tables") is True:
-            lines.append(f"- {value}: present in all selected tables ({present_text}).")
-        else:
-            lines.append(
-                f"- {value}: present only in {present_text}; absent from {absent_text}."
-            )
-    if not lines:
-        return None
-    return (
-        "[runtime grounding constraint] The last top_groups result is aggregated "
-        "across tables. Its summed counts do NOT imply cross-species presence. "
-        "Use these coverage facts verbatim for any prose claim about where a "
-        "value occurs; never say a value appears in all datasets unless "
-        "is_present_in_all_tables is true:\n" + "\n".join(lines)
-    )
-
-
-def _top_groups_coverage_facts(result: Dict[str, Any]) -> List[Dict[str, Any]]:
-    if not isinstance(result, dict):
-        return []
-    top = result.get("top")
-    if not isinstance(top, list):
-        return []
-    facts: List[Dict[str, Any]] = []
-    for row in top[:20]:
-        if not isinstance(row, dict) or row.get("is_present_in_all_tables") is True:
-            continue
-        value = row.get("value")
-        present = row.get("present_in")
-        absent = row.get("absent_from")
-        if value in (None, "") or not isinstance(present, list) or not isinstance(absent, list):
-            continue
-        facts.append({
-            "value": str(value),
-            "count": row.get("count"),
-            "present_in": [str(item) for item in present],
-            "absent_from": [str(item) for item in absent],
-        })
-    return facts
-
-
-_ALL_SPECIES_CLAIM_RE = re.compile(
-    r"(\ball\s+(?:\w+\s+){0,3}(?:species|datasets|tables)\b|"
-    r"\bevery\s+(?:species|dataset|table)\b|"
-    r"\beach\s+(?:species|dataset|table)\b|"
-    r"\ball\s+three\s+species\b|"
-    r"\bacross\s+all\s+(?:species|datasets|tables)\b)",
-    re.IGNORECASE,
-)
-
-_PHYLO_REQUEST_RE = re.compile(
-    r"\b(phylo(?:genetic|geny|tree)?|gene\s*tree|genbaum|phylogenetisch|stammbaum)\b",
-    re.IGNORECASE,
-)
-_ORTHOGROUP_ID_RE = re.compile(r"\bOG[0-9A-Za-z_.-]+\b", re.IGNORECASE)
-
-
-def _apply_coverage_corrections(content: str, facts: List[Dict[str, Any]]) -> str:
-    if not content or not facts:
-        return content
-
-    corrected = content
-    for fact in facts:
-        value = fact.get("value")
-        if not value or str(value) not in corrected:
-            continue
-        sentences = re.split(r"(?<=[.!?])\s+", corrected)
-        changed = False
-        for index, sentence in enumerate(sentences):
-            if str(value) not in sentence or not _ALL_SPECIES_CLAIM_RE.search(sentence):
-                continue
-            present = ", ".join(fact.get("present_in") or []) or "no selected table"
-            absent = ", ".join(fact.get("absent_from") or []) or "none"
-            count = fact.get("count")
-            count_text = f" with total count {count}" if count is not None else ""
-            sentences[index] = (
-                f"{value} is the top aggregated value{count_text}, but it is "
-                f"present only in {present}; absent from {absent}."
-            )
-            changed = True
-        if changed:
-            corrected = " ".join(sentences)
-    return corrected
-
-
-def _latest_user_text(messages: List[Dict[str, Any]]) -> str:
-    for message in reversed(messages):
-        if message.get("role") == "user":
-            return str(message.get("content") or "")
-    return ""
-
-
-def _extract_orthogroup_id(spec: Dict[str, Any], user_text: str) -> Optional[str]:
-    visualizations = spec.get("visualizations") if isinstance(spec.get("visualizations"), dict) else {}
-    for section in ("phyloTree", "compare"):
-        state = visualizations.get(section) if isinstance(visualizations, dict) else None
-        if isinstance(state, dict) and state.get("selectedOrthogroup"):
-            return str(state["selectedOrthogroup"])
-
-    filters = spec.get("filters") if isinstance(spec.get("filters"), dict) else {}
-    nested = filters.get("filters") if isinstance(filters.get("filters"), dict) else {}
-    filter_items = nested.items() if isinstance(nested, dict) else []
-    for column, filter_spec in filter_items:
-        if "ortho" not in str(column).lower():
-            continue
-        if isinstance(filter_spec, dict):
-            raw_value = filter_spec.get("value") or filter_spec.get("values")
-        else:
-            raw_value = filter_spec
-        values = raw_value if isinstance(raw_value, list) else [raw_value]
-        for value in values:
-            if value:
-                match = _ORTHOGROUP_ID_RE.search(str(value))
-                if match:
-                    return match.group(0)
-
-    match = _ORTHOGROUP_ID_RE.search(user_text or "")
-    return match.group(0) if match else None
-
-
-def _repair_phylo_request_deeplink(content: str, user_text: str) -> str:
-    """Keep explicit phylo requests from being downgraded to heatmap actions."""
-    if not content or not _PHYLO_REQUEST_RE.search(user_text or "") or "```" not in content:
-        return content
-
-    blocks: List[str] = []
-    repaired = False
-    for match in _FENCE_ANY_RE.finditer(content):
-        tag = (match.group(1) or "").lower()
-        body = match.group(2) or ""
-        if tag != "deeplink":
-            blocks.append(match.group(0))
-            continue
-        try:
-            spec = json.loads(body)
-        except Exception:
-            blocks.append(match.group(0))
-            continue
-        if not isinstance(spec, dict):
-            blocks.append(match.group(0))
-            continue
-        view = str(spec.get("view") or "").lower()
-        if view == "phylo":
-            blocks.append(match.group(0))
-            continue
-        orthogroup = _extract_orthogroup_id(spec, user_text)
-        if not orthogroup:
-            blocks.append(match.group(0))
-            continue
-
-        spec = dict(spec)
-        spec["view"] = "phylo"
-        filters = dict(spec.get("filters") or {})
-        nested_filters = dict(filters.get("filters") or {})
-        if not any("ortho" in str(column).lower() for column in nested_filters):
-            nested_filters["ortho_id"] = {
-                "value": orthogroup,
-                "match_mode": "or",
-                "exact": True,
-            }
-        filters["filters"] = nested_filters
-        spec["filters"] = filters
-        visualizations = dict(spec.get("visualizations") or {})
-        phylo_state = dict(visualizations.get("phyloTree") or {})
-        phylo_state["selectedOrthogroup"] = orthogroup
-        visualizations["phyloTree"] = phylo_state
-        spec["visualizations"] = visualizations
-        blocks.append(
-            "```deeplink\n" + json.dumps(spec, ensure_ascii=False) + "\n```"
-        )
-        repaired = True
-
-    if not repaired:
-        return content
-
-    orthogroup_match = _ORTHOGROUP_ID_RE.search(user_text or "")
-    target = f" for {orthogroup_match.group(0)}" if orthogroup_match else ""
-    return (
-        f"Opening the phylogenetic view{target}. The orthogroup only needs to be "
-        "present in at least one selected dataset; datasets without matching "
-        "transcripts will be pruned by the deeplink resolver.\n\n"
-        + "\n\n".join(blocks)
-    )
-
-
-def _repair_deeplink_blocks_from_tool(
-    content: str,
-    deeplink_context: Optional[Dict[str, Any]],
-) -> str:
-    """Fill final deeplink action blocks from the successful tool call.
-
-    The frontend re-validates visible ``deeplink`` actions via
-    ``/api/assistant/deeplink``. If the model calls ``build_deeplink`` with
-    the correct filters but then emits a terse final action block containing
-    only ``{"view":"heatmap","tables":["all"]}``, the frontend would
-    accidentally merge stale UI filters back in. This repair keeps the final
-    action block aligned with the validated tool arguments.
-    """
-    if not content or not deeplink_context or "```" not in content:
-        return content
-
-    args = deeplink_context.get("args") if isinstance(deeplink_context, dict) else None
-    result = deeplink_context.get("result") if isinstance(deeplink_context, dict) else None
-    if not isinstance(args, dict) or not isinstance(result, dict):
-        return content
-    if result.get("error") or not result.get("url_path"):
-        return content
-
-    changed = False
-
-    def repl(match: re.Match[str]) -> str:
-        nonlocal changed
-        tag = (match.group(1) or "").lower()
-        body = match.group(2) or ""
-        if tag != "deeplink":
-            return match.group(0)
-        try:
-            spec = json.loads(body)
-        except Exception:
-            return match.group(0)
-        if not isinstance(spec, dict):
-            return match.group(0)
-
-        next_spec = dict(spec)
-        if not next_spec.get("view") and args.get("view"):
-            next_spec["view"] = args.get("view")
-        if not next_spec.get("tables") and result.get("tables"):
-            next_spec["tables"] = result.get("tables")
-        if _empty_action_state(next_spec.get("filters")) and not _empty_action_state(args.get("filters")):
-            next_spec["filters"] = args.get("filters")
-        if _empty_action_state(next_spec.get("visualizations")) and not _empty_action_state(args.get("visualizations")):
-            next_spec["visualizations"] = args.get("visualizations")
-
-        if next_spec == spec:
-            return match.group(0)
-        changed = True
-        return "```deeplink\n" + json.dumps(next_spec, ensure_ascii=False) + "\n```"
-
-    repaired = _FENCE_ANY_RE.sub(repl, content)
-    return repaired if changed else content
-
-
-def _empty_action_state(value: Any) -> bool:
-    if value is None:
-        return True
-    if isinstance(value, dict):
-        return len(value) == 0
-    if isinstance(value, list):
-        return len(value) == 0
-    return False
-
 
 def run_agentic_turn(
     cfg: Dict[str, Any],
@@ -1062,15 +482,9 @@ def run_agentic_turn(
     frames. The final ``delta`` event contains the assistant's text answer.
     """
     messages: List[Dict[str, Any]] = list(initial_messages)
-    requested_user_text = _latest_user_text(initial_messages)
     started = time.monotonic()
     last_model: Optional[str] = None
-    coverage_facts: List[Dict[str, Any]] = []
-    last_deeplink_context: Optional[Dict[str, Any]] = None
     last_state_token: Optional[Dict[str, Any]] = None
-    # Action blocks rescued from mis-emitted tool_calls. Appended to the
-    # final assistant content so the frontend extractor picks them up.
-    intercepted_action_blocks: List[str] = []
 
     for iteration in range(int(max_iterations)):
         if time.monotonic() - started > float(tool_deadline_s):
@@ -1093,7 +507,10 @@ def run_agentic_turn(
         used_model: Optional[str] = None
         err: Optional[str] = None
         emitted_chars = 0  # how many content chars we already streamed
-        for ev in _stream_with_fallback(cfg, messages, tools=tools):
+        for ev in _stream_with_fallback(
+            cfg, messages, tools=tools,
+            tool_choice="required" if iteration == 0 else ("none" if last_state_token else "auto"),
+        ):
             kind = ev[0]
             if kind == "delta":
                 chunk = ev[1] or ""
@@ -1114,55 +531,6 @@ def run_agentic_turn(
         tool_calls = msg.get("tool_calls") or []
         if not tool_calls:
             content = msg.get("content") or ""
-            # Salvage: if the model leaked tool args as a code block instead
-            # of using the tool_calls protocol, parse and dispatch them, then
-            # loop once more so the model can produce a real answer.
-            # Native tool calling is mandatory for supported models. Text is
-            # never reinterpreted as a tool invocation.
-            leaked: List[Tuple[str, Dict[str, Any], Tuple[int, int]]] = []
-            if leaked and iteration < int(max_iterations) - 1:
-                logger.info("Salvaging %d leaked tool call(s) from assistant text", len(leaked))
-                # Append the (cleaned) assistant turn so the model sees its own draft.
-                cleaned = _strip_leaked_tool_blocks(content, [span for _, _, span in leaked])
-                # We already streamed the leaked JSON to the client. Replace
-                # the assistant bubble's content with the cleaned version
-                # so the user never sees the raw payload.
-                if emitted_chars > 0:
-                    yield {"type": "delta", "delta": cleaned, "replace": True}
-                messages.append({"role": "assistant", "content": cleaned})
-                # Feed each leaked call back as a synthetic tool result.
-                for name, args, _span in leaked:
-                    synthetic_id = f"salvage-{iteration}-{name}"
-                    yield {"type": "tool_start", "id": synthetic_id, "name": name, "args": args}
-                    try:
-                        result = dispatch(name, args) or {}
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning("salvage dispatch(%s) failed: %s", name, e, exc_info=True)
-                        result = {"error": f"{type(e).__name__}: {e}"}
-                    yield {"type": "tool_result", "id": synthetic_id, "name": name, "result": result}
-                    try:
-                        payload = json.dumps(result, ensure_ascii=False)
-                    except Exception:
-                        payload = json.dumps({"error": "non-serialisable tool result"})
-                    if len(payload) > 8000:
-                        payload = payload[:8000] + "…(truncated)"
-                    # Use a user-role nudge because there's no matching
-                    # tool_call_id to attach a tool-role message to.
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            f"[runtime] I intercepted a tool-argument JSON for `{name}` "
-                            f"in your last reply. You MUST use the tool_calls protocol "
-                            f"for tools — do not print JSON in the text. Here is the "
-                            f"result I computed for you:\n{payload}\n\nContinue: produce "
-                            f"the final answer now, ending with any required action blocks."
-                        ),
-                    })
-                # Reset the streamed-char counter for the next iteration so a
-                # subsequent retag-replace doesn't double-fire.
-                emitted_chars = 0
-                continue  # re-prompt with tool results included
-
             # Native function calling guarantees that tool arguments are not
             # embedded in assistant prose; return the final text verbatim.
             cleaned = content
@@ -1224,82 +592,7 @@ def run_agentic_turn(
                 args = {}
             prepared.append((call_id, name, args))
 
-        # Intercept action-block-named tool_calls. The model occasionally
-        # invokes `add_filter` / `dataset_visibility` / `viz_update` etc.
-        # as OpenAI tool_calls instead of fenced action blocks. There is no
-        # backend tool by those names, so dispatch would fail and the model
-        # would either fabricate success ("I've filtered…") with no real
-        # action, or loop until the iteration cap. We materialise the call
-        # as a proper action-block fence (appended to the final assistant
-        # content) and feed a synthetic success result back, so the next
-        # iteration terminates with a clean answer. This stays fully
-        # data-agnostic: only the tag set is hard-coded, never any column
-        # name or value.
-        real_prepared: List[Tuple[str, str, Dict[str, Any]]] = []
-        for call_id, name, args in prepared:
-            # GAIA's generic execution tool: `dispatch_frontend_action(action_type,
-            # payload)`. Unwrap it into the concrete action-block name + spec so the
-            # existing intercept path handles it uniformly. Data-agnostic: we only
-            # validate the action_type against the known tag set, never columns.
-            if name == "dispatch_frontend_action":
-                action_type = str((args or {}).get("action_type") or "").strip()
-                payload = (args or {}).get("payload")
-                if not isinstance(payload, dict):
-                    payload = {}
-                if action_type in _ACTION_BLOCK_TOOL_NAMES:
-                    name, args = action_type, payload
-                else:
-                    yield {"type": "tool_start", "id": call_id, "name": "dispatch_frontend_action", "args": args}
-                    err = {
-                        "ok": False,
-                        "error": (
-                            f"unknown action_type '{action_type}'. Allowed: "
-                            + ", ".join(sorted(_ACTION_BLOCK_TOOL_NAMES))
-                        ),
-                    }
-                    yield {"type": "tool_result", "id": call_id, "name": "dispatch_frontend_action", "result": err}
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": call_id,
-                        "name": "dispatch_frontend_action",
-                        "content": json.dumps(err, ensure_ascii=False),
-                    })
-                    continue
-            if name in _ACTION_BLOCK_TOOL_NAMES:
-                try:
-                    spec_payload = json.dumps(args or {}, ensure_ascii=False)
-                except Exception:
-                    spec_payload = "{}"
-                intercepted_action_blocks.append(
-                    f"```{name}\n{spec_payload}\n```"
-                )
-                yield {"type": "tool_start", "id": call_id, "name": name, "args": args}
-                synth = {
-                    "ok": True,
-                    "applied": (
-                        f"emitted as `{name}` action block; the frontend will "
-                        "apply it. Do not call this name as a tool again."
-                    ),
-                }
-                yield {"type": "tool_result", "id": call_id, "name": name, "result": synth}
-                try:
-                    payload = json.dumps(synth, ensure_ascii=False)
-                except Exception:
-                    payload = "{}"
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": call_id,
-                    "name": name,
-                    "content": payload,
-                })
-            else:
-                real_prepared.append((call_id, name, args))
-
-        # If every tool_call was an action-block intercept there is no
-        # real dispatch work for this iteration. Loop back so the model
-        # can emit its final natural-language answer.
-        if not real_prepared:
-            continue
+        real_prepared = prepared
 
         # Surface "running" markers up front so the UI shows every tool
         # call concurrently rather than serially.
@@ -1365,14 +658,40 @@ def run_agentic_turn(
                 "name": name,
                 "content": content,
             })
-            if name == "top_groups":
-                coverage_facts.extend(_top_groups_coverage_facts(result))
-                grounding_note = _top_groups_grounding_note(result)
-                if grounding_note:
-                    messages.append({"role": "user", "content": grounding_note})
-            if name == "build_deeplink" and isinstance(result, dict):
-                if result.get("url_path") and not result.get("error"):
-                    last_deeplink_context = {"args": dict(_args or {}), "result": dict(result)}
+            if name == "search_metadata" and result.get("status") == "ui_control":
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "[runtime] The searched term is a registered UI control, not metadata. "
+                        "Call build_state_token now using the returned control keys/options and "
+                        "the user's requested operation. For all/every options use the ['*'] "
+                        "sentinel instead of enumerating options. Keep viz_patches and "
+                        "trigger_actions as top-level tool arguments, never inside filters. "
+                        "Do not call search_metadata again."
+                    ),
+                })
+            elif name == "search_metadata" and isinstance(result.get("hits"), list):
+                verified = [
+                    {
+                        "namespace": hit.get("namespace"),
+                        "column": hit.get("column"),
+                        "value": hit.get("value"),
+                    }
+                    for hit in result["hits"]
+                    if isinstance(hit, dict) and hit.get("column") and hit.get("value") is not None
+                ]
+                if verified:
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "[runtime] Metadata discovery returned verified values: "
+                            + json.dumps(verified[:10], ensure_ascii=False)
+                            + ". If the user's command targets matching rows, the next "
+                            "build_state_token call must include the chosen hit as an exact "
+                            "var_filters or obs_filters change according to its namespace. "
+                            "Do not replace a verified concrete value with has_value."
+                        ),
+                    })
             if name == "build_state_token" and isinstance(result, dict):
                 token = result.get("state_token")
                 if isinstance(token, dict):

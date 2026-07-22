@@ -102,6 +102,15 @@ def _resolve_match_options(spec: Any) -> Tuple[str, bool]:
     return mode, exact
 
 
+def _with_negation(spec: Any, parsed: Optional[Tuple[str, Any]]) -> Optional[Tuple[str, Any]]:
+    """Wrap a parsed filter when the wire rule requests logical NOT."""
+    if parsed is None or not isinstance(spec, dict):
+        return parsed
+    raw = spec.get("isNot", spec.get("is_not", False))
+    negated = raw if isinstance(raw, bool) else str(raw).strip().lower() in {"true", "t", "1", "yes", "y"}
+    return ("not", parsed) if negated else parsed
+
+
 def _text_op_for(values: List[Any], mode: str, exact: bool) -> Optional[Tuple[str, Any]]:
     if not values:
         return None
@@ -211,25 +220,25 @@ def parse_filter_query(
             values = _parse_value(value["value"])
             if values is None or values == [] or values == "":
                 if has_value:
-                    out[key] = ("has_value", True)
+                    out[key] = _with_negation(value, ("has_value", True))
                 continue
             mode, exact = _resolve_match_options(value)
             if col_type == "text":
                 op = _text_op_for(values, mode, exact)
                 if op is not None:
-                    out[key] = op
+                    out[key] = _with_negation(value, op)
             elif col_type == "array":
                 values, exact = _maybe_expand(key, values, exact)
                 op = _array_op_for(values, mode, exact)
                 if op is not None:
-                    out[key] = op
+                    out[key] = _with_negation(value, op)
             elif col_type in ("bigint", "integer"):
                 if not isinstance(values, list) or len(values) != 2:
                     continue
                 try:
                     num1, num2 = int(values[0]), int(values[1])
                     if num2 > num1:
-                        out[key] = ("range", (num1, num2))
+                        out[key] = _with_negation(value, ("range", (num1, num2)))
                 except ValueError:
                     continue
             elif col_type == "double precision":
@@ -238,11 +247,11 @@ def parse_filter_query(
                 try:
                     num1, num2 = float(values[0]), float(values[1])
                     if num2 > num1:
-                        out[key] = ("range", (num1, num2))
+                        out[key] = _with_negation(value, ("range", (num1, num2)))
                 except ValueError:
                     continue
             elif col_type == "boolean":
-                out[key] = ("eq", values)
+                out[key] = _with_negation(value, ("eq", values))
             continue
 
         # Dict with "type" + "values" keys (newer wire format).
@@ -252,49 +261,49 @@ def parse_filter_query(
             if not isinstance(values, list):
                 values = [values]
             if not [v for v in values if str(v).strip()] and has_value:
-                out[key] = ("has_value", True)
+                out[key] = _with_negation(value, ("has_value", True))
                 continue
             mode, exact = _resolve_match_options(value)
             if col_type_from_filter == "array":
                 values, exact = _maybe_expand(key, values, exact)
                 op = _array_op_for(values, mode, exact)
                 if op is not None:
-                    out[key] = op
+                    out[key] = _with_negation(value, op)
             elif col_type_from_filter == "text":
                 op = _text_op_for(values, mode, exact)
                 if op is not None:
-                    out[key] = op
+                    out[key] = _with_negation(value, op)
             elif col_type_from_filter in ("bigint", "integer", "double precision"):
                 if len(values) == 2:
                     try:
                         num1 = float(values[0]) if col_type_from_filter == "double precision" else int(values[0])
                         num2 = float(values[1]) if col_type_from_filter == "double precision" else int(values[1])
                         if num2 > num1:
-                            out[key] = ("range", (num1, num2))
+                            out[key] = _with_negation(value, ("range", (num1, num2)))
                     except (ValueError, TypeError):
                         continue
             elif col_type_from_filter == "boolean":
-                out[key] = ("eq", values[0] if values else False)
+                out[key] = _with_negation(value, ("eq", values[0] if values else False))
             continue
 
         # Dict fallback (other keys, e.g. ``{value, match_mode}`` without ``value``).
         if isinstance(value, dict):
             values = _parse_value(value.get("value", ""))
             if (values is None or values == [] or values == "") and has_value:
-                out[key] = ("has_value", True)
+                out[key] = _with_negation(value, ("has_value", True))
                 continue
             mode, exact = _resolve_match_options(value)
             if col_type == "text":
                 op = _text_op_for(values, mode, exact)
                 if op is not None:
-                    out[key] = op
+                    out[key] = _with_negation(value, op)
             elif col_type == "array":
                 values, exact = _maybe_expand(key, values, exact)
                 op = _array_op_for(values, mode, exact)
                 if op is not None:
-                    out[key] = op
+                    out[key] = _with_negation(value, op)
             elif col_type == "boolean":
-                out[key] = ("eq", values)
+                out[key] = _with_negation(value, ("eq", values))
 
     return out
 
@@ -372,6 +381,13 @@ def apply_filter_query(
         op, value = spec
         s = result[col]
 
+        negate = op == "not"
+        if negate:
+            if not isinstance(value, tuple) or len(value) != 2:
+                continue
+            op, value = value
+        source = result
+
         if op == "has_value":
             result = result[s.apply(is_non_missing_value)]
         elif op == "eq":
@@ -408,6 +424,11 @@ def apply_filter_query(
                 elif hasattr(x, "tolist"):  # numpy array
                     items = [str(it) for it in x.tolist()]
                 elif isinstance(x, str) and x:
+                    raw = x.strip()
+                    if _op == "array_overlap" and any(str(v) == raw for v in _value):
+                        return True
+                    if _op == "array_contains" and len(_value) == 1 and str(_value[0]) == raw:
+                        return True
                     items = [it.strip() for it in x.split(_sep) if it.strip()]
                 else:
                     return False
@@ -421,6 +442,9 @@ def apply_filter_query(
                 return all(any(str(v).lower() in it for it in items_lc) for v in _value)
 
             result = result[s.apply(_check)]
+
+        if negate:
+            result = source.loc[~source.index.isin(result.index)]
 
     return result
 

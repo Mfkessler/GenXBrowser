@@ -1474,7 +1474,10 @@ class GenXBrowserService:
             
             op, value = filter_spec
 
-            if op == 'has_value':
+            if op == 'not':
+                if isinstance(value, tuple) and len(value) == 2:
+                    result = result[~self._filter_mask(result, col, value)]
+            elif op == 'has_value':
                 result = result[result[actual_col].apply(filter_parser.is_non_missing_value)]
             elif op == 'eq':
                 if isinstance(value, bool):
@@ -1704,6 +1707,11 @@ class GenXBrowserService:
             return df[actual_col].isna() | (df[actual_col] == '')
 
         op, value = filter_spec
+
+        if op == 'not':
+            if isinstance(value, tuple) and len(value) == 2:
+                return ~self._filter_mask(df, col, value)
+            return pd.Series(True, index=df.index)
 
         if op == 'has_value':
             return df[actual_col].apply(filter_parser.is_non_missing_value)

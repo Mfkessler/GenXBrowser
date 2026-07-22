@@ -99,7 +99,6 @@ def warmup_assistant_cache_async(service, config_mgr) -> None:
     def _run() -> None:
         try:
             _assistant_tools.invalidate_runtime_cache()
-            _assistant_tools.warmup_runtime_cache(service, config_mgr)
         except Exception:
             logger.exception("Assistant cache warmup failed")
 
@@ -484,7 +483,6 @@ def update_column(column_name: str):
         try:
             from . import assistant_tools as _assistant_tools
             _assistant_tools.invalidate_runtime_cache()
-            _assistant_tools.warmup_runtime_cache(get_service(), config_mgr)
         except Exception:
             pass
         
@@ -1029,7 +1027,6 @@ def confirm_metadata_import():
         try:
             from . import assistant_tools as _assistant_tools
             _assistant_tools.invalidate_runtime_cache()
-            _assistant_tools.warmup_runtime_cache(service, config_mgr)
         except Exception:
             pass
         

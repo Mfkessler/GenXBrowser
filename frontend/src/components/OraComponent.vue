@@ -1,5 +1,8 @@
 <template>
-  <main class="min-w-0">
+  <main
+    class="min-w-0"
+    :data-export-pending="loading || !renderReady || rendering ? 'true' : 'false'"
+  >
     <!-- Top control bar -->
     <div
       class="flex justify-between gap-2 px-2 items-start mb-2 flex-wrap"
@@ -337,6 +340,7 @@ const loading = ref(true);
 const loadingProgress = ref<number | null>(null);
 const loadingPhaseHint = ref("Preparing ORA request...");
 const renderReady = ref(false);
+const rendering = ref(false);
 const showShareOverlay = ref(false);
 const showExportModal = ref(false);
 const showOraTooltipModal = ref(false);
@@ -1895,16 +1899,14 @@ watch(
   async () => {
     if (props.hashLoading) return;
     if (loading.value || !renderReady.value) return;
-    await showLoadingFrame();
-    await syncPlotHeightWithViewport();
-    setLoadingProgress(65);
-    setLoadingPhaseHint("Applying ORA filters...");
-    await drawDotPlot();
-    publishAnalysisContext();
-    setLoadingProgress(100);
-    renderReady.value = true;
-    loading.value = false;
-    loadingProgress.value = null;
+    rendering.value = true;
+    try {
+      await syncPlotHeightWithViewport();
+      await drawDotPlot();
+      publishAnalysisContext();
+    } finally {
+      rendering.value = false;
+    }
   },
   { deep: true },
 );
@@ -1920,15 +1922,13 @@ watch(
   async () => {
     if (props.hashLoading) return;
     if (loading.value || !renderReady.value) return;
-    await showLoadingFrame();
-    await syncPlotHeightWithViewport();
-    setLoadingProgress(65);
-    setLoadingPhaseHint("Redrawing ORA visualization...");
-    await drawDotPlot();
-    setLoadingProgress(100);
-    renderReady.value = true;
-    loading.value = false;
-    loadingProgress.value = null;
+    rendering.value = true;
+    try {
+      await syncPlotHeightWithViewport();
+      await drawDotPlot();
+    } finally {
+      rendering.value = false;
+    }
   },
   { deep: true },
 );

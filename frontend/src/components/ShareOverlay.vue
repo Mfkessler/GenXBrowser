@@ -133,6 +133,7 @@ import {
   onMounted,
   ref,
   type Ref,
+  unref,
 } from "vue";
 
 import {API_BASE_URL} from "@/shared/Config";
@@ -144,8 +145,9 @@ import html2canvasPro from "html2canvas-pro";
 const props = defineProps<{
   show: boolean;
   baseUrl?: string;
-  htmlContainer?: Ref<HTMLElement | null>;
+  htmlContainer?: Ref<HTMLElement | null> | HTMLElement | null;
   showLink: boolean;
+  initialDownload?: DownloadKind;
 }>();
 
 // Emits
@@ -272,7 +274,9 @@ function downloadUrl(url: string, filename: string) {
   const a = document.createElement("a");
   a.href = url;
   a.download = filename;
+  document.body.appendChild(a);
   a.click();
+  a.remove();
 }
 
 function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
@@ -292,7 +296,7 @@ function shouldIgnoreExportElement(element: Element): boolean {
 }
 
 function getExportContainer(): HTMLElement | null {
-  const container = props.htmlContainer?.value;
+  const container = unref(props.htmlContainer);
   if (!container) return null;
 
   if (shouldIgnoreExportElement(container)) {
@@ -300,6 +304,24 @@ function getExportContainer(): HTMLElement | null {
   }
 
   return container;
+}
+
+async function waitForExportContainer(timeoutMs = 30000): Promise<HTMLElement | null> {
+  const deadline = performance.now() + timeoutMs;
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  let container: HTMLElement | null = null;
+  while (performance.now() < deadline) {
+    container = getExportContainer();
+    const hasPendingPlot = container?.querySelector('[data-export-pending="true"]') !== null;
+    const hasVisualization = container?.matches('svg, canvas, .js-plotly-plot')
+      || container?.querySelector('svg, canvas, .js-plotly-plot') !== null;
+    if (container && !hasPendingPlot && hasVisualization) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      if (container.querySelector('[data-export-pending="true"]') === null) return container;
+    }
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  }
+  return null;
 }
 
 function html2canvasExportOptions() {
@@ -344,6 +366,9 @@ onMounted(async () => {
     } finally {
       isGeneratingLink.value = false;
     }
+    if (props.initialDownload === "png") await downloadPNG();
+    else if (props.initialDownload === "pdf") await downloadPDF();
+    else if (props.initialDownload === "svg") await downloadSVG();
   }
 });
 
@@ -403,7 +428,7 @@ async function downloadPNG() {
     // Generate a filename based on current page
     const filename = generateFilename('png');
 
-    const container = getExportContainer();
+    const container = await waitForExportContainer();
     if (!container) {
       alert("Visualization container not found.");
       return;
@@ -469,7 +494,7 @@ async function downloadPDF() {
     const filename = generateFilename('pdf');
 
     const jsPDF = (await import("jspdf")).jsPDF;
-    const container = getExportContainer();
+    const container = await waitForExportContainer();
     if (!container) {
       alert("Visualization container not found.");
       return;
@@ -1104,7 +1129,7 @@ async function downloadSVG() {
     // Generate filename
     const filename = generateFilename('svg');
     
-    const container = getExportContainer();
+    const container = await waitForExportContainer();
     if (!container) {
       alert("Visualization SVG not found.");
       return;

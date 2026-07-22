@@ -214,80 +214,17 @@ def _seed_llm_config_from_env(config_manager) -> None:
 
 
 def _prewarm_ai_assistant(app) -> None:
-    """Best-effort warmup for assistant examples and tool caches."""
-    if not _env_flag('ASSISTANT_WARMUP', True):
-        logger.info("AI assistant warmup disabled by ASSISTANT_WARMUP")
+    """Best-effort warmup for the active GAIA manifest and suggestions."""
+    if not _env_flag("ASSISTANT_WARMUP", True):
         return
-
-    import time
-
-    started = time.perf_counter()
     try:
         with app.app_context():
             from . import assistant_tools
-            from .suggestions import build_suggestion_pool, generate_suggestions
-
-            service = app.h5ad_service
-            cm = app.config_manager
-
-            pool = build_suggestion_pool(service, cm)
-            for seed in (0, 1, 2):
-                generate_suggestions(service, cm, n=10, seed=seed)
-
-            schema = assistant_tools.tool_list_schema(service, cm, max_values_per_col=0)
-            # The live chat path (`_build_assistant_context` in routes.py)
-            # asks for `max_values_per_col=5` and builds the project overview.
-            # The schema cache is keyed by that argument, so warming with 0
-            # alone left the first real prompt to rebuild the expensive
-            # per-column value Counters from scratch. Prime the exact same
-            # entrypoints the request uses so the first prompt is cache-hot.
-            try:
-                assistant_tools.tool_list_schema(service, cm, max_values_per_col=5)
-            except Exception as warm_exc:  # noqa: BLE001
-                logger.debug("schema(5) warmup skipped: %s", warm_exc)
-            try:
-                from .overview import build_overview as _build_overview
-                _build_overview(service, cm)
-            except Exception as warm_exc:  # noqa: BLE001
-                logger.debug("overview warmup skipped: %s", warm_exc)
-            species = [str(s) for s in (pool.get("species") or []) if s]
-            if not species:
-                species = [
-                    str(t.get("code") or t.get("table_name"))
-                    for t in schema.get("tables", [])
-                    if t.get("code") or t.get("table_name")
-                ]
-
-            sample_filters = []
-            for slot in pool.get("discovered") or []:
-                column = str(slot.get("column") or "")
-                value = str(slot.get("value") or "")
-                namespace = str(slot.get("namespace") or "")
-                if not column or not value:
-                    continue
-                axis = "obs_filters" if namespace == "obs" else "var_filters"
-                sample_filters.append((axis, column, value))
-                if len(sample_filters) >= 3:
-                    break
-
-            # One resolve_value call builds the reusable per-table value counters.
-            for _axis, _column, value in sample_filters[:1]:
-                assistant_tools.tool_resolve_value(service, query=str(value), tables=species, max_hits=3)
-
-            # These calls warm the filtered count path used by deeplink guards.
-            for axis, column, value in sample_filters:
-                kwargs = {axis: {column: {"value": str(value), "match_mode": "or", "exact": True}}}
-                assistant_tools.tool_count_rows(service, tables=species, **kwargs)
-
-            elapsed = time.perf_counter() - started
-            logger.info(
-                "AI assistant warmup complete in %.2fs (species=%d, filters=%d)",
-                elapsed,
-                len(species),
-                len(sample_filters),
-            )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("AI assistant warmup failed: %s", exc, exc_info=True)
+            from .suggestions import build_suggestion_pool
+            build_suggestion_pool(app.h5ad_service, app.config_manager)
+            assistant_tools.build_instance_manifest(app.h5ad_service, app.config_manager)
+    except Exception as exc:
+        logger.warning("GAIA warmup failed: %s", exc, exc_info=True)
 
 
 def create_app():
@@ -310,20 +247,7 @@ def create_app():
     
     # Initialize GenXBrowser service (wrapper over h5ad-lib)
     app.h5ad_service = GenXBrowserService(app.config_manager)
-    if _env_flag('ASSISTANT_WARMUP', True):
-        try:
-            from . import assistant_tools
-            warm = assistant_tools.warmup_runtime_cache(app.h5ad_service, app.config_manager)
-            logger.info(
-                "Assistant warmup cached %d dataset(s), %d var column(s), %d obs column(s)",
-                len(warm.get("datasets", [])),
-                len(warm.get("structural_columns", {}).get("var", [])),
-                len(warm.get("structural_columns", {}).get("obs", [])),
-            )
-        except Exception as e:
-            logger.warning("Assistant warmup skipped: %s", e)
-    else:
-        logger.info("Skipping startup assistant schema warmup (ASSISTANT_WARMUP disabled)")
+    _prewarm_ai_assistant(app)
 
     # Seed LLM assistant configuration from environment variables on first boot.
     # Persisted values in project_config.json take precedence once the admin

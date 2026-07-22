@@ -123,7 +123,7 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, ref } from "vue";
+import { nextTick, onMounted, ref } from "vue";
 import { getEntityLabelPlural } from "@/shared/dataTypeLabels";
 import type { RowType } from "@/shared/RowType";
 
@@ -138,6 +138,8 @@ const props = defineProps<{
   totalCount?: number;
   dataColumnLabel?: string;
   rowLabel?: string;
+  initialFormat?: 'tsv' | 'csv' | 'xlsx' | 'json';
+  autoExport?: boolean;
 }>();
 
 const emit = defineEmits(["close", "export"]);
@@ -153,14 +155,19 @@ const dataColumnLabel = props.dataColumnLabel ?? 'samples';
 const rowLabel = props.rowLabel ?? entityLabelPlural.toLowerCase();
 
 // Format options
-const exportFormats = [
+const exportFormats: Array<{
+  id: 'tsv' | 'csv' | 'xlsx' | 'json';
+  label: string;
+  icon: string;
+  description: string;
+}> = [
   { id: 'tsv', label: 'TSV', icon: '📄', description: 'Tab-separated values' },
   { id: 'csv', label: 'CSV', icon: '📊', description: 'Comma-separated values' },
   { id: 'xlsx', label: 'Excel', icon: '📗', description: 'Excel workbook (.xlsx)' },
   { id: 'json', label: 'JSON', icon: '{ }', description: 'JavaScript Object Notation' },
 ];
 
-const selectedFormat = ref('tsv');
+const selectedFormat = ref(props.initialFormat ?? 'tsv');
 const includeHeaders = ref(true);
 const exporting = ref(false);
 const exportProgress = ref(0);
@@ -426,4 +433,8 @@ async function doExport() {
     exporting.value = false;
   }
 }
+
+onMounted(() => {
+  if (props.autoExport) void doExport();
+});
 </script>
