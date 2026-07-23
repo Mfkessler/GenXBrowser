@@ -454,6 +454,7 @@ const heatmapExportPayload = computed(() => {
 defineExpose({
   getExportPayload: () => heatmapExportPayload.value,
   cancelActiveLoad,
+  refreshSideColorMappings: () => scheduleHeatmapRender(),
 });
 
 watch(
@@ -2180,6 +2181,7 @@ async function renderHeatmap(): Promise<boolean> {
       );
       if (col === "default_trait") {
         xLabelsForColoring = heatmapCols;
+        colType = "text";
         // Get actual tissue values from column metadata using configured tissue column
         const tissueKey = columnStore.defaultTraitColumnName ?? 'tissue';
         const filteredColMeta = sortedColumns.value.filter((meta) =>

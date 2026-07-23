@@ -135,96 +135,99 @@ export function getZeroCenteredDomain(minVal: number, maxVal: number): [number, 
   return [-bound, bound];
 }
 
-/**
- * Maximally distinct color palette using CIE Lab color space principles.
- * Colors are chosen to be as perceptually different as possible.
- * Each color has distinct hue, saturation, and lightness.
- */
-const DISTINCT_COLORS = [
-  // Primary distinct hues - maximum saturation difference
-  "#e6194b",  // Vivid Red
-  "#3cb44b",  // Vivid Green
-  "#4363d8",  // Vivid Blue
-  "#f58231",  // Vivid Orange
-  "#911eb4",  // Vivid Purple
-  "#42d4f4",  // Vivid Cyan
-  "#f032e6",  // Vivid Magenta
-  "#bfef45",  // Vivid Lime
-  "#fabed4",  // Pink
-  "#469990",  // Teal
-  "#dcbeff",  // Lavender
-  "#9a6324",  // Brown
-  "#fffac8",  // Beige/Cream
-  "#800000",  // Maroon
-  "#aaffc3",  // Mint
-  "#808000",  // Olive
-  "#ffd8b1",  // Apricot
-  "#000075",  // Navy
-  "#a9a9a9",  // Gray
-  "#000000",  // Black
-  // Extended palette - still distinct
-  "#e6beff",  // Light Violet
-  "#aa6e28",  // Chocolate
-  "#ffffd8",  // Light Yellow
-  "#7f0000",  // Dark Red
-  "#17b584",  // Sea Green
-  "#6a3d9a",  // Dark Purple
-  "#ff7f50",  // Coral
-  "#1e90ff",  // Dodger Blue
-  "#228b22",  // Forest Green
-  "#ff1493",  // Deep Pink
-  "#00ced1",  // Dark Turquoise
-  "#8b4513",  // Saddle Brown
-  "#9932cc",  // Dark Orchid
-  "#ffa500",  // Orange
-  "#2f4f4f",  // Dark Slate Gray
-  "#7fff00",  // Chartreuse
-  "#dc143c",  // Crimson
-  "#00bfff",  // Deep Sky Blue
-  "#8b008b",  // Dark Magenta
-  "#b8860b",  // Dark Goldenrod
-  // Additional distinct hues to delay rainbow fallback
-  "#4682b4",  // Steel Blue
-  "#daa520",  // Goldenrod
-  "#5f9ea0",  // Cadet Blue
-  "#9acd32",  // Yellow Green
-  "#cd5c5c",  // Indian Red
-  "#20b2aa",  // Light Sea Green
-  "#ff69b4",  // Hot Pink
-  "#bdb76b",  // Dark Khaki
-  "#483d8b",  // Dark Slate Blue
-  "#008080",  // Classic Teal
-  "#b22222",  // Firebrick
-  "#7cfc00",  // Lawn Green
-  "#ba55d3",  // Medium Orchid
-  "#ff8c00",  // Dark Orange
-  "#4169e1",  // Royal Blue
-  "#3cb371",  // Medium Sea Green
-  "#c71585",  // Medium Violet Red
-  "#48d1cc",  // Medium Turquoise
-  "#cd853f",  // Peru
-  "#556b2f",  // Dark Olive Green
-];
+function relativeLuminance(red: number, green: number, blue: number): number {
+  const channels = [red, green, blue].map((channel) => {
+    const normalized = channel / 255;
+    return normalized <= 0.04045
+      ? normalized / 12.92
+      : ((normalized + 0.055) / 1.055) ** 2.4;
+  });
+  return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+}
+
+const categoricalPaletteCache = new Map<number, string[]>();
+type CategoricalColorCandidate = {
+  color: string;
+  lab: d3.LabColor;
+};
+
+const categoricalColorCandidates: CategoricalColorCandidate[] = [];
+for (let red = 0; red <= 255; red += 17) {
+  for (let green = 0; green <= 255; green += 17) {
+    for (let blue = 0; blue <= 255; blue += 17) {
+      const color = d3.rgb(red, green, blue).formatHex();
+      const lab = d3.lab(color);
+      const chroma = Math.hypot(lab.a, lab.b);
+      if (lab.l >= 35 && lab.l <= 70 && chroma >= 40 &&
+          1.05 / (relativeLuminance(red, green, blue) + 0.05) >= 3) {
+        categoricalColorCandidates.push({ color, lab });
+      }
+    }
+  }
+}
+
+function labDistance(first: d3.LabColor, second: d3.LabColor): number {
+  return Math.hypot(first.l - second.l, first.a - second.a, first.b - second.b);
+}
+
+function createMaximinPalette(count: number, startIndex: number): CategoricalColorCandidate[] {
+  const selected = [categoricalColorCandidates[startIndex]];
+  while (selected.length < count) {
+    let bestCandidate: CategoricalColorCandidate | undefined;
+    let bestDistance = -Infinity;
+    for (const candidate of categoricalColorCandidates) {
+      if (selected.includes(candidate)) continue;
+      const nearestDistance = Math.min(...selected.map((color) => labDistance(candidate.lab, color.lab)));
+      if (nearestDistance > bestDistance) {
+        bestCandidate = candidate;
+        bestDistance = nearestDistance;
+      }
+    }
+    if (!bestCandidate) break;
+    selected.push(bestCandidate);
+  }
+  return selected;
+}
+
+function minimumPaletteDistance(palette: CategoricalColorCandidate[]): number {
+  let minimum = Infinity;
+  for (let index = 0; index < palette.length; index++) {
+    for (let otherIndex = index + 1; otherIndex < palette.length; otherIndex++) {
+      minimum = Math.min(minimum, labDistance(palette[index].lab, palette[otherIndex].lab));
+    }
+  }
+  return minimum;
+}
 
 /**
- * Generate a categorical color palette with enough distinct colors.
- * Uses hand-picked maximally distinct colors for better differentiation.
- * For n > 40: falls back to golden ratio rainbow interpolation.
+ * Generate a set-specific palette by choosing the strongest result from
+ * deterministic multi-start farthest-first CIE Lab searches.
  */
 export function getCategoricalColors(n: number): string[] {
   if (n <= 0) return [];
-  
-  if (n <= DISTINCT_COLORS.length) {
-    return DISTINCT_COLORS.slice(0, n);
-  } else {
-    // For many categories, use quantized rainbow with golden ratio offset for max distinction
-    const colors: string[] = [];
-    const goldenRatio = 0.618033988749895;
-    let hue = 0;
-    for (let i = 0; i < n; i++) {
-      hue = (hue + goldenRatio) % 1;
-      colors.push(d3.interpolateRainbow(hue));
+
+  const cached = categoricalPaletteCache.get(n);
+  if (cached) return [...cached];
+
+  const count = Math.min(n, categoricalColorCandidates.length);
+  const attemptCount = Math.min(12, categoricalColorCandidates.length);
+  const stride = Math.ceil(categoricalColorCandidates.length / attemptCount);
+  let bestPalette: CategoricalColorCandidate[] = [];
+  let bestDistance = -Infinity;
+
+  for (let startIndex = 0; startIndex < categoricalColorCandidates.length; startIndex += stride) {
+    const palette = createMaximinPalette(count, startIndex);
+    const minimumDistance = minimumPaletteDistance(palette);
+    if (minimumDistance > bestDistance) {
+      bestPalette = palette;
+      bestDistance = minimumDistance;
     }
-    return colors;
   }
+
+  const colors = bestPalette.map((candidate) => candidate.color);
+  for (let index = colors.length; index < n; index++) {
+    colors.push(d3.hsl((index * 137.50776405003785) % 360, 0.72, 0.45).formatHex());
+  }
+  categoricalPaletteCache.set(n, colors);
+  return [...colors];
 }

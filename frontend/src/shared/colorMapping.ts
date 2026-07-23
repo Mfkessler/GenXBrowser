@@ -137,8 +137,9 @@ export function createVisibleColorMapping(
     ].sort();
 
     const mapping: ColorMapping = {} as ColorMapping;
-    uniqueListKeys.forEach((key) => {
-      mapping[key] = getListMetadataColor(key);
+    const colors = getCategoricalColors(uniqueListKeys.length);
+    uniqueListKeys.forEach((key, index) => {
+      mapping[key] = colors[index];
     });
     return mapping;
   } else {
@@ -202,7 +203,22 @@ export class SharedColorRegistry {
       }
     });
 
-    // Invalidate cached mapping since values changed
+    const existingMapping = this.cachedMappings.get(columnName);
+    if (!existingMapping) return;
+
+    // Preserve colors already painted in sibling heatmaps. New categories get
+    // the next palette color instead of rebuilding a sorted ordinal scale.
+    if (colType !== "double precision" && colType !== "bigint") {
+      const colors = getCategoricalColors(existing.size);
+      let nextColorIndex = Object.keys(existingMapping).length;
+      for (const key of existing.keys()) {
+        if (typeof existingMapping[key] !== "string") {
+          existingMapping[key] = colors[nextColorIndex++];
+        }
+      }
+      return;
+    }
+
     this.cachedMappings.delete(columnName);
   }
 
@@ -223,6 +239,11 @@ export class SharedColorRegistry {
     const mapping = createUnifiedColorMapping(columnName, colType, allValues);
     this.cachedMappings.set(columnName, mapping);
     return mapping;
+  }
+
+  /** Recreate mappings from every registered value on the next lookup. */
+  refreshMappings(): void {
+    this.cachedMappings.clear();
   }
 
   /** Clear all registered values and cached mappings. */

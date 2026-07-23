@@ -120,7 +120,7 @@
 <script setup lang="ts">
 import axios from "axios";
 import { API_BASE_URL } from "@/shared/Config";
-import { computed, onMounted, onUnmounted, provide, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { type CatalogMeta } from "@/shared/CatalogMeta";
@@ -187,6 +187,7 @@ interface ExportPayload {
 interface ExportPayloadProvider {
   getExportPayload?: () => ExportPayload | null;
   cancelActiveLoad?: (emitCancel?: boolean) => void;
+  refreshSideColorMappings?: () => void;
 }
 
 interface HeatmapLoadingState {
@@ -309,6 +310,20 @@ function onHeatmapLoadingChange(state: HeatmapLoadingState) {
     ...heatmapLoadingStates.value,
     [state.tableName]: state,
   };
+
+  const allVisibleHeatmapsLoaded = visibleTableNames.value.length > 0 &&
+    visibleTableNames.value.every((tableName) => {
+      const loadingState = heatmapLoadingStates.value[tableName];
+      return loadingState && !loadingState.loading;
+    });
+  if (!allVisibleHeatmapsLoaded) return;
+
+    sharedColorRegistry.refreshMappings();
+  void nextTick(() => {
+    for (const component of heatmapRefs.value || []) {
+      component?.refreshSideColorMappings?.();
+    }
+  });
 }
 
 function isCanceledRequest(error: unknown) {
