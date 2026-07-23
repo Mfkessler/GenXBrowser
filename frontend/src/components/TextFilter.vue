@@ -227,6 +227,7 @@
 import axios from "axios";
 import { debounce, isEqual } from "lodash-es";
 import { computed, onMounted, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 import { useFloating, offset, flip, shift, arrow, autoUpdate } from "@floating-ui/vue";
 
 import BatchInputModal from "./BatchInputModal.vue";
@@ -246,6 +247,7 @@ const props = defineProps<{
 }>();
 
 const columnsStore = useColumnsStore();
+const route = useRoute();
 
 const isArrayType = computed(() => (props.type || '').toLowerCase() === 'array');
 
@@ -486,57 +488,6 @@ function onBatchFiltersApplied(values: string[], _substringMatching: boolean) {
   exact.value = true;
 }
 
-/**
- * Ensure tissue values are loaded before opening the batch modal.
- * This is critical for the HOME page where the sidebar watch may not have triggered yet.
- */
-async function ensureTissueValuesLoaded() {
-  const columnName = props.id || props.label;
-  
-  // Only load if this is the tissue column and values are not yet cached
-  if (columnsStore.defaultTraitColumnName === columnName && columnsStore.traitValues.length === 0) {
-    try {
-      // Fetch from all tables (same logic as SidebarComponent)
-      const tablesResponse = await axios.get(`${API_BASE_URL}/api/tables`);
-      const tables = tablesResponse.data;
-      
-      const allTissues = new Set<string>();
-      
-      // Fetch tissues from each table's metadata
-      for (const table of tables) {
-        try {
-          const response = await axios.post(`${API_BASE_URL}/api/data`, {
-            table_name: table.table_name + "_meta",
-            filters: {},
-          });
-          
-          const data = response.data.data || response.data;
-          if (data && typeof data === 'object') {
-            // Extract tissue values from the metadata
-            const values = Object.values(data) as Record<string, unknown>[];
-            values.forEach((item) => {
-              const tissueValue = item[columnName];
-              if (tissueValue) {
-                allTissues.add(String(tissueValue));
-              }
-            });
-          }
-        } catch (err) {
-          console.warn(`Could not fetch tissues for ${table.table_name}:`, err);
-        }
-      }
-      
-      const tissueArray = Array.from(allTissues).sort();
-      
-      if (tissueArray.length > 0) {
-        columnsStore.setDistinctValues(columnName, tissueArray);
-      }
-    } catch (err) {
-      console.warn("Could not load tissue values on demand:", err);
-    }
-  }
-}
-
 async function handleOpenBatchModal() {
   // Ensure choice-list values are loaded before opening modal
   await ensureBatchOptionsLoaded();
@@ -544,24 +495,25 @@ async function handleOpenBatchModal() {
 }
 
 /**
- * Load distinct values for the choice-list batch modal, when applicable.
- * The default trait column keeps its dedicated per-table loading logic;
- * any other text-based sample column is fetched generically via /api/col.
+ * Load literal distinct sample values for every active dataset before opening
+ * the choice-list. This intentionally refreshes on open because the route can
+ * change while the shared column cache still contains a prior table selection.
  */
 async function ensureBatchOptionsLoaded() {
   const columnName = props.id || props.label;
 
-  if (columnsStore.defaultTraitColumnName === columnName) {
-    await ensureTissueValuesLoaded();
-    return;
-  }
-
   if (!isSampleTextColumn.value) return;
-  if (columnsStore.getDistinctValues(columnName).length > 0) return;
+
+  const tableNames = typeof route.params.table_names === "string"
+    ? route.params.table_names.split(",").filter(Boolean)
+    : [];
 
   try {
     const response = await axios.get(`${API_BASE_URL}/api/col`, {
-      params: { column_name: columnName },
+      params: {
+        column_name: columnName,
+        ...(tableNames.length > 0 ? { table_names: tableNames.join(",") } : {}),
+      },
     });
     const terms = (response.data?.terms || []) as string[];
     if (terms.length > 0) {

@@ -32,6 +32,9 @@ class DummyRegistry:
     def load(self, species_code):
         return self._adata_by_species.get(species_code)
 
+    def get_available_codes(self):
+        return list(self._adata_by_species)
+
 
 class DummyConfigManager:
     def __init__(self, config):
@@ -64,6 +67,7 @@ def build_service(config, adata_by_species):
         "bool": "boolean",
     }.get(dtype, "text")
     service._custom_overlays = {}
+    service._unique_values_cache = {}
     service._save_custom_overlays = lambda: None
     service.reload_config = lambda: None
     service.gene_trees = {}
@@ -96,6 +100,34 @@ def build_adata():
         X=pd.DataFrame([[1.0, 2.0], [3.0, 4.0]]).to_numpy(),
         layers={},
     )
+
+
+def test_unique_sample_values_union_active_datasets_without_sanitizing_literals():
+    at = build_adata()
+    at.obs["group"] = ["control_1", "control_2"]
+    ps = build_adata()
+    ps.obs["group"] = ["species_2", "condition42"]
+    config = {
+        "species": {"AT": {"enabled": True}, "PS": {"enabled": True}},
+        "column_definitions": {
+            "group": {
+                "display_name": "Group",
+                "type": "text",
+                "is_meta": False,
+                "is_sample_metadata": True,
+                "visible": True,
+            },
+        },
+    }
+    service = build_service(config, {"AT": at, "PS": ps})
+
+    assert service.get_unique_values("group", table_names=["AT"]) == ["control_1", "control_2"]
+    assert service.get_unique_values("group", table_names=["AT", "PS"]) == [
+        "condition42",
+        "control_1",
+        "control_2",
+        "species_2",
+    ]
 
 
 def test_get_all_columns_hides_removed_sample_metadata_from_sidebar():

@@ -94,6 +94,7 @@ class TagsSchema(Schema):
 class ColumnNameSchema(Schema):
     """Schema for single column name (GET /api/col)."""
     column_name = fields.String(required=True)
+    table_names = CommaSeparatedList(required=False, allow_none=True)
 
 
 class ColumnsSchema(Schema):
@@ -637,10 +638,11 @@ def list_data():
 
 @api_bp.route('/api/col', methods=['GET'])
 def get_column_values():
-    """Get unique values for a column."""
+    """Get unique values for a column across the requested active datasets."""
     try:
         args = ColumnNameSchema().load(request.args)
         column_name = args.get("column_name")
+        table_names = args.get("table_names")
         
         service = get_service()
         
@@ -648,7 +650,12 @@ def get_column_values():
         if not is_valid:
             return jsonify({"error": err}), 400
         
-        terms = service.get_unique_values(column_name)
+        if table_names:
+            is_valid, err = validate_table_name(table_names, service.get_tables)
+            if not is_valid:
+                return jsonify({"error": err}), 400
+
+        terms = service.get_unique_values(column_name, table_names=table_names)
         return jsonify({"terms": terms})
     
     except ValidationError as err:

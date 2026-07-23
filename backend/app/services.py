@@ -512,7 +512,7 @@ class GenXBrowserService:
         self._meta_columns = self.config_manager.get_meta_columns()
         
         # Cache for unique column values
-        self._unique_values_cache: Dict[str, List[str]] = {}
+        self._unique_values_cache: Dict[Tuple[str, Tuple[str, ...]], List[str]] = {}
 
         # Cache for global (all-dataset merged) histogram bins
         self._global_bins_cache: Dict[str, List] = {}
@@ -1931,10 +1931,21 @@ class GenXBrowserService:
             self._global_bins_cache[column_name] = bins
         return bins
 
-    def get_unique_values(self, column_name: str) -> List[str]:
-        """Get unique values for a column across all species."""
-        if column_name in self._unique_values_cache:
-            return self._unique_values_cache[column_name]
+    def get_unique_values(
+        self,
+        column_name: str,
+        table_names: Optional[List[str]] = None,
+    ) -> List[str]:
+        """Get literal unique values for a column across the requested species."""
+        species_codes = (
+            [self._normalize_table_name(table_name) for table_name in table_names]
+            if table_names
+            else self.get_available_species()
+        )
+        species_codes = sorted({code for code in species_codes if code})
+        cache_key = (column_name, tuple(species_codes))
+        if cache_key in self._unique_values_cache:
+            return self._unique_values_cache[cache_key]
         
         h5ad_col = self._to_h5ad_column_name(column_name)
         values = set()
@@ -1957,7 +1968,7 @@ class GenXBrowserService:
                 else ','
             )
         
-        for species_code in self.get_available_species():
+        for species_code in species_codes:
             adata = self.registry.load(species_code)
             if adata is None:
                 continue
@@ -1992,7 +2003,7 @@ class GenXBrowserService:
                         values.add(val_str)
         
         result = sorted(values)
-        self._unique_values_cache[column_name] = result
+        self._unique_values_cache[cache_key] = result
         return result
     
     def find_similar_values(self, column_name: str, search_term: str, limit: int = 10) -> List[Dict]:
