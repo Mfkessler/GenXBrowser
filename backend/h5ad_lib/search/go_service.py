@@ -67,6 +67,7 @@ class GOService:
         self.ontology: Optional[Any] = None
         self.go_index: Dict[str, Dict[str, Any]] = {}
         self.name_index: Dict[str, List[str]] = defaultdict(list)
+        self.definition_index: Dict[str, List[str]] = defaultdict(list)
         self.loaded = False
         
         if not HAS_PRONTO:
@@ -120,20 +121,31 @@ class GOService:
                 "is_obsolete": term.obsolete,
             }
             
-            # Build name search index (case-insensitive word-based)
+            # Build case-insensitive word indexes for name and definition search.
             if name:
                 words = re.findall(r"\w+", name.lower())
                 for word in words:
                     if len(word) >= 3:  # Only index words with 3+ chars
                         self.name_index[word].append(go_id)
+            if definition:
+                words = re.findall(r"\w+", str(definition).lower())
+                for word in words:
+                    if len(word) >= 3:
+                        self.definition_index[word].append(go_id)
     
-    def search_terms(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+    def search_terms(
+        self,
+        query: str,
+        limit: int = 20,
+        candidate_ids: Optional[Set[str]] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Search GO terms by name.
         
         Args:
             query: Search query (case-insensitive)
             limit: Maximum number of results
+            candidate_ids: Optional GO IDs to restrict results to
             
         Returns:
             List of matching GO terms with id, name, namespace, definition
@@ -144,20 +156,24 @@ class GOService:
         query_lower = query.lower().strip()
         if len(query_lower) < 2:
             return []
+
+        candidates = set(self.go_index)
+        if candidate_ids is not None:
+            candidates.intersection_update(candidate_ids)
         
         matching_ids: Set[str] = set()
         
         # 1. Exact GO ID match (e.g., "GO:0009908")
         if query_lower.startswith("go:"):
             go_id_upper = query.upper().strip()
-            if go_id_upper in self.go_index:
+            if go_id_upper in candidates:
                 return [self._format_term(go_id_upper)]
         
         # 2. Word-based search
         query_words = re.findall(r"\w+", query_lower)
         if query_words:
             word_sets = [
-                set(self.name_index.get(word, []))
+                set(self.name_index.get(word, [])) | set(self.definition_index.get(word, []))
                 for word in query_words
                 if len(word) >= 3
             ]
@@ -169,14 +185,17 @@ class GOService:
                     if len(word_sets) > 1
                     else word_sets[0]
                 )
+                matching_ids.intersection_update(candidates)
         
         # 3. Substring match fallback
         if not matching_ids:
-            for go_id, data in self.go_index.items():
-                if query_lower in data["name"].lower():
+            for go_id in candidates:
+                data = self.go_index[go_id]
+                if (
+                    query_lower in data["name"].lower()
+                    or query_lower in data["definition"].lower()
+                ):
                     matching_ids.add(go_id)
-                    if len(matching_ids) >= limit * 3:
-                        break
         
         # Format and rank results
         results = [self._format_term(go_id) for go_id in matching_ids]
@@ -194,6 +213,7 @@ class GOService:
         """
         def rank_key(term: Dict[str, Any]) -> tuple:
             name_lower = term["name"].lower()
+            definition_lower = term["definition"].lower()
             
             if name_lower == query:
                 return (0, name_lower)
@@ -201,7 +221,9 @@ class GOService:
                 return (1, name_lower)
             if query in name_lower:
                 return (2, name_lower)
-            return (3, name_lower)
+            if query in definition_lower:
+                return (3, name_lower)
+            return (4, name_lower)
         
         return sorted(results, key=rank_key)
     

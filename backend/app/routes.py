@@ -663,8 +663,11 @@ def get_column_values():
 
 @api_bp.route('/api/data/distinct', methods=['POST'])
 def validate_distinct_values():
-    """Validate a list of values against a column's unique values.
-    Optionally scoped to a specific table for per-dataset validation.
+    """Validate values against a column's unique values.
+
+    When ``substring_matching`` is enabled, non-exact tokens that occur in
+    at least one known value are returned with their concrete matching values,
+    so clients can apply exact filters after showing a substring breakdown.
     """
     try:
         data = request.get_json(force=True, silent=True)
@@ -674,6 +677,7 @@ def validate_distinct_values():
         column = data.get('column')
         values = data.get('values', [])
         table_name = data.get('table_name')  # Optional: scope to one dataset
+        substring_matching = data.get('substring_matching', False) is True
         
         if not column or not values:
             return jsonify({"error": "Missing 'column' or 'values'"}), 400
@@ -713,15 +717,32 @@ def validate_distinct_values():
         known_lower = {v.lower(): v for v in known}
         
         matched = []
+        substring_matched = []
+        resolved_substring_matches = []
         unmatched = []
         for v in values:
             key = v.strip().lower() if isinstance(v, str) else str(v).lower()
             if key in known_lower:
                 matched.append(known_lower[key])
+            elif substring_matching:
+                resolved = sorted(
+                    known_value for known_value in known
+                    if key in known_value.lower()
+                )
+                if resolved:
+                    substring_matched.append(v)
+                    resolved_substring_matches.extend(resolved)
+                else:
+                    unmatched.append(v)
             else:
                 unmatched.append(v)
         
-        return jsonify({"matched": matched, "unmatched": unmatched})
+        return jsonify({
+            "matched": sorted(set(matched)),
+            "substring_matched": substring_matched,
+            "resolved_substring_matches": sorted(set(resolved_substring_matches)),
+            "unmatched": unmatched,
+        })
     
     except Exception as e:
         logger.error(f"Error in validate_distinct_values: {e}")
@@ -902,14 +923,13 @@ def go_search():
                 'message': 'No GO terms found in dataset'
             }), 200
         
-        # Search GO ontology
-        all_results = go_service.search_terms(query, limit=limit * 3)  # Get more to filter
-        
-        # Filter results to only include GO terms present in dataset
-        filtered_results = [
-            r for r in all_results 
-            if r['id'] in dataset_go_terms
-        ][:limit]
+        # Restrict before matching and limiting so ontology-only hits never
+        # crowd out terms that are actually available in the dataset.
+        filtered_results = go_service.search_terms(
+            query,
+            limit=limit,
+            candidate_ids=dataset_go_terms,
+        )
         
         return jsonify({
             'available': True,

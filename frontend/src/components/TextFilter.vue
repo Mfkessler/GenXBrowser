@@ -217,6 +217,7 @@
       :column-label="label"
       :available-options="availableOptionsForBatch"
       :current-values="pillItems"
+      :substring-matching="!exact"
       @close="handleBatchModalClose"
       @apply-filters="onBatchFiltersApplied"
     />
@@ -479,9 +480,10 @@ function handleTouchCancel() {
  * Handle batch filters applied from the BatchInputModal.
  * Replaces pill items with the selected values (1:1 sync).
  */
-function onBatchFiltersApplied(values: string[]) {
+function onBatchFiltersApplied(values: string[], _substringMatching: boolean) {
   // Replace pills entirely with the new selection
   pillItems.value = values.sort();
+  exact.value = true;
 }
 
 /**

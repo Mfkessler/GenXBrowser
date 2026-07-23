@@ -21,6 +21,16 @@
         </button>
       </div>
 
+      <label class="mb-4 flex items-center justify-between rounded-md border border-gray-200 bg-gray-50 px-3 py-2 cursor-pointer">
+        <span class="text-sm font-medium text-gray-700">Match substrings</span>
+        <input
+          v-model="allowSubstringMatching"
+          type="checkbox"
+          role="switch"
+          class="cursor-pointer h-5 w-9 accent-primary-700"
+        />
+      </label>
+
       <!-- Multi-select mode (when availableOptions provided) -->
       <div v-if="hasAvailableOptions">
         <p class="text-sm text-gray-600 mb-3">
@@ -148,14 +158,18 @@
           </div>
 
           <!-- Metrics -->
-          <div class="grid grid-cols-3 gap-3 mb-3">
+          <div :class="allowSubstringMatching ? 'grid grid-cols-4' : 'grid grid-cols-3'" class="gap-3 mb-3">
             <div class="text-center p-2 bg-white rounded border">
               <div class="text-lg font-bold text-gray-700">{{ parsedTokens.length }}</div>
               <div class="text-xs text-gray-500">Tokens Parsed</div>
             </div>
             <div class="text-center p-2 bg-green-50 rounded border border-green-200">
-              <div class="text-lg font-bold text-green-600">{{ matchedValues.length }}</div>
-              <div class="text-xs text-green-600">Valid Matches</div>
+              <div class="text-lg font-bold text-green-600">{{ allowSubstringMatching ? exactMatchedValues.length : effectiveMatchedValues.length }}</div>
+              <div class="text-xs text-green-600">{{ allowSubstringMatching ? 'Exact Resolved Matches' : 'Valid Matches' }}</div>
+            </div>
+            <div v-if="allowSubstringMatching" class="text-center p-2 bg-blue-50 rounded border border-blue-200">
+              <div class="text-lg font-bold text-blue-600">{{ substringMatchedValues.length }}</div>
+              <div class="text-xs text-blue-600">Substring Query Tokens</div>
             </div>
             <div class="text-center p-2 bg-red-50 rounded border border-red-200">
               <div class="text-lg font-bold text-red-600">{{ discardedValues.length }}</div>
@@ -164,21 +178,22 @@
           </div>
 
           <!-- Matched Values Preview -->
-          <div v-if="matchedValues.length > 0" class="mb-3">
+          <div v-if="effectiveMatchedValues.length > 0" class="mb-3">
             <div class="text-sm font-medium text-green-700 mb-1">
-              Will be added ({{ matchedValues.length }}):
+              Will be added ({{ effectiveMatchedValues.length }}):
             </div>
             <div class="max-h-24 overflow-y-auto bg-green-50 p-2 rounded border border-green-200">
               <div class="flex flex-wrap gap-1">
                 <span
-                  v-for="val in matchedValues.slice(0, 50)"
+                  v-for="val in effectiveMatchedValues.slice(0, 50)"
                   :key="val"
                   class="text-xs bg-green-200 text-green-800 px-2 py-0.5 rounded-full"
+                  :title="goTermPreviews[val]?.definition || ''"
                 >
-                  {{ val }}
+                  {{ goTermPreviews[val] ? `${val} - ${goTermPreviews[val].name}` : val }}
                 </span>
-                <span v-if="matchedValues.length > 50" class="text-xs text-green-600 italic">
-                  +{{ matchedValues.length - 50 }} more...
+                <span v-if="effectiveMatchedValues.length > 50" class="text-xs text-green-600 italic">
+                  +{{ effectiveMatchedValues.length - 50 }} more...
                 </span>
               </div>
             </div>
@@ -240,13 +255,14 @@ const props = defineProps<{
   columnLabel: string;
   availableOptions?: string[];
   currentValues?: string[];
+  substringMatching?: boolean;
   tableName?: string;
   speciesName?: string;
 }>();
 
 const emit = defineEmits<{
   (e: "close"): void;
-  (e: "apply-filters", values: string[]): void;
+  (e: "apply-filters", values: string[], substringMatching: boolean): void;
 }>();
 
 // Multi-select mode state
@@ -259,8 +275,13 @@ const isValidating = ref(false);
 const hasValidated = ref(false);
 const parsedTokens = ref<string[]>([]);
 const matchedValues = ref<string[]>([]);
+const exactMatchedValues = ref<string[]>([]);
+const substringMatchedValues = ref<string[]>([]);
+const resolvedSubstringValues = ref<string[]>([]);
 const discardedValues = ref<string[]>([]);
+const goTermPreviews = ref<Record<string, { name: string; definition: string }>>({});
 const detectedSeparator = ref<string>("comma");
+const allowSubstringMatching = ref(false);
 
 // File drop state (textarea acts as a drop zone for plain-text files)
 const isDraggingFile = ref(false);
@@ -296,7 +317,7 @@ const effectiveMatchedValues = computed(() => {
   if (hasAvailableOptions.value) {
     return selectedOptions.value;
   }
-  return matchedValues.value;
+  return [...new Set([...exactMatchedValues.value, ...resolvedSubstringValues.value])];
 });
 
 // Multi-select helper functions
@@ -331,6 +352,7 @@ watch(
   (open) => {
     if (open) {
       const existing = props.currentValues ? [...props.currentValues] : [];
+      allowSubstringMatching.value = props.substringMatching ?? false;
       isDraggingFile.value = false;
       fileError.value = "";
 
@@ -340,7 +362,11 @@ watch(
         optionSearch.value = "";
         hasValidated.value = false;
         matchedValues.value = [];
+        exactMatchedValues.value = [];
+        substringMatchedValues.value = [];
+        resolvedSubstringValues.value = [];
         discardedValues.value = [];
+        goTermPreviews.value = {};
         parsedTokens.value = [];
       } else {
         // Text input mode: reactively pre-populate with the values already
@@ -353,13 +379,23 @@ watch(
         inputText.value = existing.join("\n");
         parsedTokens.value = existing;
         matchedValues.value = existing;
+        exactMatchedValues.value = existing;
+        substringMatchedValues.value = [];
+        resolvedSubstringValues.value = [];
         discardedValues.value = [];
+        goTermPreviews.value = {};
         detectedSeparator.value = "newline";
         hasValidated.value = existing.length > 0;
       }
     }
   }
 );
+
+watch(allowSubstringMatching, () => {
+  if (!hasAvailableOptions.value && inputText.value.trim()) {
+    void validateInput();
+  }
+});
 
 /**
  * Detect the dominant separator in the input text.
@@ -480,29 +516,54 @@ async function validateInput() {
 
     if (uniqueTokens.length === 0) {
       matchedValues.value = [];
+      exactMatchedValues.value = [];
+      substringMatchedValues.value = [];
+      resolvedSubstringValues.value = [];
       discardedValues.value = [];
+      goTermPreviews.value = {};
       hasValidated.value = true;
       return;
     }
 
     // Validate against database
     if (isGoTermFilter.value) {
-      // For GO terms, validate each token individually using the GO search API
-      const matched: string[] = [];
+      // Resolve GO IDs, names, and definitions through the ontology API.
+      const exactMatched: string[] = [];
+      const resolvedSubstring: string[] = [];
+      const substringQueries: string[] = [];
       const discarded: string[] = [];
+      const previews: Record<string, { name: string; definition: string }> = {};
 
-      // Batch validate - check if each GO term exists
       for (const token of uniqueTokens) {
         try {
-          // GO terms should start with "GO:" - accept both with and without prefix
-          const goId = token.startsWith("GO:") ? token : `GO:${token}`;
           const response = await axios.get(`${API_BASE_URL}/api/go/search`, {
-            params: { q: goId, limit: 1 },
+            params: { q: token, limit: 100 },
           });
-          
-          if (response.data.available && response.data.results?.length > 0) {
-            // Use the exact GO ID from the result
-            matched.push(response.data.results[0].id);
+
+          const results = response.data.results || [];
+          const normalizedId = token.toUpperCase().startsWith("GO:")
+            ? token.toUpperCase()
+            : `GO:${token}`;
+          const exactResults = results.filter((term: { id: string; name: string }) =>
+            term.id === normalizedId || term.name.toLowerCase() === token.toLowerCase()
+          );
+          const acceptedResults = allowSubstringMatching.value ? results : exactResults;
+
+          if (response.data.available && acceptedResults.length > 0) {
+            if (allowSubstringMatching.value && !exactResults.length) {
+              substringQueries.push(token);
+            }
+            for (const term of acceptedResults) {
+              if (exactResults.some((exact: { id: string }) => exact.id === term.id)) {
+                exactMatched.push(term.id);
+              } else {
+                resolvedSubstring.push(term.id);
+              }
+              previews[term.id] = {
+                name: term.name,
+                definition: term.definition || "",
+              };
+            }
           } else {
             discarded.push(token);
           }
@@ -511,30 +572,44 @@ async function validateInput() {
         }
       }
 
-      matchedValues.value = [...new Set(matched)];
+      matchedValues.value = [...new Set([...exactMatched, ...resolvedSubstring])];
+      exactMatchedValues.value = [...new Set(exactMatched)];
+      substringMatchedValues.value = [...new Set(substringQueries)];
+      resolvedSubstringValues.value = [...new Set(resolvedSubstring)];
       discardedValues.value = discarded;
+      goTermPreviews.value = previews;
     } else {
       // For regular columns, use the distinct values endpoint to validate
       try {
         const response = await axios.post(`${API_BASE_URL}/api/data/distinct`, {
           column: props.columnName,
           values: uniqueTokens,
+          substring_matching: allowSubstringMatching.value,
           ...(props.tableName ? { table_name: props.tableName } : {}),
         });
 
         if (response.data.matched) {
           matchedValues.value = response.data.matched;
+          exactMatchedValues.value = response.data.matched;
+          substringMatchedValues.value = response.data.substring_matched || [];
+          resolvedSubstringValues.value = response.data.resolved_substring_matches || [];
           discardedValues.value = response.data.unmatched || 
-            uniqueTokens.filter(t => !response.data.matched.includes(t));
+            uniqueTokens.filter(t => !response.data.matched.includes(t) && !response.data.substring_matched?.includes(t));
         } else {
           // Fallback: if endpoint doesn't support batch validation, assume all are valid
           matchedValues.value = uniqueTokens;
+          exactMatchedValues.value = uniqueTokens;
+          substringMatchedValues.value = [];
+          resolvedSubstringValues.value = [];
           discardedValues.value = [];
         }
       } catch {
         // If the distinct endpoint fails, assume all tokens are valid
         // (validation will happen when filter is applied)
         matchedValues.value = uniqueTokens;
+        exactMatchedValues.value = uniqueTokens;
+        substringMatchedValues.value = [];
+        resolvedSubstringValues.value = [];
         discardedValues.value = [];
       }
     }
@@ -544,6 +619,9 @@ async function validateInput() {
     console.error("Error validating batch input:", error);
     // On error, show all as parsed but unvalidated
     matchedValues.value = parsedTokens.value;
+    exactMatchedValues.value = parsedTokens.value;
+    substringMatchedValues.value = [];
+    resolvedSubstringValues.value = [];
     discardedValues.value = [];
     hasValidated.value = true;
   } finally {
@@ -557,12 +635,16 @@ async function validateInput() {
 function applyFilters() {
   const valuesToApply = effectiveMatchedValues.value;
   
-  emit("apply-filters", valuesToApply);
+  emit("apply-filters", valuesToApply, false);
   // Reset state
   inputText.value = "";
   hasValidated.value = false;
   matchedValues.value = [];
+  exactMatchedValues.value = [];
+  substringMatchedValues.value = [];
+  resolvedSubstringValues.value = [];
   discardedValues.value = [];
+  goTermPreviews.value = {};
   parsedTokens.value = [];
   selectedOptions.value = [];
   optionSearch.value = "";

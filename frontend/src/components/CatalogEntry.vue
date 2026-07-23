@@ -300,6 +300,7 @@
         :table-name="props.tableName"
         :species-name="beautifyLabel(props.tableName)"
         :current-values="datasetIdPills"
+        :substring-matching="datasetIdSubstringMatching"
         @close="showBatchModal = false"
         @apply-filters="onBatchIdFiltersApplied"
       />
@@ -477,6 +478,10 @@ const datasetIdPills = computed(() => {
   return dsFilter.value.split("|").filter(Boolean);
 });
 
+const datasetIdSubstringMatching = computed(() => (
+  filtersStore.datasetIdFilters[props.tableName]?.exact === false
+));
+
 // Effective filters for this dataset: global filters merged with per-dataset ID filter
 const effectiveFilters = computed(() => filtersStore.getMergedFilters(props.tableName));
 
@@ -594,12 +599,13 @@ const idColumnLabel = computed(() => {
   return beautifyLabel(colName);
 });
 
-function onBatchIdFiltersApplied(values: string[]) {
+function onBatchIdFiltersApplied(values: string[], substringMatching: boolean) {
   if (values.length === 0) {
     filtersStore.removeDatasetIdFilter(props.tableName);
   } else {
     filtersStore.setDatasetIdFilter(props.tableName, {
       value: values.join("|"),
+      exact: !substringMatching,
     });
   }
 }
