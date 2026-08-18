@@ -856,6 +856,7 @@ _EXPRESSION_OPTIONS: List[Dict[str, Any]] = [
     {"id": "tpm",       "label": "TPM (within-sample)",            "layer": "tpm",    "transform": "raw"},
     {"id": "tmm",       "label": "TMM (between-sample)",           "layer": "tmm",    "transform": "raw"},
     {"id": "getmm",     "label": "GeTMM (gene-length corrected)",  "layer": "getmm",  "transform": "raw"},
+    {"id": "vst",       "label": "VST (variance stabilized)",      "layer": "vst",    "transform": "raw"},
     {"id": "log2",      "label": "Log\u2082 (automatic layer)",     "layer": None,     "transform": "log2"},
     {"id": "zscore",    "label": "Z-Score (automatic layer)",       "layer": None,     "transform": "zscore"},
     {"id": "zscore-tpm","label": "Z-Score (on TPM)",               "layer": "tpm",    "transform": "zscore"},
@@ -1062,9 +1063,12 @@ def _view_settings(
     codes = _resolve_species_codes(service, raw_tables) if raw_tables else []
 
     # Inspect each table once, collect available layers and column sets.
+    from h5ad_lib.core.capabilities import has_orthogroups
+
     layer_sets: List[set] = []
     var_col_sets: List[set] = []
     obs_col_sets: List[set] = []
+    orthogroup_capabilities: List[bool] = []
     for code in codes:
         try:
             adata = service.registry.load(code)
@@ -1092,6 +1096,18 @@ def _view_settings(
             obs_col_sets.append(set(adata.obs.columns))
         except Exception:
             obs_col_sets.append(set())
+        orthogroup_capabilities.append(has_orthogroups(adata))
+
+    if v in {"compare", "phylo"} and orthogroup_capabilities and not all(orthogroup_capabilities):
+        return {
+            "view": v,
+            "tables_considered": codes,
+            "available": False,
+            "reason": "orthogroups are not available for every selected dataset",
+            "expression_options": [],
+            "controls": [],
+            "available_layers": [],
+        }
 
     # Layer is "available" if it exists in the intersection of all selected
     # tables (so the frontend can compute the same value uniformly across
@@ -1946,6 +1962,14 @@ def _build_navigation(
 def build_instance_manifest(service, config_manager=None) -> Dict[str, Any]:
     """Build static capabilities injected into every assistant request."""
     schema = _build_schema(service, config_manager, max_values_per_col=0)
+    try:
+        table_capabilities = {
+            str(entry.get("table_name") or entry.get("_species_code") or entry.get("code")): entry.get("has_orthogroups")
+            for entry in service.get_tables(include_disabled=False)
+        }
+    except Exception:
+        table_capabilities = {}
+
     datasets: List[Dict[str, Any]] = []
     columns: Dict[str, Dict[str, Dict[str, Any]]] = {"var": {}, "obs": {}}
     for table in schema.get("tables") or []:
@@ -1956,6 +1980,9 @@ def build_instance_manifest(service, config_manager=None) -> Dict[str, Any]:
                 "code": table.get("code"),
                 "label": table.get("display_label") or table.get("full_name") or dataset_id,
                 "layers": table.get("layers") or [],
+                "has_orthogroups": table_capabilities.get(dataset_id) is not False and any(
+                    column.get("name") == "ortho_id" for column in table.get("var_columns") or []
+                ),
             })
         for namespace, key in (("var", "var_columns"), ("obs", "obs_columns")):
             for column in table.get(key) or []:
@@ -1970,6 +1997,8 @@ def build_instance_manifest(service, config_manager=None) -> Dict[str, Any]:
     views: Dict[str, Any] = {}
     for view in ("heatmap", "compare", "phylo", "ora", "catalog"):
         settings = _view_settings(service, config_manager, view=view, tables=None)
+        if settings.get("available") is False:
+            continue
         views[view] = {
             "controls": [
                 {key: value for key, value in control.items() if key in {"key", "type", "options", "min", "max"}}

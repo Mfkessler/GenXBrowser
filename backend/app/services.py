@@ -911,6 +911,14 @@ class GenXBrowserService:
     def get_available_species(self) -> List[str]:
         """Get list of available species codes."""
         return self.registry.get_available_codes()
+
+    def has_orthogroups(self, table_name: str) -> bool:
+        """Return orthogroup capability for a table name or species code."""
+        from h5ad_lib.core.capabilities import has_orthogroups
+
+        species_code = self._normalize_table_name(table_name)
+        adata = self.registry.load(species_code)
+        return adata is not None and has_orthogroups(adata)
     
     def get_tables(self, tags: Optional[List[str]] = None, include_disabled: bool = False) -> List[Dict]:
         """
@@ -958,6 +966,8 @@ class GenXBrowserService:
                 if matched_photo:
                     logger.debug(f"Matched photo '{matched_photo}' for species '{full_name}'")
             
+            from h5ad_lib.core.capabilities import has_orthogroups
+
             tables.append({
                 'table_name': full_name,
                 'description': '',
@@ -967,6 +977,7 @@ class GenXBrowserService:
                 '_species_code': code,
                 '_default_trait_count': default_trait_count,
                 '_enabled': is_enabled,  # Add enabled status
+                'has_orthogroups': has_orthogroups(adata),
             })
         
         return tables
@@ -1549,7 +1560,8 @@ class GenXBrowserService:
                         for v in _value
                     )
 
-                result = result[result[actual_col].apply(check_array)]
+                mask = result[actual_col].apply(check_array).fillna(False).astype(bool)
+                result = result[mask]
         
         return result
 
@@ -1764,7 +1776,7 @@ class GenXBrowserService:
                     return any(any(str(v).lower() in it for it in items_lc) for v in _value)
                 return all(any(str(v).lower() in it for it in items_lc) for v in _value)
 
-            return df[actual_col].apply(check_array)
+            return df[actual_col].apply(check_array).fillna(False).astype(bool)
 
         return pd.Series(True, index=df.index)
     

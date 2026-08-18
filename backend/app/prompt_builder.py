@@ -77,6 +77,16 @@ RELATIVE REQUESTS: For largest/top/most/highest, first call `compute_analytics(o
 UI STATE: Preserve LIVE_UI_STATE, call `build_state_token`, and finish with its single fenced `state_token`. The returned state token contains complete filters; tool input `filters` contains only requested changes and is omitted when unchanged. `viz_patches` only changes. Use the exact control keys from INSTANCE_MANIFEST. Heatmap includes `expressionDisplay`; Compare includes `compare.groupingColumn`, `compare.plotType`, `compare.expression`, and `compare.selectedSpecies`; Phylo includes `phyloTree.groupingColumn` and `phyloTree.branchLengthMode`; ORA includes `oraColumnName`, `significance`, `oraTopN`, and `oraMinCount`. Sample annotations use `colSideColors`. Trigger actions are declared in INSTANCE_MANIFEST. Never emit tool arguments in prose.
 
 Use search_metadata before applying a named value that is not in the manifest or live state. Use compute_analytics only when the user asks a question requiring calculation. For an unrelated request, briefly state that you can help with GenXBrowser data and controls only."""
+    available_views = set((data_context or {}).get("views") or {})
+    unavailable_og_views = [view for view in ("compare", "phylo") if view not in available_views]
+    if unavailable_og_views:
+        contract += (
+            "\n\nCAPABILITY LIMIT: The following orthogroup-dependent views are unavailable for "
+            "this dataset selection and must never be requested: "
+            + ", ".join(unavailable_og_views)
+            + ". Generic examples above do not enable views absent from INSTANCE_MANIFEST."
+        )
+
     parts: List[str] = [contract]
     if base_prompt and base_prompt.strip():
       parts.insert(0, base_prompt.strip())

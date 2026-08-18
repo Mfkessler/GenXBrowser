@@ -513,6 +513,19 @@ def get_row_count():
         is_valid, err = validate_table_name(table_name, service.get_tables)
         if not is_valid:
             return jsonify({"error": "Invalid 'table_name'"}), 400
+
+        if (
+            (_references_orthogroups(filters) or _references_orthogroups(filter_chain))
+            and not service.has_orthogroups(table_name)
+        ):
+            species_code = service._normalize_table_name(table_name)
+            adata = service.registry.load(species_code)
+            total_samples = int(adata.n_obs) if adata is not None else 0
+            return jsonify({
+                "count": 0,
+                "sample_count": total_samples,
+                "total_samples": total_samples,
+            }), 200
         
         # Parse and apply gene-level (var) filters via the existing helper.
         # include_hidden=True: filtering must work even for columns hidden from
@@ -557,6 +570,16 @@ def get_row_count():
 # Data Query
 # ============================================================================
 
+def _references_orthogroups(value) -> bool:
+    if isinstance(value, dict):
+        return any(
+            str(key) == "ortho_id" or _references_orthogroups(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_references_orthogroups(item) for item in value)
+    return value == "ortho_id"
+
 @api_bp.route('/api/data', methods=['POST'])
 def list_data():
     """Get gene data with optional columns, filters, and pagination."""
@@ -584,6 +607,12 @@ def list_data():
         is_valid, err = validate_table_name(table_name, service.get_tables)
         if not is_valid:
             return jsonify({"error": err}), 400
+
+        if (
+            (_references_orthogroups(filters) or _references_orthogroups(filter_chain))
+            and not service.has_orthogroups(table_name)
+        ):
+            return jsonify({"data": []}), 200
         
         # Parse filters - pass table_name to get correct columns.
         # include_hidden=True: filtering must work even for columns hidden from

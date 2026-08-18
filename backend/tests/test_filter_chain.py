@@ -131,6 +131,37 @@ def test_apply_filters_has_value_excludes_null_like_values():
     assert result.index.tolist() == [0, 5]
 
 
+def test_array_filter_treats_missing_annotations_as_non_matches():
+    service = _service()
+    df = pd.DataFrame({
+        "go_terms": pd.Series(["GO:0009908,GO:0008150", pd.NA, "GO:0008150"], dtype="string"),
+    })
+
+    result = service._apply_filters(df, {"go_terms": ("array_overlap", ["GO:0009908"])})
+
+    assert result.index.tolist() == [0]
+
+
+def test_filter_chain_array_filter_treats_missing_annotations_as_non_matches():
+    service = _service()
+    df = pd.DataFrame({
+        "go_terms": pd.Series(["GO:0009908", pd.NA, "GO:0008150"], dtype="string"),
+        "tf_family": ["MIKC", "MIKC", "WRKY"],
+    })
+    filters = {
+        "go_terms": ("array_overlap", ["GO:0009908"]),
+        "tf_family": ("eq", "MIKC"),
+    }
+
+    result = service._apply_filters(
+        df,
+        filters,
+        filter_chain={"columns": ["go_terms", "tf_family"], "operators": ["and"]},
+    )
+
+    assert result.index.tolist() == [0]
+
+
 def test_filter_chain_has_value_mask():
     service = _service()
     df = pd.DataFrame({
