@@ -441,7 +441,7 @@ import {
   getEntityLabelLower, 
   getEntityIdLabel 
 } from "@/shared/dataTypeLabels";
-import { beautifyLabel, formatSpeciesValue } from "@/shared/utils";
+import { beautifyLabel } from "@/shared/utils";
 import { useFiltersStore } from "@/stores/filters";
 import { useColumnsStore } from "@/stores/columns";
 import type { RowType } from "@/shared/RowType";
@@ -630,9 +630,7 @@ function formatCellValue(value: unknown): string {
 
 function formatCellDisplay(value: unknown): string {
   if (value === null || value === undefined) return '';
-  
-  // Format species names if present
-  const formatted = formatSpeciesValue(value);
+  const formatted = formatCellValue(value);
   
   // Truncate if too long
   if (formatted.length > 40) {

@@ -186,31 +186,6 @@ export function jsonToTsv(data: Record<string, unknown>[]): string {
 }
 
 /**
- * Formats species names in cell values by removing underscores and applying italic formatting
- * @param value - Cell value to format
- * @returns Formatted HTML string with species names in italics, or original value
- */
-export function formatSpeciesValue(value: unknown): string {
-  if (value === null || value === undefined) return '';
-  
-  const str = String(value);
-  
-  // Check if the string matches a species name pattern with underscores
-  // e.g., "Capnoides_sempervirens" or "Arabidopsis_thaliana"
-  const speciesPattern = /([A-Z][a-z]+)_([a-z]+)/g;
-  
-  if (speciesPattern.test(str)) {
-    // Replace underscored species names with formatted versions
-    const formatted = str.replace(speciesPattern, (match, genus, species) => {
-      return `<em>${genus} ${species}</em>`;
-    });
-    return formatted;
-  }
-  
-  return str;
-}
-
-/**
  * Checks if a cell value is completely empty (null, undefined, empty string, or whitespace only)
  * @param value - Cell value to check
  * @returns True if value is empty

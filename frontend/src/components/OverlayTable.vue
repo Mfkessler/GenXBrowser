@@ -335,7 +335,7 @@
 import axios from "axios";
 import { computed, onMounted, onUnmounted, ref, watch, nextTick } from "vue";
 import type { RowType } from "@/shared/RowType";
-import { beautifyLabel, formatSpeciesValue, isCellEmpty } from "@/shared/utils";
+import { beautifyLabel, isCellEmpty } from "@/shared/utils";
 import { useFiltersStore } from "@/stores/filters";
 import { useColumnsStore } from "@/stores/columns";
 import ExportModal from "./ExportModal.vue";
@@ -531,12 +531,10 @@ function formatCellValue(value: unknown): string {
   return String(value);
 }
 
-// Format cell value for display (truncated if needed, with species formatting)
+// Format cell value for display (truncated if needed)
 function formatCellDisplay(value: unknown): string {
   if (value === null || value === undefined) return '';
-  
-  // Format species names if present
-  const formatted = formatSpeciesValue(value);
+  const formatted = formatCellValue(value);
   
   // Truncate if too long
   if (formatted.length > 40) {
