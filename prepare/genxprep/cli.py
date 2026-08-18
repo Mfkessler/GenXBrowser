@@ -74,6 +74,8 @@ project:
 global_metadata:
 
   # ── Orthogroups ────────────────────────────────────────────────────
+  # Optional. Leave this and gene_trees commented out for a
+  # single-species dataset without orthogroup annotations.
   # Format: TSV with header
   # Required column: "Orthogroup"
   # Remaining columns: one per species, named by full species name
@@ -85,7 +87,7 @@ global_metadata:
   #   OG0000000     GeneA1, GeneA2             GeneP1
   #   OG0000001     GeneB1                     GeneP2, GeneP3
   #
-  orthogroups: Metadata/Orthogroups.tsv
+  # orthogroups: Metadata/Orthogroups.tsv
 
   # ── Gene Trees ────────────────────────────────────────────────────
   # Format: Plain text, one tree per line
@@ -95,7 +97,7 @@ global_metadata:
   #   OG0000000:((GeneA1:0.1,GeneP1:0.2):0.3,GeneA2:0.4);
   #   OG0000001:(GeneB1:0.1,GeneP2:0.2);
   #
-  gene_trees: Metadata/Resolved_Gene_Trees.txt
+  # gene_trees: Metadata/Resolved_Gene_Trees.txt
 
   # ── Species Mapping (optional) ────────────────────────────────────
   # Format: TSV, no header, 2 columns: code <TAB> full_species_name
@@ -118,7 +120,7 @@ species:
     name: "Aquilegia coerulea"    # REQUIRED – full species name
 
     # ── Expression matrices ─────────────────────────────────────────
-    # At least ONE matrix is required (any of: raw, tpm, tmm, getmm).
+    # At least ONE matrix is required (any of: raw, tpm, tmm, getmm, vst).
     #
     # Format: TSV (tab-separated)
     #   - First column: gene / transcript IDs (may have no column header)
@@ -138,6 +140,7 @@ species:
       tpm: Matrices/AC.matrix.TPM.normalized.tsv
       tmm: Matrices/AC.matrix.TMM.normalized.tsv
       getmm: Matrices/AC.matrix.geTMM.normalized.tsv
+      # vst: Matrices/AC.matrix.VST.normalized.tsv
 
     # ── Sample mapping (optional) ──────────────────────────────────
     # Format: TSV with header
@@ -352,7 +355,10 @@ def build(config: str, verbose: bool, force: bool) -> None:
             "ok": True,
             "n_genes": adata.n_vars,
             "n_samples": adata.n_obs,
-            "layers": ["X"] + sorted(adata.layers.keys()),
+            "layers": ["X"] + sorted(
+                layer for layer in adata.layers.keys()
+                if isinstance(layer, str) and layer
+            ),
         }
 
     # Global exports

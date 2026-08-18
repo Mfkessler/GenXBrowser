@@ -26,6 +26,7 @@ class MatrixPaths:
     tpm: Path | None = None
     tmm: Path | None = None
     getmm: Path | None = None
+    vst: Path | None = None
 
     @property
     def available(self) -> dict[str, Path]:
@@ -38,7 +39,7 @@ class MatrixPaths:
     @property
     def primary(self) -> tuple[str, Path]:
         """Return the first available matrix (prefer raw)."""
-        for key in ("raw", "tpm", "tmm", "getmm"):
+        for key in ("raw", "tpm", "tmm", "getmm", "vst"):
             p = getattr(self, key)
             if p is not None:
                 return key, p
@@ -250,7 +251,7 @@ def load_config(config_path: Path, reporter: Reporter) -> ProjectConfig | None:
         # matrices
         mat_raw = sp_raw.get("matrix", {}) or {}
         if not isinstance(mat_raw, dict):
-            sp_vr.error("'matrix' must be a mapping with keys like 'raw', 'tpm', 'tmm', 'getmm'.")
+            sp_vr.error("'matrix' must be a mapping with keys like 'raw', 'tpm', 'tmm', 'getmm', 'vst'.")
             continue
 
         mat = MatrixPaths(
@@ -258,6 +259,7 @@ def load_config(config_path: Path, reporter: Reporter) -> ProjectConfig | None:
             tpm=_resolve(base, mat_raw.get("tpm")),
             tmm=_resolve(base, mat_raw.get("tmm")),
             getmm=_resolve(base, mat_raw.get("getmm")),
+            vst=_resolve(base, mat_raw.get("vst")),
         )
         if not mat.any_present:
             sp_vr.error(

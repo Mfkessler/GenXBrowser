@@ -60,7 +60,7 @@ def build_species(
     layers: dict[str, Any] = {}
 
     # Map layer names to H5AD keys expected by backend
-    layer_key_map = {"raw": "raw", "tpm": "tpm", "tmm": "tmm", "getmm": "getmm"}
+    layer_key_map = {"raw": "raw", "tpm": "tpm", "tmm": "tmm", "getmm": "getmm", "vst": "vst"}
 
     for mat_key, mat_path in sp.matrix.available.items():
         if mat_key == primary_key:
@@ -189,6 +189,7 @@ def build_species(
     uns = {
         "name": sp.code,
         "species": sp.name,
+        "has_orthogroups": "ortho_id" in var.columns and var["ortho_id"].astype(str).str.strip().ne("").any(),
     }
     if default_sample_metadata_col:
         uns["default_sample_metadata_column"] = default_sample_metadata_col
