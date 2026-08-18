@@ -77,6 +77,7 @@
           :selected-table-names="oraState.eligibleTableNames"
         />
         <AnalysisCard
+          v-if="ogAnalysesVisible"
           :style="analysisCardStyle"
           type="compare"
           :enabled="compareState.enabled"
@@ -85,6 +86,7 @@
           :selected-table-names="compareState.eligibleTableNames"
         />
         <AnalysisCard
+          v-if="ogAnalysesVisible"
           :style="analysisCardStyle"
           type="phylo"
           :enabled="phyloState.enabled"
@@ -310,6 +312,9 @@ const heatmapState = computed(() => computeAnalysisState(analysisLimit("heatmap"
 const phyloState = computed(() => computeAnalysisState(analysisLimit("phylo")));
 const oraState = computed(() => computeAnalysisState(analysisLimit("ora")));
 const compareState = computed(() => computeAnalysisState(analysisLimit("compare")));
+const ogAnalysesVisible = computed(() =>
+  catalogStore.selectedCount === 0 || catalogStore.allSelectedHaveOrthogroups,
+);
 
 // ── Shared orthogroup fetching for Compare & Phylo ────────────────
 // ── Overlay / download (unchanged logic) ──────────────────────────
@@ -337,6 +342,7 @@ const fetchTables = async () => {
       ...entry,
       table_name: entry.table_name.replace(/^.*"\s*([^"]+)\s*".*$/, "$1"),
     }));
+    catalogStore.setOrthogroupCapabilities(catalog.value);
 
     // Update filterStore
     filtersStore.setTableNames(

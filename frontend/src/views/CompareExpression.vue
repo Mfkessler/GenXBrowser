@@ -212,7 +212,14 @@ onMounted(async () => {
     );
 
     if (tablesController.signal.aborted) return;
-    response.data.forEach((t) => {
+    const requestedTables = hashLoadedSpecies.value ?? tableNamesFromRoute.value;
+    const capabilities = new Map(response.data.map((table) => [table.table_name, table.has_orthogroups !== false]));
+    if (requestedTables.some((tableName) => capabilities.get(tableName) !== true)) {
+      await router.replace({ name: "catalog" });
+      return;
+    }
+
+    response.data.filter((t) => t.has_orthogroups !== false).forEach((t) => {
       allTables.value[t.table_name] = beautifyLabel(t.table_name);
     });
   } catch (error) {

@@ -118,6 +118,14 @@ export const EXPRESSION_OPTIONS: ExpressionOption[] = [
     description: 'Gene-length corrected TMM - best of both worlds',
     useCase: 'Cross-sample comparisons with gene-length correction',
   },
+  {
+    id: 'vst',
+    label: 'VST (variance stabilized)',
+    layer: 'vst',
+    transform: 'raw',
+    description: 'Variance-stabilized expression values for comparisons across samples',
+    useCase: 'Visualize expression patterns with stabilized variance',
+  },
 
   // === Transformations ===
   {
@@ -160,7 +168,7 @@ export const EXPRESSION_OPTIONS: ExpressionOption[] = [
 export const EXPRESSION_SECTIONS = [
   {
     label: '— Normalized Values —',
-    optionIds: ['tpm', 'tmm', 'getmm'],
+    optionIds: ['tpm', 'tmm', 'getmm', 'vst'],
   },
   {
     label: '— Transformations —',

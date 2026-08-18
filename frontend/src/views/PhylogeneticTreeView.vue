@@ -374,7 +374,13 @@ onMounted(async () => {
     const nextAllTables: Record<string, string> = {};
     const nextSpeciesCodeMap: Record<string, string> = {};
 
-    response.data.forEach((t) => {
+    const capabilities = new Map(response.data.map((table) => [table.table_name, table.has_orthogroups !== false]));
+    if (allTableNamesFromRoute.value.some((tableName) => capabilities.get(tableName) !== true)) {
+      await router.replace({ name: "catalog" });
+      return;
+    }
+
+    response.data.filter((t) => t.has_orthogroups !== false).forEach((t) => {
       nextAllTables[t.table_name] = beautifyLabel(t.table_name);
       if (t._species_code) {
         nextSpeciesCodeMap[t.table_name] = t._species_code;

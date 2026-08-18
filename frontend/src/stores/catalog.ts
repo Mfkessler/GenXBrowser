@@ -8,6 +8,9 @@ export const useCatalogStore = defineStore("catalog", () => {
   /** Effective row count per dataset (filtered count if filters active, otherwise total) */
   const filteredCounts = ref<Map<string, number | null>>(new Map());
 
+  /** Orthogroup capability keyed by table_name. Missing legacy metadata defaults to true. */
+  const orthogroupCapabilities = ref<Map<string, boolean>>(new Map());
+
   // ── Selection actions ──────────────────────────────────────────────
 
   function toggleSelection(tableName: string) {
@@ -45,6 +48,16 @@ export const useCatalogStore = defineStore("catalog", () => {
     return c !== null && c !== undefined ? c : fallback;
   }
 
+  function setOrthogroupCapabilities(entries: Array<{ table_name: string; has_orthogroups?: boolean }>) {
+    orthogroupCapabilities.value = new Map(
+      entries.map((entry) => [entry.table_name, entry.has_orthogroups !== false]),
+    );
+  }
+
+  function hasOrthogroups(tableName: string): boolean {
+    return orthogroupCapabilities.value.get(tableName) !== false;
+  }
+
   // ── Derived state ──────────────────────────────────────────────────
 
   const selectedCount = computed(() => selectedTableNames.value.size);
@@ -53,16 +66,25 @@ export const useCatalogStore = defineStore("catalog", () => {
     [...selectedTableNames.value],
   );
 
+  const allSelectedHaveOrthogroups = computed(() =>
+    selectedTableNamesArray.value.length > 0 &&
+    selectedTableNamesArray.value.every((tableName) => hasOrthogroups(tableName)),
+  );
+
   return {
     selectedTableNames,
     filteredCounts,
+    orthogroupCapabilities,
     selectedCount,
     selectedTableNamesArray,
+    allSelectedHaveOrthogroups,
     toggleSelection,
     selectAll,
     deselectAll,
     isSelected,
     setFilteredCount,
     getEffectiveCount,
+    setOrthogroupCapabilities,
+    hasOrthogroups,
   };
 });
