@@ -1548,18 +1548,76 @@ async function renderHeatmap(): Promise<boolean> {
 
   // Conditionally render X-axis with label thinning
   if (visualizationStore.colLabel) {
+    const maxLabelHeight = 70;
     const xAxisGroup = svg
       .append("g")
       .attr("transform", `translate(${margin.left},${margin.top + svgH})`)
       .call(d3.axisBottom(x).tickSize(0));
     
     // Apply label thinning - hide labels that would overlap
-    xAxisGroup.selectAll("text")
+    const xAxisTexts = xAxisGroup.selectAll("text")
       .attr("transform", "translate(-12,10) rotate(-90)")
       .style("text-anchor", "end")
       .attr("dominant-baseline", "middle")
       .style("font-size", "0.75rem")
       .style("visibility", (_d, i) => (i % xLabelSkip === 0) ? "visible" : "hidden");
+
+    // Truncate long labels and add ellipsis (only for visible labels)
+    xAxisTexts.each(function(_d, i) {
+      if (i % xLabelSkip !== 0) return;
+
+      const textElement = d3.select(this);
+      const originalText = textElement.text();
+
+      if ((this as SVGTextElement).getComputedTextLength() <= maxLabelHeight) return;
+
+      let truncatedText = originalText;
+      while (
+        (this as SVGTextElement).getComputedTextLength() > maxLabelHeight &&
+        truncatedText.length > 0
+      ) {
+        truncatedText = truncatedText.slice(0, -1);
+        textElement.text(truncatedText + "...");
+      }
+
+      textElement.append("title").text(originalText);
+    });
+
+    const colLabelTooltip = d3
+      .select(container)
+      .append("div")
+      .attr("class", "col-label-tooltip")
+      .style("position", "absolute")
+      .style("z-index", "60")
+      .style("visibility", "hidden")
+      .style("background-color", "#1f2937")
+      .style("color", "#f9fafb")
+      .style("font-size", "0.75rem")
+      .style("border-radius", "0.375rem")
+      .style("padding", "0.25rem 0.5rem")
+      .style("white-space", "nowrap")
+      .style("pointer-events", "none");
+
+    xAxisTexts
+      .on("mouseover", function() {
+        const text = d3.select(this);
+        const fullText = text.select("title").text();
+
+        if (fullText) {
+          colLabelTooltip.html(fullText).style("visibility", "visible");
+        }
+      })
+      .on("mousemove", function(event) {
+        if (!heatmapContainer.value) return;
+        const containerRect = heatmapContainer.value.getBoundingClientRect();
+
+        colLabelTooltip
+          .style("left", event.clientX - containerRect.left + 10 + "px")
+          .style("top", event.clientY - containerRect.top - 10 + "px");
+      })
+      .on("mouseout", function() {
+        colLabelTooltip.style("visibility", "hidden");
+      });
   }
 
   // Conditionally render Y-axis (row labels) with label thinning
