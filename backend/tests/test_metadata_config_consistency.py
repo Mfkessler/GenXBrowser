@@ -243,7 +243,27 @@ def test_default_data_respects_sequence_visibility_for_tooltip_metadata():
     assert "protein_seq" not in df.columns
 
 
-def test_delete_metadata_column_cleans_stale_config_references():
+def test_admin_routes_require_a_configured_token(monkeypatch):
+    app = Flask(__name__)
+    app.register_blueprint(admin_bp)
+    client = app.test_client()
+    auth_check = "/api/admin/auth/check"
+    config = "/api/admin/config"
+
+    monkeypatch.delenv("ADMIN_TOKEN", raising=False)
+    assert client.get(auth_check).get_json()["auth_enabled"] is False
+    assert client.get(config).status_code == 503
+    assert client.put(config, json={}).status_code == 503
+
+    monkeypatch.setenv("ADMIN_TOKEN", "test-token")
+    assert client.get(auth_check).get_json()["auth_enabled"] is True
+    assert client.get(config).status_code == 401
+    assert client.put(config, headers={"Authorization": "Bearer wrong"}, json={}).status_code == 403
+    assert client.get(auth_check, headers={"Authorization": "Bearer test-token"}).get_json()["authenticated"] is True
+
+
+def test_delete_metadata_column_cleans_stale_config_references(monkeypatch):
+    monkeypatch.setenv("ADMIN_TOKEN", "test-token")
     adata = build_adata()
     config = {
         "species": {"AT": {"enabled": True}},
@@ -282,7 +302,7 @@ def test_delete_metadata_column_cleans_stale_config_references():
     app.h5ad_service = build_service(config, {"AT": adata})
 
     with app.test_client() as client:
-        response = client.delete("/api/admin/metadata/condition?persist=false")
+        response = client.delete("/api/admin/metadata/condition?persist=false", headers={"Authorization": "Bearer test-token"})
 
     assert response.status_code == 200
     updated = app.config_manager.get_config()
@@ -292,7 +312,8 @@ def test_delete_metadata_column_cleans_stale_config_references():
     assert updated["default_trait_column"] is None
 
 
-def test_metadata_import_upserts_existing_custom_sample_column_for_another_dataset():
+def test_metadata_import_upserts_existing_custom_sample_column_for_another_dataset(monkeypatch):
+    monkeypatch.setenv("ADMIN_TOKEN", "test-token")
     at = build_adata()
     ps = build_adata()
     ps.obs.index = ["ps_sample_a", "ps_sample_b"]
@@ -345,8 +366,9 @@ def test_metadata_import_upserts_existing_custom_sample_column_for_another_datas
     }
 
     with app.test_client() as client:
-        validate_response = client.post("/api/admin/metadata/import", json=payload)
-        confirm_response = client.post("/api/admin/metadata/import/confirm", json=payload)
+        headers = {"Authorization": "Bearer test-token"}
+        validate_response = client.post("/api/admin/metadata/import", json=payload, headers=headers)
+        confirm_response = client.post("/api/admin/metadata/import/confirm", json=payload, headers=headers)
 
     assert validate_response.status_code == 200
     assert validate_response.get_json()["validation"]["matched"] == 2

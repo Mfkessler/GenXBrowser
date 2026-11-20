@@ -1,23 +1,26 @@
 <template>
   <div class="admin-panel">
     <!-- Auth Gate -->
-    <div v-if="authRequired && !authenticated" class="auth-gate">
+    <div v-if="!authenticated" class="auth-gate">
       <div class="auth-card">
         <h2>🔒 Admin Access</h2>
-        <p>Enter the admin token to access the configuration panel.</p>
-        <form class="auth-form" @submit.prevent="authenticate">
-          <input
-            v-model="tokenInput"
-            type="password"
-            class="form-control"
-            placeholder="Admin token"
-            @keyup.enter="authenticate"
-          />
-          <button type="submit" class="btn btn-primary" :disabled="!tokenInput">
-            Authenticate
-          </button>
-        </form>
-        <p v-if="authError" class="auth-error">{{ authError }}</p>
+        <p v-if="authChecking">Checking admin access…</p>
+        <p v-else-if="!adminEnabled">Admin access is disabled. Set ADMIN_TOKEN on the backend to enable it.</p>
+        <template v-else>
+          <p>Enter the admin token to access the configuration panel.</p>
+          <form class="auth-form" @submit.prevent="authenticate">
+            <input
+              v-model="tokenInput"
+              type="password"
+              class="form-control"
+              placeholder="Admin token"
+            />
+            <button type="submit" class="btn btn-primary" :disabled="!tokenInput">
+              Authenticate
+            </button>
+          </form>
+          <p v-if="authError" class="auth-error">{{ authError }}</p>
+        </template>
       </div>
     </div>
 
@@ -553,7 +556,8 @@ export default defineComponent({
     const columnsStore = useColumnsStore();
 
     // Auth state
-    const authRequired = ref(false);
+    const authChecking = ref(true);
+    const adminEnabled = ref(true);
     const authenticated = ref(false);
     const adminToken = ref('');
     const tokenInput = ref('');
@@ -665,14 +669,13 @@ export default defineComponent({
 
     async function checkAuth() {
       try {
-        const resp = await axios.get(`${adminBaseUrl}/auth/check`);
-        authRequired.value = resp.data.auth_required;
-        if (!resp.data.auth_required) {
-          authenticated.value = true;
-        }
+        const resp = await axios.get(`${adminBaseUrl}/auth/check`, { headers: getAuthHeaders() });
+        adminEnabled.value = resp.data.auth_enabled !== false;
+        authenticated.value = adminEnabled.value && resp.data.authenticated === true;
       } catch {
-        // Auth check failed, assume no auth required
-        authenticated.value = true;
+        authError.value = 'Could not check admin access.';
+      } finally {
+        authChecking.value = false;
       }
     }
 
@@ -683,7 +686,8 @@ export default defineComponent({
         const resp = await axios.get(`${adminBaseUrl}/auth/check`, {
           headers: { Authorization: `Bearer ${tokenInput.value}` },
         });
-        if (resp.data.authenticated) {
+        adminEnabled.value = resp.data.auth_enabled !== false;
+        if (adminEnabled.value && resp.data.authenticated === true) {
           authenticated.value = true;
           sessionStorage.setItem('admin_token', tokenInput.value);
           loadConfig();
@@ -957,7 +961,7 @@ export default defineComponent({
     }
 
     return {
-      authRequired, authenticated, adminToken, tokenInput, authError, authenticate,
+      authChecking, adminEnabled, authenticated, adminToken, tokenInput, authError, authenticate,
       config, loading, error, statusMessage, statusType, saveRunning,
       activeTab, tabs, hasChanges, datasets,
       loadConfig, saveConfig, reloadConfig, restartBackend, updateTags,

@@ -123,7 +123,7 @@ data/
 └── genxbrowser_config.yaml    # consumed by the frontend at runtime
 ```
 
-This directory is exactly what `H5AD_DATA_DIR` should point at - `genxprep app` wires it up automatically. Once the bundle is in place, return to the [root README](../README.md#-quick-start) for the launch step (or use `genxprep app config.yml` directly).
+This directory is exactly what `H5AD_DATA_DIR` should point at - `genxprep app` wires it up automatically. Once the bundle is in place, return to the [root README](../README.md#run-your-own-instance) for the launch step (or use `genxprep app config.yml` directly).
 
 ## 🖥️ CLI Reference
 

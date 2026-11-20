@@ -9,7 +9,7 @@ import tailwindcss from "@tailwindcss/vite";
 // "/dev/genxbrowser", we also need to proxy requests under that prefix
 // (e.g. /dev/genxbrowser/api → http://backend:5000/api).
 const apiBase = process.env.VITE_API_BASE_URL || "";
-const backendTarget = "http://backend:5000";
+const backendTarget = process.env.GENX_DEV_BACKEND_URL || "http://backend:5000";
 
 function buildProxy() {
   const routes: Record<string, object> = {

@@ -8,8 +8,8 @@ COPY . .
 ARG VITE_BASE_URL="/"
 ENV VITE_BASE_URL=${VITE_BASE_URL}
 
-# Build argument for backend API URL
-ARG VITE_API_BASE_URL="/api"
+# Optional prefix before /api (empty for root deployments)
+ARG VITE_API_BASE_URL=""
 ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
 
 # Build argument for data type - "Isoforms" for Transcript terminology, "Genes" for Gene terminology

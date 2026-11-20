@@ -20,7 +20,7 @@ Endpoints:
 
 from flask import Blueprint, jsonify, request, current_app
 from marshmallow import Schema, fields
-from functools import wraps
+from hmac import compare_digest
 import logging
 import os
 import io
@@ -39,36 +39,30 @@ admin_bp = Blueprint('admin', __name__, url_prefix='/api/admin')
 # Auth
 # ============================================================================
 
-def require_admin_token(f):
-    """
-    Decorator to require admin token for protected endpoints.
-    
-    If ADMIN_TOKEN env var is not set, auth is disabled (local dev).
-    Token is passed via Authorization: Bearer <token> header.
-    """
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        admin_token = os.environ.get('ADMIN_TOKEN', '').strip()
-        if not admin_token:
-            # No token configured = auth disabled
-            return f(*args, **kwargs)
-        
-        auth_header = request.headers.get('Authorization', '')
-        if not auth_header.startswith('Bearer '):
-            return jsonify({
-                "success": False,
-                "error": "Authentication required"
-            }), 401
-        
-        provided_token = auth_header[7:].strip()
-        if provided_token != admin_token:
-            return jsonify({
-                "success": False,
-                "error": "Invalid admin token"
-            }), 403
-        
-        return f(*args, **kwargs)
-    return decorated
+def _provided_admin_token():
+    scheme, _, token = request.headers.get("Authorization", "").partition(" ")
+    return token.strip() if scheme.lower() == "bearer" else ""
+
+
+def _matches_admin_token(provided, configured):
+    return compare_digest(provided.encode("utf-8"), configured.encode("utf-8"))
+
+
+@admin_bp.before_request
+def require_admin_token():
+    if request.endpoint == "admin.check_auth" or request.method == "OPTIONS":
+        return None
+
+    configured = os.environ.get("ADMIN_TOKEN", "").strip()
+    if not configured:
+        return jsonify({"success": False, "error": "Admin access is disabled; set ADMIN_TOKEN."}), 503
+
+    provided = _provided_admin_token()
+    if not provided:
+        return jsonify({"success": False, "error": "Authentication required"}), 401
+    if not _matches_admin_token(provided, configured):
+        return jsonify({"success": False, "error": "Invalid admin token"}), 403
+    return None
 
 
 # ============================================================================
@@ -114,19 +108,16 @@ def check_auth():
     """
     Check if admin token auth is enabled and validate provided token.
     """
-    admin_token = os.environ.get('ADMIN_TOKEN', '').strip()
-    if not admin_token:
-        return jsonify({"success": True, "auth_required": False})
-    
-    auth_header = request.headers.get('Authorization', '')
-    if auth_header.startswith('Bearer ') and auth_header[7:].strip() == admin_token:
-        return jsonify({"success": True, "auth_required": True, "authenticated": True})
-    
-    return jsonify({"success": True, "auth_required": True, "authenticated": False})
+    configured = os.environ.get("ADMIN_TOKEN", "").strip()
+    return jsonify({
+        "success": True,
+        "auth_enabled": bool(configured),
+        "auth_required": True,
+        "authenticated": bool(configured) and _matches_admin_token(_provided_admin_token(), configured),
+    })
 
 
 @admin_bp.route('/llm/test', methods=['POST'])
-@require_admin_token
 def llm_test():
     """Probe the configured LLM endpoint (or a candidate one from the body).
 
@@ -207,7 +198,6 @@ def get_config():
 
 
 @admin_bp.route('/config', methods=['PUT'])
-@require_admin_token
 def update_config():
     """
     Update project configuration.
@@ -293,7 +283,6 @@ def update_config():
 
 
 @admin_bp.route('/config/reload', methods=['POST'])
-@require_admin_token
 def reload_config():
     """
     Reload configuration from file.
@@ -329,7 +318,6 @@ def reload_config():
 
 
 @admin_bp.route('/restart', methods=['POST'])
-@require_admin_token
 def restart_backend():
     """
     Trigger backend restart by touching a reload trigger file.
@@ -378,7 +366,6 @@ def get_species():
 
 
 @admin_bp.route('/species/<code>', methods=['PUT'])
-@require_admin_token
 def update_species(code: str):
     """
     Update a specific species configuration.
@@ -448,7 +435,6 @@ def get_columns():
 
 
 @admin_bp.route('/columns/<column_name>', methods=['PUT'])
-@require_admin_token
 def update_column(column_name: str):
     """
     Update a specific column definition.
@@ -534,7 +520,6 @@ def get_datasets():
 
 
 @admin_bp.route('/datasets/<species_code>/enabled', methods=['PATCH'])
-@require_admin_token
 def toggle_species_enabled(species_code):
     """
     Toggle enabled/disabled status for a species.
@@ -623,7 +608,6 @@ def _parse_rows(data_str: str, separator: str) -> list:
 
 
 @admin_bp.route('/metadata/import', methods=['POST'])
-@require_admin_token
 def validate_metadata_import():
     """
     Validate a metadata import (TSV data with ID + value columns).
@@ -782,7 +766,6 @@ def validate_metadata_import():
 
 
 @admin_bp.route('/metadata/import/confirm', methods=['POST'])
-@require_admin_token
 def confirm_metadata_import():
     """
     Confirm and apply metadata import.
@@ -1043,7 +1026,6 @@ def confirm_metadata_import():
 
 
 @admin_bp.route('/metadata/<column_name>', methods=['DELETE'])
-@require_admin_token
 def delete_metadata_column(column_name):
     """
     Delete a metadata column.
@@ -1145,7 +1127,6 @@ def delete_metadata_column(column_name):
 # ============================================================================
 
 @admin_bp.route('/config/profiles', methods=['GET'])
-@require_admin_token
 def list_profiles():
     """List available config profiles."""
     config_mgr = get_config_manager()
@@ -1175,7 +1156,6 @@ def list_profiles():
 
 
 @admin_bp.route('/config/save-profile', methods=['POST'])
-@require_admin_token
 def save_profile():
     """
     Save current config as a named profile.
@@ -1220,7 +1200,6 @@ def save_profile():
 
 
 @admin_bp.route('/config/load-profile', methods=['POST'])
-@require_admin_token
 def load_profile():
     """
     Load a config profile by name.

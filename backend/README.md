@@ -56,8 +56,7 @@ conda activate genxbrowser-backend
 pip install -r requirements.txt
 
 export H5AD_DATA_DIR=/absolute/path/to/prepare/data
-export FLASK_DEBUG=true
-python run.py            # Flask dev server on :5000 (host 0.0.0.0)
+python run.py            # Flask dev server on 127.0.0.1:5000
 ```
 
 The full stack (this backend + the frontend + a sensible `H5AD_DATA_DIR`) starts in one command via [`genxprep app config.yml`](../prepare/README.md#-cli-reference).
@@ -89,7 +88,7 @@ Tunable env vars (see [gunicorn.conf.py](gunicorn.conf.py)): `GUNICORN_BIND` (de
 | `GO_OBO_PATH` | Gene Ontology OBO file | `$H5AD_DATA_DIR/go-basic.obo` |
 | `GO_AUTO_DOWNLOAD` | Download OBO when missing | `true` |
 | `SPECIES_PHOTOS_DIR` | Optional species thumbnails | *(unset)* |
-| `ADMIN_TOKEN` | Bearer token gating `/api/admin/*` | *(unset → admin auth off)* |
+| `ADMIN_TOKEN` | Bearer token protecting admin endpoints other than `/api/admin/auth/check` | *(unset → admin disabled)* |
 | `FLASK_DEBUG` | Enable Flask debug mode | `false` |
 | `PORT` | Dev-server port (`run.py`) | `5000` |
 | `LLM_API_BASE` | OpenAI-compatible LLM endpoint for the AI assistant | *(unset → assistant disabled)* |
