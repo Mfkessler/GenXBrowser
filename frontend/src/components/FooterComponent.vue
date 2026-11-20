@@ -57,10 +57,15 @@
         </button>
       </div>
 
-      <div class="flex justify-center sm:justify-self-center">
+      <div class="flex flex-col items-center gap-2 sm:justify-self-center">
         <div class="rounded-full border border-white/80 bg-white/75 px-4 py-2 text-xs font-medium text-slate-600 shadow-sm backdrop-blur">
           Last update <span class="ml-1 font-mono text-slate-700">{{ lastUpdate }}</span>
         </div>
+        <nav v-if="showLegalLinks" aria-label="Legal" class="flex flex-wrap items-center justify-center gap-x-2 text-xs text-slate-600">
+          <a :href="`${legalBase}imprint.html`" class="hover:underline focus-visible:underline">Imprint &amp; Privacy</a>
+          <span aria-hidden="true" class="text-slate-400">|</span>
+          <a :href="`${legalBase}terms.html`" class="hover:underline focus-visible:underline">Terms of Service</a>
+        </nav>
       </div>
 
       <div class="flex justify-center sm:justify-self-end">
@@ -101,7 +106,7 @@
   <ScreenshotModal ref="screenshotModal" />
 </template>
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 
 import ScreenshotModal from './ScreenshotModal.vue'
 
@@ -110,6 +115,26 @@ const licenseText = "MIT License";
 const licenseLink = `${baseUrl}LICENSE.txt`;
 
 const lastUpdate = import.meta.env.VITE_BUILD_DATE || "unknown";
+
+const legalBase = `${baseUrl}instance-legal/`;
+const showLegalLinks = ref(false);
+
+onMounted(async () => {
+  try {
+    const response = await fetch(`${legalBase}index.json`, { cache: "no-cache" });
+    if (response.status === 404) return;
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    // Some SPA hosts return index.html for missing files.
+    if (!response.headers.get("content-type")?.includes("application/json")) return;
+    const manifest: unknown = await response.json();
+    if (typeof manifest !== "object" || manifest === null || !("enabled" in manifest) || typeof manifest.enabled !== "boolean") {
+      throw new Error("Expected an instance legal manifest with a boolean enabled field");
+    }
+    showLegalLinks.value = manifest.enabled;
+  } catch (error) {
+    console.warn("Could not load instance legal links", error);
+  }
+});
 
 const screenshotModal = ref<InstanceType<typeof ScreenshotModal> | null>(null)
 </script>
