@@ -1,5 +1,7 @@
 # GenXBrowser
 
+<img src="./frontend/public/GenX_Logo.png" alt="GenXBrowser logo" width="112">
+
 Explore and compare gene expression across datasets in your browser.
 
 ## Use GenXBrowser
