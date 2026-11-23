@@ -1,6 +1,6 @@
-# GenXBrowser
-
-<img src="./frontend/public/GenX_Logo.png" alt="GenXBrowser logo" width="112">
+<p align="center">
+  <img src="./frontend/public/GenX_Logo.svg" alt="GenXBrowser logo" width="112">
+</p>
 
 Explore and compare gene expression across datasets in your browser.
 
