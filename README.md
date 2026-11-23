@@ -9,6 +9,10 @@ Explore and compare gene expression across datasets in your browser.
 <!-- Add the de.NBI logo here once it is available. -->
 GenXBrowser is an approved de.NBI service. Please help us improve by taking our **[short user survey](https://www.surveymonkey.de/r/denbi-service?sc=bigi&tool=genxbrowser)**.
 
+<p align="center">
+  <img src="./frontend/public/denbi_logo.svg" alt="de.NBI" width="150" style="margin-top: 2rem;" />
+</p>
+
 ## Use GenXBrowser
 
 **[Open the public instance](https://genxbrowser.computational.bio/public/genxbrowser/catalog)** — no account needed.
