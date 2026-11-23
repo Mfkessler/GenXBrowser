@@ -6,6 +6,10 @@ GenXBrowser visualizes gene expression data stored in AnnData (.h5ad) files. Sel
 
 This is an approved de.NBI service. Please help us improve by taking our [short user survey](https://www.surveymonkey.de/r/denbi-service?sc=bigi&tool=genxbrowser).
 
+<p align="center">
+  <img src="denbi_logo.svg" alt="de.NBI" width="150" style="margin-top: 2rem;" />
+</p>
+
 ## Analysis Types
 
 - **Heatmap** - Interactive expression heatmaps with z-score normalization and hierarchical clustering
