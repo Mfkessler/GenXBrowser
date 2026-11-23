@@ -10,7 +10,7 @@ Explore and compare gene expression across datasets in your browser.
 GenXBrowser is an approved de.NBI service. Please help us improve by taking our **[short user survey](https://www.surveymonkey.de/r/denbi-service?sc=bigi&tool=genxbrowser)**.
 
 <p align="center">
-  <img src="./frontend/public/denbi_logo.svg" alt="de.NBI" width="150" style="margin-top: 2rem;" />
+  <img src="./frontend/public/denbi_logo.svg" alt="de.NBI" width="750" style="margin-top: 2rem;" />
 </p>
 
 ## Use GenXBrowser
